@@ -1,0 +1,224 @@
+use std::path::PathBuf;
+
+use thiserror::Error;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RepoPath(pub PathBuf);
+
+impl RepoPath {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self(path.into())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BranchName(pub String);
+
+impl BranchName {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RemoteName(pub String);
+
+impl RemoteName {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+}
+
+impl Default for RemoteName {
+    fn default() -> Self {
+        Self("origin".to_string())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TagName(pub String);
+
+impl TagName {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CommitMessage(pub String);
+
+impl CommitMessage {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BranchKind {
+    Local,
+    Remote,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchInfo {
+    pub name: String,
+    pub kind: BranchKind,
+    pub is_head: bool,
+    pub upstream: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TagInfo {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StashInfo {
+    pub index: usize,
+    pub message: String,
+    pub oid: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChangeState {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Typechange,
+    Conflicted,
+    Untracked,
+}
+
+impl ChangeState {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ChangeState::Added => "A",
+            ChangeState::Modified => "M",
+            ChangeState::Deleted => "D",
+            ChangeState::Renamed => "R",
+            ChangeState::Typechange => "T",
+            ChangeState::Conflicted => "!",
+            ChangeState::Untracked => "?",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorktreeChange {
+    pub path: String,
+    pub staged: Option<ChangeState>,
+    pub unstaged: Option<ChangeState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiffScope {
+    Staged,
+    Unstaged,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResetMode {
+    Soft,
+    Mixed,
+    Hard,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiffLineKind {
+    Context,
+    Added,
+    Removed,
+    Header,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    pub old_lineno: Option<u32>,
+    pub new_lineno: Option<u32>,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileDiff {
+    pub path: String,
+    pub scope: DiffScope,
+    pub is_binary: bool,
+    pub lines: Vec<DiffLine>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitInfo {
+    pub oid: String,
+    pub short_oid: String,
+    pub summary: String,
+    pub author: String,
+    pub time: i64,
+    pub parents: Vec<String>,
+    pub refs: Vec<CommitRefInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitRefInfo {
+    pub name: String,
+    pub kind: CommitRefKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommitRefKind {
+    LocalBranch,
+    RemoteBranch,
+    Tag,
+    Head,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitFileChange {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: ChangeState,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepositorySnapshot {
+    pub path: PathBuf,
+    pub head: Option<String>,
+    pub branches: Vec<BranchInfo>,
+    pub changes: Vec<WorktreeChange>,
+    pub remotes: Vec<String>,
+    pub tags: Vec<TagInfo>,
+    pub stashes: Vec<StashInfo>,
+    pub conflicts: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OperationEvent {
+    Started(String),
+    Progress(String),
+    Finished(String),
+}
+
+#[derive(Debug, Error)]
+pub enum GitError {
+    #[error("Git 错误：{0}")]
+    Git(#[from] git2::Error),
+    #[error("I/O 错误：{0}")]
+    Io(#[from] std::io::Error),
+    #[error("凭据错误：{0}")]
+    Credential(String),
+    #[error("访问 {url} 需要身份验证")]
+    CredentialRequired { url: String },
+    #[error("分支名称无效：{0}")]
+    InvalidBranchName(String),
+    #[error("提交信息不能为空")]
+    EmptyCommitMessage,
+    #[error("尚未打开仓库")]
+    NoRepository,
+    #[error("操作产生冲突：{0:?}")]
+    Conflicts(Vec<String>),
+    #[error("{0}")]
+    Message(String),
+}
+
+pub type Result<T> = std::result::Result<T, GitError>;
