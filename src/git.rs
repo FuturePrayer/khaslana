@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::fs;
+use std::path::{Component, Path};
 use std::sync::Arc;
 
+use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
+use encoding_rs::{BIG5, Encoding, GB18030, UTF_8};
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use git2::{
     AnnotatedCommit, BranchType, Cred, CredentialType, Delta, DiffFormat, DiffOptions, ErrorCode,
@@ -13,9 +16,9 @@ use git2::{
 use crate::credentials::{CredentialProvider, CredentialRequest, to_git_credential};
 use crate::types::{
     BranchInfo, BranchKind, BranchName, ChangeState, CommitFileChange, CommitInfo, CommitMessage,
-    CommitRefInfo, CommitRefKind, DiffLine, DiffLineKind, DiffScope, FileDiff, GitError,
-    OperationEvent, RemoteName, RepoPath, RepositorySnapshot, ResetMode, Result, StashInfo,
-    TagInfo, TagName, WorktreeChange,
+    CommitRefInfo, CommitRefKind, DiffEncodingChoice, DiffEncodingInfo, DiffLine, DiffLineKind,
+    DiffScope, FileDiff, GitError, OperationEvent, RemoteName, RepoPath, RepositorySnapshot,
+    ResetMode, Result, StashInfo, TagInfo, TagName, WorktreeChange,
 };
 
 const DIFF_CONTEXT_LINES: u32 = 3;
@@ -502,6 +505,75 @@ impl GitService {
         self.snapshot(repo)
     }
 
+    pub fn discard_unstaged_path(
+        &self,
+        repo: &mut Repository,
+        path: &Path,
+    ) -> Result<RepositorySnapshot> {
+        self.ensure_path_not_conflicted(repo, path)?;
+        self.progress
+            .emit(OperationEvent::Started("正在回滚未暂存更改".into()));
+
+        let mut index = repo.index()?;
+        let has_index_entry = index.get_path(path, 0).is_some();
+        if has_index_entry {
+            let mut checkout = CheckoutBuilder::new();
+            checkout.force().path(path).disable_pathspec_match(true);
+            repo.checkout_index(Some(&mut index), Some(&mut checkout))?;
+        } else {
+            remove_worktree_path(repo, path)?;
+        }
+        drop(index);
+
+        self.progress
+            .emit(OperationEvent::Finished("已回滚未暂存更改".into()));
+        self.snapshot(repo)
+    }
+
+    pub fn discard_all_path(
+        &self,
+        repo: &mut Repository,
+        path: &Path,
+    ) -> Result<RepositorySnapshot> {
+        self.ensure_path_not_conflicted(repo, path)?;
+        self.progress
+            .emit(OperationEvent::Started("正在回滚文件全部更改".into()));
+
+        {
+            let head_commit = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+            if let Some(head_commit) = head_commit {
+                let head_tree = head_commit.tree()?;
+                let head_has_path = head_tree.get_path(path).is_ok();
+                repo.reset_default(Some(head_commit.as_object()), [path])?;
+
+                if head_has_path {
+                    let mut checkout = CheckoutBuilder::new();
+                    checkout.force().path(path).disable_pathspec_match(true);
+                    repo.checkout_head(Some(&mut checkout))?;
+                } else {
+                    let mut index = repo.index()?;
+                    let _ = index.remove_path(path);
+                    index.write()?;
+                    remove_worktree_path(repo, path)?;
+                }
+            } else {
+                let mut index = repo.index()?;
+                if index.get_path(path, 0).is_none() {
+                    return Err(GitError::Message(
+                        "当前仓库还没有 HEAD，不能回滚该文件更改".into(),
+                    ));
+                }
+                index.remove_path(path)?;
+                index.write()?;
+                remove_worktree_path(repo, path)?;
+            }
+        }
+
+        self.progress
+            .emit(OperationEvent::Finished("已回滚文件全部更改".into()));
+        self.snapshot(repo)
+    }
+
     pub fn commit(
         &self,
         repo: &mut Repository,
@@ -566,6 +638,7 @@ impl GitService {
         repo: &Repository,
         path: &Path,
         scope: DiffScope,
+        encoding: DiffEncodingChoice,
     ) -> Result<FileDiff> {
         let mut options = DiffOptions::new();
         options
@@ -581,7 +654,7 @@ impl GitService {
             DiffScope::Unstaged => repo.diff_index_to_workdir(None, Some(&mut options))?,
         };
 
-        self.file_diff_from_diff(diff, path_to_git(path), scope)
+        self.file_diff_from_diff(diff, path_to_git(path), scope, encoding)
     }
 
     pub fn commit_history(
@@ -846,10 +919,11 @@ impl GitService {
         repo: &Repository,
         commit_oid: &str,
         path: &Path,
+        encoding: DiffEncodingChoice,
     ) -> Result<FileDiff> {
         let commit = self.find_commit_by_oid(repo, commit_oid)?;
         let diff = self.commit_diff(repo, &commit, Some(path))?;
-        self.file_diff_from_diff(diff, path_to_git(path), DiffScope::Staged)
+        self.file_diff_from_diff(diff, path_to_git(path), DiffScope::Staged, encoding)
     }
 
     fn find_commit_by_oid<'repo>(
@@ -887,8 +961,16 @@ impl GitService {
         diff: git2::Diff<'_>,
         path: String,
         scope: DiffScope,
+        encoding: DiffEncodingChoice,
     ) -> Result<FileDiff> {
-        let mut lines = Vec::new();
+        struct RawDiffLine {
+            kind: DiffLineKind,
+            old_lineno: Option<u32>,
+            new_lineno: Option<u32>,
+            content: Vec<u8>,
+        }
+
+        let mut raw_lines = Vec::new();
         let mut is_binary = false;
         for delta in diff.deltas() {
             if delta.flags().contains(git2::DiffFlags::BINARY) {
@@ -903,22 +985,45 @@ impl GitService {
                 'F' | 'H' => DiffLineKind::Header,
                 _ => DiffLineKind::Context,
             };
-            let content = String::from_utf8_lossy(line.content())
-                .trim_end_matches(['\r', '\n'])
-                .to_string();
-            lines.push(DiffLine {
+            raw_lines.push(RawDiffLine {
                 kind,
                 old_lineno: line.old_lineno(),
                 new_lineno: line.new_lineno(),
-                content,
+                content: line.content().to_vec(),
             });
             true
         })?;
+
+        let decode_bytes = raw_lines
+            .iter()
+            .filter(|line| line.kind != DiffLineKind::Header)
+            .flat_map(|line| line.content.iter().copied())
+            .collect::<Vec<_>>();
+        let (resolved_encoding, encoding_impl) = resolve_diff_encoding(encoding, &decode_bytes);
+        let mut lossy = false;
+        let lines = raw_lines
+            .into_iter()
+            .map(|line| {
+                let (content, had_errors) = decode_diff_line(&line.content, encoding_impl);
+                lossy |= had_errors;
+                DiffLine {
+                    kind: line.kind,
+                    old_lineno: line.old_lineno,
+                    new_lineno: line.new_lineno,
+                    content,
+                }
+            })
+            .collect::<Vec<_>>();
 
         Ok(FileDiff {
             path,
             scope,
             is_binary,
+            encoding: DiffEncodingInfo {
+                requested: encoding,
+                resolved: resolved_encoding,
+                lossy,
+            },
             lines,
         })
     }
@@ -1072,6 +1177,16 @@ impl GitService {
         conflicts.dedup();
         Ok(conflicts)
     }
+
+    fn ensure_path_not_conflicted(&self, repo: &Repository, path: &Path) -> Result<()> {
+        let git_path = path_to_git(path);
+        if self.conflicts(repo)?.iter().any(|path| path == &git_path) {
+            return Err(GitError::Message(
+                "该文件存在冲突，请先解决冲突后再回滚更改".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn validate_branch_name(name: &str) -> Result<()> {
@@ -1157,6 +1272,66 @@ fn is_empty_head_error(err: &git2::Error) -> bool {
         || err.message().contains("reference 'refs/heads/")
 }
 
+fn resolve_diff_encoding(
+    requested: DiffEncodingChoice,
+    bytes: &[u8],
+) -> (DiffEncodingChoice, &'static Encoding) {
+    match requested {
+        DiffEncodingChoice::Auto => detect_diff_encoding(bytes),
+        DiffEncodingChoice::Utf8 => (DiffEncodingChoice::Utf8, UTF_8),
+        DiffEncodingChoice::Gb18030 => (DiffEncodingChoice::Gb18030, GB18030),
+        DiffEncodingChoice::Big5 => (DiffEncodingChoice::Big5, BIG5),
+    }
+}
+
+fn detect_diff_encoding(bytes: &[u8]) -> (DiffEncodingChoice, &'static Encoding) {
+    if std::str::from_utf8(bytes).is_ok() {
+        return (DiffEncodingChoice::Utf8, UTF_8);
+    }
+
+    let mut detector = EncodingDetector::new(Iso2022JpDetection::Deny);
+    detector.feed(bytes, true);
+    let encoding = detector.guess(None, Utf8Detection::Deny);
+    if encoding == GB18030 {
+        (DiffEncodingChoice::Gb18030, GB18030)
+    } else if encoding == BIG5 {
+        (DiffEncodingChoice::Big5, BIG5)
+    } else {
+        let gb18030_score = chinese_decode_score(bytes, GB18030);
+        let big5_score = chinese_decode_score(bytes, BIG5);
+        if gb18030_score >= big5_score && gb18030_score > 0 {
+            (DiffEncodingChoice::Gb18030, GB18030)
+        } else if big5_score > 0 {
+            (DiffEncodingChoice::Big5, BIG5)
+        } else {
+            (DiffEncodingChoice::Utf8, UTF_8)
+        }
+    }
+}
+
+fn chinese_decode_score(bytes: &[u8], encoding: &'static Encoding) -> usize {
+    let (decoded, _encoding_used, had_errors) = encoding.decode(bytes);
+    if had_errors {
+        return 0;
+    }
+    decoded
+        .chars()
+        .filter(|ch| {
+            matches!(
+                *ch as u32,
+                0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF
+            )
+        })
+        .count()
+}
+
+fn decode_diff_line(bytes: &[u8], encoding: &'static Encoding) -> (String, bool) {
+    let without_lf = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    let trimmed = without_lf.strip_suffix(b"\r").unwrap_or(without_lf);
+    let (decoded, _encoding_used, had_errors) = encoding.decode(trimmed);
+    (decoded.into_owned(), had_errors)
+}
+
 fn signature(repo: &Repository) -> Result<Signature<'static>> {
     repo.signature()
         .or_else(|_| Signature::now("Khaslana", "khaslana@example.invalid"))
@@ -1228,6 +1403,32 @@ fn path_to_git(path: &Path) -> String {
         .join("/")
 }
 
+fn remove_worktree_path(repo: &Repository, path: &Path) -> Result<()> {
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(GitError::Message("文件路径无效，不能回滚更改".into()));
+    }
+
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| GitError::Message("裸仓库没有工作区，不能回滚文件更改".into()))?;
+    let full_path = workdir.join(path);
+    let metadata = match fs::symlink_metadata(&full_path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(GitError::Io(err)),
+    };
+
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        fs::remove_dir_all(full_path)?;
+    } else {
+        fs::remove_file(full_path)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1268,6 +1469,19 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(full, body).unwrap();
+    }
+
+    fn write_bytes(root: &Path, path: &str, body: &[u8]) {
+        let full = root.join(path);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(full, body).unwrap();
+    }
+
+    fn assert_file_text(root: &Path, path: &str, expected: &str) {
+        let actual = fs::read_to_string(root.join(path)).unwrap();
+        assert_eq!(actual.replace("\r\n", "\n"), expected);
     }
 
     fn commit_all(repo: &Repository, message: &str) -> Oid {
@@ -1448,6 +1662,158 @@ mod tests {
         assert!(changes.iter().any(|change| {
             change.path == "remove.txt" && change.staged == Some(ChangeState::Deleted)
         }));
+    }
+
+    #[test]
+    fn discard_unstaged_keeps_staged_change() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "file.txt", "base\n");
+        commit_all(&repo, "initial");
+
+        write_file(dir.path(), "file.txt", "staged\n");
+        service
+            .stage_path(&mut repo, Path::new("file.txt"))
+            .unwrap();
+        write_file(dir.path(), "file.txt", "worktree\n");
+
+        service
+            .discard_unstaged_path(&mut repo, Path::new("file.txt"))
+            .unwrap();
+
+        assert_file_text(dir.path(), "file.txt", "staged\n");
+        let changes = service.status_full(&repo).unwrap();
+        let change = changes
+            .iter()
+            .find(|change| change.path == "file.txt")
+            .unwrap();
+        assert_eq!(change.staged, Some(ChangeState::Modified));
+        assert_eq!(change.unstaged, None);
+    }
+
+    #[test]
+    fn discard_all_removes_staged_and_unstaged_changes() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "file.txt", "base\n");
+        commit_all(&repo, "initial");
+
+        write_file(dir.path(), "file.txt", "staged\n");
+        service
+            .stage_path(&mut repo, Path::new("file.txt"))
+            .unwrap();
+        write_file(dir.path(), "file.txt", "worktree\n");
+
+        service
+            .discard_all_path(&mut repo, Path::new("file.txt"))
+            .unwrap();
+
+        assert_file_text(dir.path(), "file.txt", "base\n");
+        assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn discard_unstaged_removes_untracked_file() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "base.txt", "base\n");
+        commit_all(&repo, "initial");
+        write_file(dir.path(), "new.txt", "new\n");
+
+        service
+            .discard_unstaged_path(&mut repo, Path::new("new.txt"))
+            .unwrap();
+
+        assert!(!dir.path().join("new.txt").exists());
+        assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn discard_all_removes_staged_added_file() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "base.txt", "base\n");
+        commit_all(&repo, "initial");
+        write_file(dir.path(), "new.txt", "new\n");
+        service.stage_path(&mut repo, Path::new("new.txt")).unwrap();
+
+        service
+            .discard_all_path(&mut repo, Path::new("new.txt"))
+            .unwrap();
+
+        assert!(!dir.path().join("new.txt").exists());
+        assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn discard_all_removes_staged_added_file_in_unborn_repo() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "new.txt", "new\n");
+        service.stage_path(&mut repo, Path::new("new.txt")).unwrap();
+
+        service
+            .discard_all_path(&mut repo, Path::new("new.txt"))
+            .unwrap();
+
+        assert!(!dir.path().join("new.txt").exists());
+        assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn discard_unstaged_restores_deleted_file() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "file.txt", "base\n");
+        commit_all(&repo, "initial");
+        fs::remove_file(dir.path().join("file.txt")).unwrap();
+
+        service
+            .discard_unstaged_path(&mut repo, Path::new("file.txt"))
+            .unwrap();
+
+        assert_file_text(dir.path(), "file.txt", "base\n");
+        assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn discard_all_restores_staged_deleted_file() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "file.txt", "base\n");
+        commit_all(&repo, "initial");
+        fs::remove_file(dir.path().join("file.txt")).unwrap();
+        service
+            .stage_path(&mut repo, Path::new("file.txt"))
+            .unwrap();
+
+        service
+            .discard_all_path(&mut repo, Path::new("file.txt"))
+            .unwrap();
+
+        assert_file_text(dir.path(), "file.txt", "base\n");
+        assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn discard_rejects_conflicted_file() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "same.txt", "base\n");
+        commit_all(&repo, "initial");
+
+        service
+            .create_branch(&mut repo, &BranchName::new("feature"))
+            .unwrap();
+        service
+            .checkout_branch(&mut repo, &BranchName::new("feature"))
+            .unwrap();
+        write_file(dir.path(), "same.txt", "feature\n");
+        commit_all(&repo, "feature");
+
+        service
+            .checkout_branch(&mut repo, &BranchName::new("main"))
+            .unwrap();
+        write_file(dir.path(), "same.txt", "main\n");
+        commit_all(&repo, "main");
+
+        let _ = service.merge_branch(&mut repo, &BranchName::new("feature"));
+        let err = service
+            .discard_unstaged_path(&mut repo, Path::new("same.txt"))
+            .unwrap_err();
+        assert!(err.to_string().contains("存在冲突"));
     }
 
     #[test]
@@ -1700,7 +2066,12 @@ mod tests {
             .unwrap();
 
         let diff = service
-            .diff_for_path(&repo, Path::new("file.txt"), DiffScope::Staged)
+            .diff_for_path(
+                &repo,
+                Path::new("file.txt"),
+                DiffScope::Staged,
+                DiffEncodingChoice::Auto,
+            )
             .unwrap();
         let added = diff
             .lines
@@ -1735,7 +2106,12 @@ mod tests {
             .unwrap();
 
         let diff = service
-            .diff_for_path(&repo, Path::new("file.txt"), DiffScope::Staged)
+            .diff_for_path(
+                &repo,
+                Path::new("file.txt"),
+                DiffScope::Staged,
+                DiffEncodingChoice::Auto,
+            )
             .unwrap();
         let body = diff
             .lines
@@ -1748,6 +2124,70 @@ mod tests {
         assert!(body.iter().any(|line| line.contains("line 11")));
         assert!(!body.iter().any(|line| line.contains("line 4")));
         assert!(!body.iter().any(|line| line.contains("line 12")));
+    }
+
+    #[test]
+    fn diff_auto_detects_gb18030_text() {
+        let (dir, mut repo, service) = init_repo();
+        write_bytes(dir.path(), "cn.txt", b"hello\n");
+        commit_all(&repo, "initial");
+        write_bytes(dir.path(), "cn.txt", &[0xc4, 0xe3, 0xba, 0xc3, b'\n']);
+        service.stage_path(&mut repo, Path::new("cn.txt")).unwrap();
+
+        let diff = service
+            .diff_for_path(
+                &repo,
+                Path::new("cn.txt"),
+                DiffScope::Staged,
+                DiffEncodingChoice::Auto,
+            )
+            .unwrap();
+
+        assert_eq!(diff.encoding.requested, DiffEncodingChoice::Auto);
+        assert_eq!(diff.encoding.resolved, DiffEncodingChoice::Gb18030);
+        assert!(
+            diff.lines
+                .iter()
+                .any(|line| line.kind == DiffLineKind::Added && line.content.contains("你好"))
+        );
+    }
+
+    #[test]
+    fn diff_manual_big5_decodes_text() {
+        let (dir, mut repo, service) = init_repo();
+        write_bytes(dir.path(), "big5.txt", b"hello\n");
+        commit_all(&repo, "initial");
+        write_bytes(dir.path(), "big5.txt", &[0xa7, 0x41, 0xa6, 0x6e, b'\n']);
+        service
+            .stage_path(&mut repo, Path::new("big5.txt"))
+            .unwrap();
+
+        let utf8_diff = service
+            .diff_for_path(
+                &repo,
+                Path::new("big5.txt"),
+                DiffScope::Staged,
+                DiffEncodingChoice::Utf8,
+            )
+            .unwrap();
+        assert!(utf8_diff.encoding.lossy);
+
+        let big5_diff = service
+            .diff_for_path(
+                &repo,
+                Path::new("big5.txt"),
+                DiffScope::Staged,
+                DiffEncodingChoice::Big5,
+            )
+            .unwrap();
+
+        assert_eq!(big5_diff.encoding.resolved, DiffEncodingChoice::Big5);
+        assert!(
+            big5_diff
+                .lines
+                .iter()
+                .any(|line| line.kind == DiffLineKind::Added && line.content.contains("你好"))
+        );
     }
 
     #[test]
@@ -1777,7 +2217,12 @@ mod tests {
                 .any(|file| { file.path == "file.txt" && file.status == ChangeState::Modified })
         );
         let diff = service
-            .commit_file_diff(&repo, &first_page[0].oid, Path::new("file.txt"))
+            .commit_file_diff(
+                &repo,
+                &first_page[0].oid,
+                Path::new("file.txt"),
+                DiffEncodingChoice::Auto,
+            )
             .unwrap();
         assert!(diff.lines.iter().any(|line| {
             line.kind == DiffLineKind::Added
@@ -1792,7 +2237,12 @@ mod tests {
                 .any(|file| { file.path == "root.txt" && file.status == ChangeState::Added })
         );
         let root_diff = service
-            .commit_file_diff(&repo, &root_oid.to_string(), Path::new("root.txt"))
+            .commit_file_diff(
+                &repo,
+                &root_oid.to_string(),
+                Path::new("root.txt"),
+                DiffEncodingChoice::Auto,
+            )
             .unwrap();
         assert!(
             root_diff

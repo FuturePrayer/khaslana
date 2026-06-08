@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -132,6 +133,33 @@ pub enum DiffLineKind {
     Header,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiffEncodingChoice {
+    #[default]
+    Auto,
+    Utf8,
+    Gb18030,
+    Big5,
+}
+
+impl DiffEncodingChoice {
+    pub fn label(self) -> &'static str {
+        match self {
+            DiffEncodingChoice::Auto => "自动",
+            DiffEncodingChoice::Utf8 => "UTF-8",
+            DiffEncodingChoice::Gb18030 => "GB18030/GBK",
+            DiffEncodingChoice::Big5 => "Big5",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiffEncodingInfo {
+    pub requested: DiffEncodingChoice,
+    pub resolved: DiffEncodingChoice,
+    pub lossy: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiffLine {
     pub kind: DiffLineKind,
@@ -145,6 +173,7 @@ pub struct FileDiff {
     pub path: String,
     pub scope: DiffScope,
     pub is_binary: bool,
+    pub encoding: DiffEncodingInfo,
     pub lines: Vec<DiffLine>,
 }
 

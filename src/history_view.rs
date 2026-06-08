@@ -1,13 +1,14 @@
 use std::collections::BTreeSet;
 
 use gpui::{Context, IntoElement, PathBuilder, div, point, prelude::*, px, rgb};
-use khaslana::{CommitFileChange, CommitInfo, CommitRefInfo, CommitRefKind, DiffLineKind};
+use khaslana::{CommitFileChange, CommitInfo, CommitRefInfo, CommitRefKind};
 
 use crate::{
     CHANGE_ROW_HEIGHT, COLOR_BLUE, COLOR_BLUE_DARK, COLOR_BLUE_SOFT, COLOR_BORDER,
     COLOR_BORDER_STRONG, COLOR_HASH_BG, COLOR_PANEL_BG, COLOR_ROW_SELECTED, COLOR_SURFACE,
-    COLOR_TEXT, COLOR_TEXT_FAINT, COLOR_TEXT_MUTED, DiffHeaderTarget, RepositoryView, ResizeTarget,
-    author_avatar, commit_time_label, diff_line, nav_list, placeholder_row, section_header,
+    COLOR_TEXT, COLOR_TEXT_FAINT, COLOR_TEXT_MUTED, DiffHeaderTarget, EncodingMenuTarget,
+    RepositoryView, ResizeTarget, author_avatar, commit_time_label, nav_list, placeholder_row,
+    section_header,
 };
 
 const HISTORY_GRAPH_WIDTH: f32 = 96.0;
@@ -99,7 +100,7 @@ impl RepositoryView {
             .min_h(px(180.0))
             .w_full()
             .child(section_header("提交记录（所有分支）"))
-            .child(nav_list("commit-history-list", rows))
+            .child(nav_list(self, "commit-history-list", rows, cx))
     }
 
     fn commit_row(
@@ -155,6 +156,7 @@ impl RepositoryView {
                         right_click_summary.clone(),
                         right_click_parent_count,
                         event,
+                        _window,
                     );
                     cx.notify();
                 }),
@@ -252,7 +254,7 @@ impl RepositoryView {
             .min_h(px(0.0))
             .h_full()
             .child(section_header("提交文件"))
-            .child(nav_list("commit-file-list", rows))
+            .child(nav_list(self, "commit-file-list", rows, cx))
     }
 
     fn commit_file_row(&self, file: CommitFileChange, cx: &mut Context<Self>) -> impl IntoElement {
@@ -320,54 +322,29 @@ impl RepositoryView {
             .as_ref()
             .map(|path| format!("提交差异：{path}"))
             .unwrap_or_else(|| "提交差异".to_string());
-        let diff_rows = self.render_history_diff_rows(cx);
+        let empty_message = if self.history_loading.diff {
+            "提交差异加载中..."
+        } else {
+            "请选择一个提交文件查看差异"
+        };
 
         div()
             .flex()
             .flex_col()
             .flex_1()
+            .relative()
             .min_w(px(0.0))
             .h_full()
-            .child(section_header(title))
-            .child(
-                div()
-                    .id("history-diff-scroll")
-                    .flex()
-                    .flex_col()
-                    .gap_0()
-                    .min_w(px(0.0))
-                    .p_2()
-                    .overflow_scroll()
-                    .font_family("Consolas, monospace")
-                    .text_size(px(12.0))
-                    .bg(rgb(COLOR_PANEL_BG))
-                    .children(diff_rows),
-            )
-    }
-
-    fn render_history_diff_rows(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
-        let Some(diff) = self.history_diff.as_ref() else {
-            return vec![
-                diff_line(
-                    DiffLineKind::Context,
-                    None,
-                    None,
-                    if self.history_loading.diff {
-                        "提交差异加载中...".to_string()
-                    } else {
-                        "请选择一个提交文件查看差异".to_string()
-                    },
-                )
-                .into_any_element(),
-            ];
-        };
-
-        self.render_file_diff_rows(
-            diff,
-            self.history_diff_headers_expanded,
-            DiffHeaderTarget::History,
-            cx,
-        )
+            .child(self.diff_section_header(title, EncodingMenuTarget::History, cx))
+            .child(self.render_virtual_diff(
+                "history-diff-scroll",
+                self.history_diff.clone(),
+                self.history_diff_headers_expanded,
+                DiffHeaderTarget::History,
+                empty_message.to_string(),
+                cx,
+            ))
+            .child(self.render_encoding_dropdown(EncodingMenuTarget::History, cx))
     }
 }
 

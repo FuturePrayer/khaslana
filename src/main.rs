@@ -4,7 +4,8 @@ mod history_view;
 mod sidebar_view;
 mod ui_helpers;
 
-use std::collections::{BTreeSet, VecDeque};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
@@ -16,17 +17,18 @@ use directories::ProjectDirs;
 use git2::Repository;
 use gpui::{
     App, Application, Bounds, ClipboardItem, Context, CursorStyle, FocusHandle, Focusable,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, SharedString,
-    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div, prelude::*, px,
-    rgb, rgba, size,
+    KeyDownEvent, ListHorizontalSizingBehavior, ListSizingBehavior, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ScrollHandle, SharedString, TitlebarOptions,
+    UniformListScrollHandle, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div, point,
+    prelude::*, px, rgb, rgba, size, uniform_list,
 };
 use khaslana::{
     BranchKind, BranchName, CommitFileChange, CommitInfo, CommitMessage, CredentialProvider,
-    CredentialRecord, CredentialRequest, CredentialScope, CredentialStore, DiffLineKind, DiffScope,
-    FileDiff, GitCredential, GitService, KeyringCredentialStore, OperationEvent, ProgressEmitter,
-    RemoteName, RepoPath, RepositorySnapshot, ResetMode, TagName, credential_display_target,
-    credential_key_filename, credential_kind_label, credential_record_label,
-    credential_scope_label, test_credential_connection,
+    CredentialRecord, CredentialRequest, CredentialScope, CredentialStore, DiffEncodingChoice,
+    DiffLineKind, DiffScope, FileDiff, GitCredential, GitService, KeyringCredentialStore,
+    OperationEvent, ProgressEmitter, RemoteName, RepoPath, RepositorySnapshot, ResetMode, TagName,
+    credential_display_target, credential_key_filename, credential_kind_label,
+    credential_record_label, credential_scope_label, test_credential_connection,
 };
 use serde::{Deserialize, Serialize};
 use ui_helpers::*;
@@ -43,6 +45,18 @@ const DEFAULT_HISTORY_FILES_WIDTH: f32 = 520.0;
 const MIN_HISTORY_FILES_WIDTH: f32 = 260.0;
 const MAX_HISTORY_FILES_WIDTH: f32 = 720.0;
 const HISTORY_PAGE_SIZE: usize = 50;
+pub(crate) const BRANCH_MENU_WIDTH: f32 = 190.0;
+pub(crate) const BRANCH_MENU_HEIGHT: f32 = 230.0;
+const CHANGE_MENU_WIDTH: f32 = 210.0;
+const CHANGE_MENU_HEIGHT: f32 = 205.0;
+pub(crate) const TAG_MENU_WIDTH: f32 = 170.0;
+pub(crate) const TAG_MENU_HEIGHT: f32 = 80.0;
+pub(crate) const STASH_MENU_WIDTH: f32 = 170.0;
+pub(crate) const STASH_MENU_HEIGHT: f32 = 110.0;
+const COMMIT_MENU_WIDTH: f32 = 230.0;
+const COMMIT_MENU_HEIGHT: f32 = 230.0;
+const ENCODING_MENU_WIDTH: f32 = 170.0;
+const MENU_VIEWPORT_MARGIN: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FieldId {
@@ -58,37 +72,253 @@ enum FieldId {
 }
 
 #[derive(Clone, Debug)]
+struct TextEditState {
+    value: String,
+    secret: bool,
+    caret: usize,
+    selection_anchor: Option<usize>,
+}
+
+impl TextEditState {
+    fn new() -> Self {
+        Self {
+            value: String::new(),
+            secret: false,
+            caret: 0,
+            selection_anchor: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn for_test(value: &str, secret: bool) -> Self {
+        Self {
+            value: value.to_string(),
+            secret,
+            caret: value.len(),
+            selection_anchor: None,
+        }
+    }
+
+    fn set_value(&mut self, value: impl Into<String>) {
+        self.value = value.into();
+        self.caret = self.value.len();
+        self.selection_anchor = None;
+    }
+
+    fn clear(&mut self) {
+        self.value.clear();
+        self.caret = 0;
+        self.selection_anchor = None;
+    }
+
+    fn display_text(&self) -> String {
+        if self.secret {
+            "*".repeat(self.value.chars().count())
+        } else {
+            self.value.clone()
+        }
+    }
+
+    fn display_byte_for_value_byte(&self, value_byte: usize) -> usize {
+        if self.secret {
+            self.value[..value_byte].chars().count()
+        } else {
+            value_byte
+        }
+    }
+
+    fn selected_range(&self) -> Option<std::ops::Range<usize>> {
+        let anchor = self.selection_anchor?;
+        if anchor == self.caret {
+            None
+        } else if anchor < self.caret {
+            Some(anchor..self.caret)
+        } else {
+            Some(self.caret..anchor)
+        }
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        self.selected_range()
+            .map(|range| self.value[range].to_string())
+    }
+
+    fn copyable_selected_text(&self) -> Option<String> {
+        (!self.secret).then(|| self.selected_text()).flatten()
+    }
+
+    fn select_all(&mut self) {
+        self.caret = self.value.len();
+        self.selection_anchor = Some(0);
+    }
+
+    fn delete_selection(&mut self) -> bool {
+        let Some(range) = self.selected_range() else {
+            return false;
+        };
+        let start = range.start;
+        self.value.replace_range(range, "");
+        self.caret = start;
+        self.selection_anchor = None;
+        true
+    }
+
+    fn insert_text(&mut self, text: &str, multiline: bool) {
+        self.delete_selection();
+        let text = if multiline {
+            text.to_string()
+        } else {
+            text.replace(['\r', '\n'], "")
+        };
+        self.value.insert_str(self.caret, &text);
+        self.caret += text.len();
+        self.selection_anchor = None;
+    }
+
+    fn delete_backward(&mut self) {
+        if self.delete_selection() || self.caret == 0 {
+            return;
+        }
+        let previous = self.value[..self.caret]
+            .char_indices()
+            .last()
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        self.value.replace_range(previous..self.caret, "");
+        self.caret = previous;
+    }
+
+    fn delete_forward(&mut self) {
+        if self.delete_selection() || self.caret >= self.value.len() {
+            return;
+        }
+        let next = self.value[self.caret..]
+            .char_indices()
+            .nth(1)
+            .map(|(index, _)| self.caret + index)
+            .unwrap_or(self.value.len());
+        self.value.replace_range(self.caret..next, "");
+    }
+
+    fn move_caret_to(&mut self, position: usize, extend_selection: bool) {
+        let position = clamp_to_char_boundary(&self.value, position);
+        if extend_selection {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.caret);
+            }
+        } else {
+            self.selection_anchor = None;
+        }
+        self.caret = position;
+    }
+
+    fn move_left(&mut self, extend_selection: bool) {
+        if !extend_selection && let Some(range) = self.selected_range() {
+            self.move_caret_to(range.start, false);
+            return;
+        }
+        let previous = self.value[..self.caret]
+            .char_indices()
+            .last()
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        self.move_caret_to(previous, extend_selection);
+    }
+
+    fn move_right(&mut self, extend_selection: bool) {
+        if !extend_selection && let Some(range) = self.selected_range() {
+            self.move_caret_to(range.end, false);
+            return;
+        }
+        let next = self.value[self.caret..]
+            .char_indices()
+            .nth(1)
+            .map(|(index, _)| self.caret + index)
+            .unwrap_or(self.value.len());
+        self.move_caret_to(next, extend_selection);
+    }
+
+    fn byte_for_approx_x(&self, x: f32) -> usize {
+        let mut width = 0.0;
+        let mut previous = 0;
+        for (index, ch) in self.value.char_indices() {
+            let char_width = approx_input_char_width(ch);
+            if x < width + char_width / 2.0 {
+                return index;
+            }
+            width += char_width;
+            previous = index + ch.len_utf8();
+        }
+        previous
+    }
+}
+
+#[derive(Clone, Debug)]
 struct TextFieldState {
     focus: FocusHandle,
-    value: String,
     placeholder: SharedString,
-    secret: bool,
+    edit: TextEditState,
 }
 
 impl TextFieldState {
     fn new(cx: &mut Context<RepositoryView>, placeholder: impl Into<SharedString>) -> Self {
         Self {
             focus: cx.focus_handle().tab_stop(true),
-            value: String::new(),
             placeholder: placeholder.into(),
-            secret: false,
+            edit: TextEditState::new(),
         }
     }
 
     fn secret(mut self) -> Self {
-        self.secret = true;
+        self.edit.secret = true;
         self
     }
+}
 
-    fn display(&self) -> String {
-        if self.value.is_empty() {
-            self.placeholder.to_string()
-        } else if self.secret {
-            "*".repeat(self.value.chars().count())
-        } else {
-            self.value.clone()
-        }
+impl Deref for TextFieldState {
+    type Target = TextEditState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.edit
     }
+}
+
+impl DerefMut for TextFieldState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.edit
+    }
+}
+
+fn clamp_to_char_boundary(value: &str, mut position: usize) -> usize {
+    position = position.min(value.len());
+    while position > 0 && !value.is_char_boundary(position) {
+        position -= 1;
+    }
+    position
+}
+
+fn approx_input_char_width(ch: char) -> f32 {
+    if ch == '\t' {
+        28.0
+    } else if ch.is_ascii() {
+        7.0
+    } else if ch_width_is_wide(ch) {
+        14.0
+    } else {
+        8.5
+    }
+}
+
+fn ch_width_is_wide(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x1100..=0x11FF
+            | 0x2E80..=0xA4CF
+            | 0xAC00..=0xD7AF
+            | 0xF900..=0xFAFF
+            | 0xFE10..=0xFE6F
+            | 0xFF00..=0xFFEF
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -112,6 +342,10 @@ pub(crate) enum DialogState {
     ConfirmRevert {
         oid: String,
         summary: String,
+    },
+    ConfirmDiscardChange {
+        path: String,
+        scope: DiffScope,
     },
     CredentialManager,
     ConfirmDeleteCredential {
@@ -211,9 +445,53 @@ impl Default for ChangeSelection {
 
 #[derive(Clone, Debug)]
 struct ChangeContextMenu {
+    path: String,
     scope: DiffScope,
     x: f32,
     y: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EncodingMenuTarget {
+    Worktree,
+    History,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiffRenderRow {
+    HeaderToggle,
+    DiffLine(usize),
+    Empty,
+}
+
+fn diff_render_rows_for(diff: Option<&FileDiff>, headers_expanded: bool) -> Vec<DiffRenderRow> {
+    let Some(diff) = diff else {
+        return vec![DiffRenderRow::Empty];
+    };
+    let header_count = diff
+        .lines
+        .iter()
+        .take_while(|line| line.kind == DiffLineKind::Header)
+        .count();
+    let mut rows = Vec::new();
+
+    if header_count > 0 {
+        rows.push(DiffRenderRow::HeaderToggle);
+        if headers_expanded {
+            rows.extend((0..header_count).map(DiffRenderRow::DiffLine));
+        }
+    }
+
+    rows.extend((header_count..diff.lines.len()).map(DiffRenderRow::DiffLine));
+    if rows.is_empty() {
+        rows.push(DiffRenderRow::Empty);
+    }
+    rows
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct DiffEncodingPreferences {
+    repositories: BTreeMap<String, DiffEncodingChoice>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -227,7 +505,7 @@ struct RepoTabState {
     pub(crate) selected_branch: Option<String>,
     pub(crate) selected_remote: Option<String>,
     pub(crate) change_selection: ChangeSelection,
-    pub(crate) diff: Option<FileDiff>,
+    pub(crate) diff: Option<Arc<FileDiff>>,
     pub(crate) diff_headers_expanded: bool,
     pub(crate) main_mode: MainMode,
     pub(crate) history_commits: Vec<CommitInfo>,
@@ -235,7 +513,7 @@ struct RepoTabState {
     pub(crate) history_selected_commit: Option<String>,
     pub(crate) history_files: Vec<CommitFileChange>,
     pub(crate) history_selected_file: Option<String>,
-    pub(crate) history_diff: Option<FileDiff>,
+    pub(crate) history_diff: Option<Arc<FileDiff>>,
     pub(crate) history_diff_headers_expanded: bool,
     pub(crate) history_loading: HistoryLoading,
     pub(crate) busy: bool,
@@ -395,6 +673,13 @@ enum UiEvent {
         message: String,
         snapshot: Option<RepositorySnapshot>,
         diff: Option<FileDiff>,
+    },
+    DiscardChangeFinished {
+        tab_id: RepoTabId,
+        message: String,
+        snapshot: RepositorySnapshot,
+        changes: Vec<khaslana::WorktreeChange>,
+        load_id: u64,
     },
     HistoryCommitsLoaded {
         tab_id: RepoTabId,
@@ -573,6 +858,7 @@ pub(crate) struct RepositoryView {
     supplied_credential: Arc<Mutex<Option<GitCredential>>>,
     credential_store: Arc<KeyringCredentialStore>,
     credential_records: Vec<CredentialRecord>,
+    diff_encoding_preferences: DiffEncodingPreferences,
     tabs: Vec<RepoTabState>,
     active_tab: Option<RepoTabId>,
     next_tab_id: u64,
@@ -586,6 +872,9 @@ pub(crate) struct RepositoryView {
     resizing_changes_width: Option<ResizeState>,
     resizing_history_files_width: Option<ResizeState>,
     resizing_history_top_height: Option<ResizeState>,
+    scroll_handles: RefCell<HashMap<String, ScrollHandle>>,
+    uniform_scroll_handles: RefCell<HashMap<String, UniformListScrollHandle>>,
+    pub(crate) scrollbar_drag: Option<ScrollbarDragState>,
     pending_credential: Option<PendingCredential>,
     pending_credentials: VecDeque<PendingCredential>,
     pub(crate) active_dialog: Option<DialogState>,
@@ -594,6 +883,8 @@ pub(crate) struct RepositoryView {
     pub(crate) tag_context_menu: Option<TagContextMenu>,
     pub(crate) stash_context_menu: Option<StashContextMenu>,
     pub(crate) commit_context_menu: Option<CommitContextMenu>,
+    pub(crate) encoding_menu_target: Option<EncodingMenuTarget>,
+    encoding_menu_closed_by_capture: Option<EncodingMenuTarget>,
     save_credential: bool,
     credential_scope: CredentialScope,
     clone_url: TextFieldState,
@@ -620,6 +911,7 @@ impl RepositoryView {
             supplied_credential,
             credential_store,
             credential_records: Vec::new(),
+            diff_encoding_preferences: Self::load_diff_encoding_preferences(),
             tabs: Vec::new(),
             active_tab: None,
             next_tab_id: 1,
@@ -633,6 +925,9 @@ impl RepositoryView {
             resizing_changes_width: None,
             resizing_history_files_width: None,
             resizing_history_top_height: None,
+            scroll_handles: RefCell::new(HashMap::new()),
+            uniform_scroll_handles: RefCell::new(HashMap::new()),
+            scrollbar_drag: None,
             pending_credential: None,
             pending_credentials: VecDeque::new(),
             active_dialog: None,
@@ -641,10 +936,12 @@ impl RepositoryView {
             tag_context_menu: None,
             stash_context_menu: None,
             commit_context_menu: None,
+            encoding_menu_target: None,
+            encoding_menu_closed_by_capture: None,
             save_credential: false,
             credential_scope: CredentialScope::RemoteUrl,
             clone_url: TextFieldState::new(cx, "远程仓库 URL"),
-            clone_path: TextFieldState::new(cx, "克隆目标文件夹"),
+            clone_path: TextFieldState::new(cx, "克隆到父文件夹"),
             branch_name: TextFieldState::new(cx, "新分支名称"),
             branch_rename: TextFieldState::new(cx, "重命名为"),
             commit_message: TextFieldState::new(cx, "提交信息"),
@@ -659,6 +956,78 @@ impl RepositoryView {
         let mut view = Self::new(cx);
         view.restore_session();
         view
+    }
+
+    pub(crate) fn scroll_handle(&self, id: &'static str) -> ScrollHandle {
+        let scoped_id = self
+            .active_tab
+            .map(|tab_id| format!("tab-{}:{id}", tab_id.0))
+            .unwrap_or_else(|| format!("global:{id}"));
+        self.scroll_handles
+            .borrow_mut()
+            .entry(scoped_id)
+            .or_default()
+            .clone()
+    }
+
+    fn scroll_local_branch_to_current(&self) {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return;
+        };
+        let Some(index) = snapshot
+            .branches
+            .iter()
+            .filter(|branch| branch.kind == BranchKind::Local)
+            .position(|branch| branch.is_head)
+        else {
+            return;
+        };
+
+        let handle = self.scroll_handle("local-branch-list");
+        let bounds = handle.bounds();
+        let max_offset = f32::from(handle.max_offset().height).max(0.0);
+        if max_offset <= 1.0 || f32::from(bounds.size.height) <= 1.0 {
+            handle.scroll_to_top_of_item(index);
+            return;
+        }
+
+        let item_top = handle
+            .bounds_for_item(index)
+            .map(|item_bounds| f32::from(item_bounds.top() - bounds.top()))
+            .unwrap_or_else(|| {
+                let list_padding = 8.0;
+                let row_gap = 4.0;
+                list_padding + index as f32 * (NAV_ROW_HEIGHT + row_gap)
+            });
+        let row_height = handle
+            .bounds_for_item(index)
+            .map(|item_bounds| f32::from(item_bounds.size.height))
+            .unwrap_or(NAV_ROW_HEIGHT);
+        let viewport_height = f32::from(bounds.size.height);
+        let target_scroll =
+            (item_top - viewport_height / 2.0 + row_height / 2.0).clamp(0.0, max_offset);
+        handle.set_offset(point(px(0.0), px(-target_scroll)));
+    }
+
+    pub(crate) fn uniform_scroll_handle(&self, id: &'static str) -> UniformListScrollHandle {
+        let scoped_id = self
+            .active_tab
+            .map(|tab_id| format!("tab-{}:{id}", tab_id.0))
+            .unwrap_or_else(|| format!("global:{id}"));
+        self.uniform_scroll_handles
+            .borrow_mut()
+            .entry(scoped_id)
+            .or_insert_with(UniformListScrollHandle::new)
+            .clone()
+    }
+
+    fn reset_uniform_scroll(&self, id: &'static str) {
+        let handle = self.uniform_scroll_handle(id);
+        handle
+            .0
+            .borrow_mut()
+            .base_handle
+            .set_offset(point(px(0.0), px(0.0)));
     }
 
     fn active_tab_id(&self) -> Option<RepoTabId> {
@@ -738,10 +1107,90 @@ impl RepositoryView {
         ProjectDirs::from("", "", "Khaslana").map(|dirs| dirs.config_dir().join("session.json"))
     }
 
+    fn diff_encoding_preferences_path() -> Option<PathBuf> {
+        ProjectDirs::from("", "", "Khaslana")
+            .map(|dirs| dirs.config_dir().join("diff-encodings.json"))
+    }
+
     fn load_session_state() -> Option<SessionState> {
         let path = Self::session_path()?;
         let content = fs::read_to_string(path).ok()?;
         serde_json::from_str(&content).ok()
+    }
+
+    fn load_diff_encoding_preferences() -> DiffEncodingPreferences {
+        let Some(path) = Self::diff_encoding_preferences_path() else {
+            return DiffEncodingPreferences::default();
+        };
+        let Ok(content) = fs::read_to_string(path) else {
+            return DiffEncodingPreferences::default();
+        };
+        serde_json::from_str(&content).unwrap_or_default()
+    }
+
+    fn save_diff_encoding_preferences(&self) {
+        let Some(path) = Self::diff_encoding_preferences_path() else {
+            return;
+        };
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        if let Err(err) = fs::create_dir_all(parent) {
+            tracing::warn!("diff encoding preferences directory create skipped: {err}");
+            return;
+        }
+        match serde_json::to_string_pretty(&self.diff_encoding_preferences) {
+            Ok(content) => {
+                if let Err(err) = fs::write(path, content) {
+                    tracing::warn!("diff encoding preferences write skipped: {err}");
+                }
+            }
+            Err(err) => tracing::warn!("diff encoding preferences encode skipped: {err}"),
+        }
+    }
+
+    fn diff_encoding_choice_for_path(&self, path: &Path) -> DiffEncodingChoice {
+        self.diff_encoding_preferences
+            .repositories
+            .get(&normalize_repo_path(path))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn current_diff_encoding_choice(&self) -> DiffEncodingChoice {
+        self.repo_path
+            .as_ref()
+            .map(|path| self.diff_encoding_choice_for_path(path))
+            .unwrap_or_default()
+    }
+
+    fn set_current_diff_encoding(&mut self, encoding: DiffEncodingChoice) {
+        let Some(repo_path) = self.repo_path.clone() else {
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        };
+        let key = normalize_repo_path(&repo_path);
+        if encoding == DiffEncodingChoice::Auto {
+            self.diff_encoding_preferences.repositories.remove(&key);
+        } else {
+            self.diff_encoding_preferences
+                .repositories
+                .insert(key, encoding);
+        }
+        self.save_diff_encoding_preferences();
+        self.status = format!("差异编码已切换为 {}", encoding.label());
+        self.reload_visible_diffs_after_encoding_change();
+    }
+
+    fn reload_visible_diffs_after_encoding_change(&mut self) {
+        if let Some(diff) = self.diff.clone() {
+            self.load_diff(diff.path.clone(), diff.scope.clone());
+        }
+        if self.main_mode == MainMode::History
+            && let Some(path) = self.history_selected_file.clone()
+        {
+            self.select_history_file_with_reload(path, true);
+        }
     }
 
     fn save_session(&self) {
@@ -982,6 +1431,7 @@ impl RepositoryView {
                         this.repo_path = Some(snapshot.path.clone());
                         this.sync_selected_remote(&snapshot);
                         this.snapshot = Some(snapshot);
+                        this.scroll_local_branch_to_current();
                         this.reload_history_if_active();
                     }
                 });
@@ -998,6 +1448,7 @@ impl RepositoryView {
                         this.loading.metadata = false;
                         this.status = message;
                         this.merge_metadata_snapshot(snapshot);
+                        this.scroll_local_branch_to_current();
                     }
                 });
             }
@@ -1060,11 +1511,39 @@ impl RepositoryView {
                         this.snapshot = Some(snapshot);
                         this.prune_change_selection();
                         this.clear_history();
+                        this.scroll_local_branch_to_current();
                         this.reload_history_if_active();
                     }
                     if let Some(diff) = diff {
-                        this.diff = Some(diff);
+                        this.diff = Some(Arc::new(diff));
                         this.diff_headers_expanded = false;
+                        this.reset_uniform_scroll("diff-scroll");
+                    }
+                });
+            }
+            UiEvent::DiscardChangeFinished {
+                tab_id,
+                message,
+                snapshot,
+                changes,
+                load_id,
+            } => {
+                self.with_tab_context(tab_id, |this| {
+                    if load_id == this.repository_load_id {
+                        this.busy = false;
+                        this.loading = RepositoryLoading::default();
+                        this.status = message;
+                        this.last_error = None;
+                        this.repo_path = Some(snapshot.path.clone());
+                        this.sync_selected_remote(&snapshot);
+                        this.snapshot = Some(snapshot);
+                        this.replace_changes(changes);
+                        this.diff = None;
+                        this.diff_headers_expanded = false;
+                        this.reset_uniform_scroll("diff-scroll");
+                        this.clear_history();
+                        this.scroll_local_branch_to_current();
+                        this.reload_history_if_active();
                     }
                 });
             }
@@ -1144,8 +1623,9 @@ impl RepositoryView {
                         && this.history_selected_file.as_deref() == Some(path.as_str())
                     {
                         this.history_loading.diff = false;
-                        this.history_diff = Some(diff);
+                        this.history_diff = Some(Arc::new(diff));
                         this.history_diff_headers_expanded = false;
+                        this.reset_uniform_scroll("history-diff-scroll");
                         this.status = "提交差异已加载".to_string();
                     }
                 });
@@ -1181,13 +1661,15 @@ impl RepositoryView {
                 });
                 self.save_credential = false;
                 self.credential_scope = CredentialScope::RemoteUrl;
-                self.credential_username.value = request
-                    .username_from_url
-                    .clone()
-                    .unwrap_or_else(|| "git".to_string());
-                self.credential_secret.value.clear();
-                self.credential_key_path.value.clear();
-                self.credential_passphrase.value.clear();
+                self.credential_username.set_value(
+                    request
+                        .username_from_url
+                        .clone()
+                        .unwrap_or_else(|| "git".to_string()),
+                );
+                self.credential_secret.clear();
+                self.credential_key_path.clear();
+                self.credential_passphrase.clear();
                 self.enqueue_credential_request(PendingCredential { tab_id, request });
             }
         }
@@ -1270,14 +1752,33 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
+        let control = event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
+        let shift = event.keystroke.modifiers.shift;
 
         match key {
+            "left" | "arrowleft" => {
+                self.field_mut(field).move_left(shift);
+                cx.notify();
+            }
+            "right" | "arrowright" => {
+                self.field_mut(field).move_right(shift);
+                cx.notify();
+            }
+            "home" => {
+                self.field_mut(field).move_caret_to(0, shift);
+                cx.notify();
+            }
+            "end" => {
+                let end = self.field(field).value.len();
+                self.field_mut(field).move_caret_to(end, shift);
+                cx.notify();
+            }
             "backspace" => {
-                self.field_mut(field).value.pop();
+                self.field_mut(field).delete_backward();
                 cx.notify();
             }
             "delete" => {
-                self.field_mut(field).value.clear();
+                self.field_mut(field).delete_forward();
                 cx.notify();
             }
             "enter" => {
@@ -1303,10 +1804,23 @@ impl RepositoryView {
                 }
             }
             _ => {
-                if (event.keystroke.modifiers.control || event.keystroke.modifiers.platform)
-                    && key.eq_ignore_ascii_case("v")
-                {
-                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                if control {
+                    if key.eq_ignore_ascii_case("a") {
+                        self.field_mut(field).select_all();
+                        cx.notify();
+                    } else if key.eq_ignore_ascii_case("c") {
+                        if let Some(text) = self.field(field).copyable_selected_text() {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        }
+                    } else if key.eq_ignore_ascii_case("x") {
+                        if let Some(text) = self.field(field).copyable_selected_text() {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                            self.field_mut(field).delete_selection();
+                            cx.notify();
+                        }
+                    } else if key.eq_ignore_ascii_case("v")
+                        && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+                    {
                         self.push_field_text(field, &text);
                         cx.notify();
                     }
@@ -1322,12 +1836,8 @@ impl RepositoryView {
     }
 
     fn push_field_text(&mut self, field: FieldId, text: &str) {
-        let field_state = self.field_mut(field);
-        if field != FieldId::CommitMessage {
-            field_state.value.push_str(&text.replace(['\r', '\n'], ""));
-        } else {
-            field_state.value.push_str(text);
-        }
+        let multiline = field == FieldId::CommitMessage;
+        self.field_mut(field).insert_text(text, multiline);
     }
 
     fn focused_field(&self, window: &Window, _cx: &App) -> Option<FieldId> {
@@ -1382,12 +1892,14 @@ impl RepositoryView {
 
     fn browse_clone_target(&mut self) {
         if let Some(path) = rfd::FileDialog::new().pick_folder() {
-            self.clone_path.value = path.display().to_string();
+            self.clone_path.set_value(path.display().to_string());
         }
     }
 
     fn open_clone_dialog(&mut self, window: &mut Window) {
         self.close_popups();
+        self.clone_url.clear();
+        self.clone_path.clear();
         self.active_dialog = Some(DialogState::CloneRepo);
         self.last_error = None;
         window.focus(&self.clone_url.focus);
@@ -1399,14 +1911,14 @@ impl RepositoryView {
             return;
         }
         self.close_popups();
-        self.branch_name.value.clear();
+        self.branch_name.clear();
         self.active_dialog = Some(DialogState::CreateBranch);
         self.last_error = None;
     }
 
     pub(crate) fn open_rename_branch_dialog(&mut self, branch: String) {
         self.close_popups();
-        self.branch_rename.value = branch.clone();
+        self.branch_rename.set_value(branch.clone());
         self.active_dialog = Some(DialogState::RenameBranch { branch });
         self.last_error = None;
     }
@@ -1418,6 +1930,8 @@ impl RepositoryView {
         self.tag_context_menu = None;
         self.stash_context_menu = None;
         self.commit_context_menu = None;
+        self.encoding_menu_target = None;
+        self.encoding_menu_closed_by_capture = None;
     }
 
     fn close_dialog(&mut self) {
@@ -1514,10 +2028,21 @@ impl RepositoryView {
         let url = self.clone_url.value.trim().to_string();
         let path_text = self.clone_path.value.trim().to_string();
         if url.is_empty() || path_text.is_empty() {
-            self.last_error = Some("需要填写远程仓库 URL 和目标文件夹".into());
+            self.last_error = Some("需要填写远程仓库 URL 和克隆到父文件夹".into());
             return;
         }
-        let path = PathBuf::from(path_text.clone());
+        if infer_clone_directory_name(&url).is_none() {
+            self.last_error = Some("无法从远程仓库 URL 推导仓库文件夹名".into());
+            return;
+        };
+        let Some(path) = infer_clone_target_path(&url, &path_text) else {
+            self.last_error = Some("需要填写远程仓库 URL 和克隆到父文件夹".into());
+            return;
+        };
+        if path.exists() {
+            self.last_error = Some("目标仓库文件夹已存在".into());
+            return;
+        }
         let key = normalize_repo_path(&path);
         if let Some(tab) = self
             .tabs
@@ -1534,7 +2059,7 @@ impl RepositoryView {
         let service = self.service_for_tab(tab_id);
         self.spawn_operation_for_tab(Some(tab_id), "正在克隆仓库", move || {
             service
-                .clone_repo(&url, &RepoPath::new(path_text))
+                .clone_repo(&url, &RepoPath::new(path))
                 .map(|snapshot| UiEvent::OperationFinished {
                     tab_id: Some(tab_id),
                     message: "克隆完成".to_string(),
@@ -1878,6 +2403,13 @@ impl RepositoryView {
         self.last_error = None;
     }
 
+    fn open_discard_change_confirm_dialog(&mut self, path: String, scope: DiffScope) {
+        self.close_popups();
+        self.select_only_change(path.clone(), scope.clone(), false);
+        self.active_dialog = Some(DialogState::ConfirmDiscardChange { path, scope });
+        self.last_error = None;
+    }
+
     fn reset_to_commit(&mut self, oid: String, mode: ResetMode) {
         self.with_repo("分支已重置", move |service, repo| {
             service.reset_to_commit(repo, &oid, mode)
@@ -1890,11 +2422,141 @@ impl RepositoryView {
         });
     }
 
+    fn discard_change(&mut self, path: String, scope: DiffScope) {
+        let message = match scope {
+            DiffScope::Staged => "已回滚文件全部更改",
+            DiffScope::Unstaged => "已回滚未暂存更改",
+        };
+        let Some(tab_id) = self.active_tab_id() else {
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        };
+        let Some(repo_path) = self.repo_path.clone() else {
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        };
+        self.close_dialog();
+        self.change_context_menu = None;
+        self.change_selection.selected_mut(&scope).remove(&path);
+        self.clear_change_anchor_if_empty(&scope);
+        self.diff = None;
+        self.diff_headers_expanded = false;
+        self.reset_uniform_scroll("diff-scroll");
+
+        let service = self.service_for_tab(tab_id);
+        let load_id = {
+            let Some(tab) = self.tab_mut(tab_id) else {
+                return;
+            };
+            tab.repository_load_id = tab.repository_load_id.wrapping_add(1);
+            tab.repository_load_id
+        };
+        self.spawn_operation_without_load_bump(
+            Some(tab_id),
+            "正在回滚文件更改",
+            move || {
+                let mut repo = Repository::open(repo_path)?;
+                let path = PathBuf::from(path);
+                let snapshot = match scope {
+                    DiffScope::Staged => service.discard_all_path(&mut repo, &path)?,
+                    DiffScope::Unstaged => service.discard_unstaged_path(&mut repo, &path)?,
+                };
+                let changes = service.status_full(&repo)?;
+                Ok(UiEvent::DiscardChangeFinished {
+                    tab_id,
+                    message: message.to_string(),
+                    snapshot,
+                    changes,
+                    load_id,
+                })
+            },
+        );
+    }
+
+    fn spawn_operation_without_load_bump<F>(
+        &mut self,
+        tab_id: Option<RepoTabId>,
+        started: &'static str,
+        f: F,
+    ) where
+        F: FnOnce() -> khaslana::Result<UiEvent> + Send + 'static,
+    {
+        if let Some(tab_id) = tab_id
+            && self.tab(tab_id).is_none()
+        {
+            return;
+        }
+        let busy = tab_id
+            .and_then(|id| self.tab(id).map(|tab| tab.busy))
+            .unwrap_or(self.busy);
+        if busy {
+            self.apply_status_event(tab_id, |this| {
+                this.last_error = Some("已有操作正在运行".into());
+            });
+            return;
+        }
+        self.close_popups();
+        self.apply_status_event(tab_id, |this| {
+            this.loading = RepositoryLoading::default();
+            this.busy = true;
+            this.status = started.to_string();
+            this.last_error = None;
+        });
+        let tx = self.tx.clone();
+        send_ui_event(
+            &tx,
+            UiEvent::OperationStarted {
+                tab_id,
+                message: started.to_string(),
+            },
+        );
+        thread::spawn(move || match f() {
+            Ok(event) => {
+                send_ui_event(&tx, event);
+            }
+            Err(err) => {
+                send_ui_event(
+                    &tx,
+                    UiEvent::OperationFailed {
+                        tab_id,
+                        error: err.to_string(),
+                    },
+                );
+            }
+        });
+    }
+
     pub(crate) fn copy_commit_sha(&mut self, oid: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(oid));
         self.commit_context_menu = None;
         self.status = "已复制提交 SHA".into();
         self.last_error = None;
+    }
+
+    fn toggle_encoding_menu(&mut self, target: EncodingMenuTarget) {
+        if self.encoding_menu_closed_by_capture == Some(target) {
+            self.encoding_menu_closed_by_capture = None;
+            self.encoding_menu_target = None;
+            return;
+        }
+        self.encoding_menu_closed_by_capture = None;
+        self.branch_context_menu = None;
+        self.change_context_menu = None;
+        self.tag_context_menu = None;
+        self.stash_context_menu = None;
+        self.commit_context_menu = None;
+        self.active_dialog = None;
+        self.encoding_menu_target = if self.encoding_menu_target == Some(target) {
+            None
+        } else {
+            Some(target)
+        };
+    }
+
+    fn choose_diff_encoding(&mut self, encoding: DiffEncodingChoice) {
+        self.encoding_menu_target = None;
+        self.encoding_menu_closed_by_capture = None;
+        self.set_current_diff_encoding(encoding);
     }
 
     fn change_paths(&self, scope: DiffScope) -> Vec<String> {
@@ -1957,6 +2619,17 @@ impl RepositoryView {
         match scope {
             DiffScope::Staged => self.change_selection.staged_anchor = None,
             DiffScope::Unstaged => self.change_selection.unstaged_anchor = None,
+        }
+    }
+
+    fn select_only_change(&mut self, path: String, scope: DiffScope, load_diff: bool) {
+        self.change_selection.clear();
+        self.change_selection
+            .selected_mut(&scope)
+            .insert(path.clone());
+        self.change_selection.set_anchor(&scope, path.clone());
+        if load_diff {
+            self.load_diff(path, scope);
         }
     }
 
@@ -2035,42 +2708,38 @@ impl RepositoryView {
         }
     }
 
-    fn open_change_context_menu(&mut self, path: String, scope: DiffScope, event: &MouseDownEvent) {
-        self.ensure_change_context_selection(path, scope.clone());
+    fn open_change_context_menu(
+        &mut self,
+        path: String,
+        scope: DiffScope,
+        event: &MouseDownEvent,
+        window: &Window,
+    ) {
+        self.ensure_change_context_selection(path.clone(), scope.clone());
         self.branch_context_menu = None;
         self.tag_context_menu = None;
         self.stash_context_menu = None;
         self.commit_context_menu = None;
+        self.encoding_menu_target = None;
         self.active_dialog = None;
-        self.change_context_menu = Some(ChangeContextMenu {
-            scope,
-            x: event.position.x.into(),
-            y: event.position.y.into(),
-        });
+        let (x, y) = clamped_menu_position(event, window, CHANGE_MENU_WIDTH, CHANGE_MENU_HEIGHT);
+        self.change_context_menu = Some(ChangeContextMenu { path, scope, x, y });
     }
 
     fn mouse_down_inside_context_menu(&self, event: &MouseDownEvent) -> bool {
         let x: f32 = event.position.x.into();
         let y: f32 = event.position.y.into();
-        self.branch_context_menu
-            .as_ref()
-            .is_some_and(|menu| point_in_menu(x, y, menu.x, menu.y, 190.0, 230.0))
-            || self
-                .change_context_menu
-                .as_ref()
-                .is_some_and(|menu| point_in_menu(x, y, menu.x, menu.y, 210.0, 170.0))
-            || self
-                .tag_context_menu
-                .as_ref()
-                .is_some_and(|menu| point_in_menu(x, y, menu.x, menu.y, 170.0, 80.0))
-            || self
-                .stash_context_menu
-                .as_ref()
-                .is_some_and(|menu| point_in_menu(x, y, menu.x, menu.y, 170.0, 110.0))
-            || self
-                .commit_context_menu
-                .as_ref()
-                .is_some_and(|menu| point_in_menu(x, y, menu.x, menu.y, 230.0, 230.0))
+        self.branch_context_menu.as_ref().is_some_and(|menu| {
+            point_in_menu(x, y, menu.x, menu.y, BRANCH_MENU_WIDTH, BRANCH_MENU_HEIGHT)
+        }) || self.change_context_menu.as_ref().is_some_and(|menu| {
+            point_in_menu(x, y, menu.x, menu.y, CHANGE_MENU_WIDTH, CHANGE_MENU_HEIGHT)
+        }) || self.tag_context_menu.as_ref().is_some_and(|menu| {
+            point_in_menu(x, y, menu.x, menu.y, TAG_MENU_WIDTH, TAG_MENU_HEIGHT)
+        }) || self.stash_context_menu.as_ref().is_some_and(|menu| {
+            point_in_menu(x, y, menu.x, menu.y, STASH_MENU_WIDTH, STASH_MENU_HEIGHT)
+        }) || self.commit_context_menu.as_ref().is_some_and(|menu| {
+            point_in_menu(x, y, menu.x, menu.y, COMMIT_MENU_WIDTH, COMMIT_MENU_HEIGHT)
+        })
     }
 
     pub(crate) fn open_commit_context_menu(
@@ -2080,20 +2749,23 @@ impl RepositoryView {
         summary: String,
         parent_count: usize,
         event: &MouseDownEvent,
+        window: &Window,
     ) {
         self.select_history_commit(oid.clone());
         self.branch_context_menu = None;
         self.change_context_menu = None;
         self.tag_context_menu = None;
         self.stash_context_menu = None;
+        self.encoding_menu_target = None;
         self.active_dialog = None;
+        let (x, y) = clamped_menu_position(event, window, COMMIT_MENU_WIDTH, COMMIT_MENU_HEIGHT);
         self.commit_context_menu = Some(CommitContextMenu {
             oid,
             short_oid,
             summary,
             parent_count,
-            x: event.position.x.into(),
-            y: event.position.y.into(),
+            x,
+            y,
         });
     }
 
@@ -2201,10 +2873,12 @@ impl RepositoryView {
 
     fn toggle_diff_headers(&mut self) {
         self.diff_headers_expanded = !self.diff_headers_expanded;
+        self.reset_uniform_scroll("diff-scroll");
     }
 
     fn toggle_history_diff_headers(&mut self) {
         self.history_diff_headers_expanded = !self.history_diff_headers_expanded;
+        self.reset_uniform_scroll("history-diff-scroll");
     }
 
     fn set_main_mode(&mut self, mode: MainMode) {
@@ -2321,6 +2995,7 @@ impl RepositoryView {
         self.history_selected_file = None;
         self.history_diff = None;
         self.history_diff_headers_expanded = false;
+        self.reset_uniform_scroll("history-diff-scroll");
         self.history_loading.files = true;
         self.history_loading.diff = false;
         self.status = "正在加载提交文件".to_string();
@@ -2366,10 +3041,15 @@ impl RepositoryView {
     }
 
     pub(crate) fn select_history_file(&mut self, path: String) {
+        self.select_history_file_with_reload(path, false);
+    }
+
+    fn select_history_file_with_reload(&mut self, path: String, force_reload: bool) {
         let Some(commit_oid) = self.history_selected_commit.clone() else {
             return;
         };
-        if self.history_selected_file.as_deref() == Some(path.as_str())
+        if !force_reload
+            && self.history_selected_file.as_deref() == Some(path.as_str())
             && self.history_diff.is_some()
         {
             return;
@@ -2378,6 +3058,7 @@ impl RepositoryView {
         self.history_selected_file = Some(path.clone());
         self.history_diff = None;
         self.history_diff_headers_expanded = false;
+        self.reset_uniform_scroll("history-diff-scroll");
         self.history_loading.diff = true;
         self.status = "正在加载提交差异".to_string();
 
@@ -2387,6 +3068,7 @@ impl RepositoryView {
         let Some(repo_path) = self.repo_path.clone() else {
             return;
         };
+        let encoding = self.diff_encoding_choice_for_path(&repo_path);
         let service = self.service_for_tab(tab_id);
         let tx = self.tx.clone();
         let load_id = self.repository_load_id;
@@ -2394,7 +3076,8 @@ impl RepositoryView {
         thread::spawn(move || {
             let result = (|| -> khaslana::Result<UiEvent> {
                 let repo = Repository::open(repo_path)?;
-                let diff = service.commit_file_diff(&repo, &commit_oid, Path::new(&path))?;
+                let diff =
+                    service.commit_file_diff(&repo, &commit_oid, Path::new(&path), encoding)?;
                 Ok(UiEvent::HistoryDiffLoaded {
                     tab_id,
                     commit_oid,
@@ -2478,24 +3161,26 @@ impl RepositoryView {
             self.last_error = Some("需要填写提交信息".into());
             return;
         }
-        self.commit_message.value.clear();
+        self.commit_message.clear();
         self.with_repo("提交完成", move |service, repo| {
             service.commit(repo, &CommitMessage::new(message))
         });
     }
 
     fn load_diff(&mut self, path: String, scope: DiffScope) {
+        self.reset_uniform_scroll("diff-scroll");
         let Some(tab_id) = self.active_tab_id() else {
             return;
         };
         let Some(repo_path) = self.repo_path.clone() else {
             return;
         };
+        let encoding = self.diff_encoding_choice_for_path(&repo_path);
         let service = self.service_for_tab(tab_id);
         self.spawn_operation_for_tab(Some(tab_id), "正在加载差异", move || {
             let repo = Repository::open(repo_path)?;
             service
-                .diff_for_path(&repo, Path::new(&path), scope)
+                .diff_for_path(&repo, Path::new(&path), scope, encoding)
                 .map(|diff| UiEvent::OperationFinished {
                     tab_id: Some(tab_id),
                     message: "差异已加载".to_string(),
@@ -2751,16 +3436,20 @@ impl RepositoryView {
         let field = self.field(id);
         let focused = field.focus.is_focused(window);
         let empty = field.value.is_empty();
+        let display = field.display_text();
+        let selection = field.selected_range();
+        let selection_display = selection.clone().map(|range| {
+            field.display_byte_for_value_byte(range.start)
+                ..field.display_byte_for_value_byte(range.end)
+        });
+        let caret_display = field.display_byte_for_value_byte(field.caret);
+        let field_for_click = field.clone();
+        let focus = field.focus.clone();
+        let entity = cx.entity();
         div()
             .id(format!("field-{id:?}"))
+            .relative()
             .track_focus(&field.focus)
-            .on_mouse_down(MouseButton::Left, {
-                let focus = field.focus.clone();
-                move |_event, window, cx| {
-                    window.focus(&focus);
-                    cx.stop_propagation();
-                }
-            })
             .on_key_down(cx.listener(move |this, event, window, cx| {
                 this.handle_field_key(id, event, window, cx);
                 cx.stop_propagation();
@@ -2769,6 +3458,8 @@ impl RepositoryView {
             .py_1()
             .min_h(if compact { px(26.0) } else { px(32.0) })
             .w_full()
+            .flex()
+            .items_center()
             .rounded_sm()
             .border_1()
             .border_color(if focused {
@@ -2782,12 +3473,53 @@ impl RepositoryView {
                 rgb(COLOR_SURFACE)
             })
             .text_size(px(12.0))
-            .text_color(if empty {
-                rgb(COLOR_TEXT_FAINT)
-            } else {
-                rgb(COLOR_TEXT)
-            })
-            .child(field.display())
+            .cursor(CursorStyle::IBeam)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .children(input_segments(
+                        display,
+                        field.placeholder.to_string(),
+                        empty,
+                        focused,
+                        selection_display,
+                        caret_display,
+                    )),
+            )
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, _cx| {
+                        let focus = focus.clone();
+                        let field_for_click = field_for_click.clone();
+                        let entity = entity.clone();
+                        window.on_mouse_event(move |event: &MouseDownEvent, _phase, window, cx| {
+                            if event.button != MouseButton::Left
+                                || !bounds.contains(&event.position)
+                            {
+                                return;
+                            }
+                            window.focus(&focus);
+                            let local_x = f32::from(event.position.x - bounds.left()) - 8.0;
+                            let byte = field_for_click.byte_for_approx_x(local_x.max(0.0));
+                            entity.update(cx, |this, cx| {
+                                this.field_mut(id)
+                                    .move_caret_to(byte, event.modifiers.shift);
+                                cx.notify();
+                            });
+                            cx.stop_propagation();
+                        });
+                    },
+                )
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .right(px(0.0))
+                .bottom(px(0.0)),
+            )
     }
 
     fn render_toolbar(&self, _window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2875,7 +3607,8 @@ impl RepositoryView {
             return div().into_any_element();
         }
 
-        div()
+        let handle = self.scroll_handle("repo-tab-bar-scroll");
+        let content = div()
             .id("repo-tab-bar-scroll")
             .flex()
             .items_center()
@@ -2888,13 +3621,23 @@ impl RepositoryView {
             .border_color(rgb(COLOR_BORDER))
             .bg(rgb(COLOR_HEADER_BG))
             .overflow_x_scroll()
+            .track_scroll(&handle)
             .children(
                 self.tabs
                     .iter()
                     .map(|tab| self.render_repo_tab(tab, cx).into_any_element())
                     .collect::<Vec<_>>(),
             )
-            .into_any_element()
+            .into_any_element();
+
+        scrollable_frame_intrinsic(
+            "repo-tab-bar-scroll",
+            ScrollbarMode::Horizontal,
+            content,
+            handle,
+            cx,
+        )
+        .into_any_element()
     }
 
     fn render_repo_tab(&self, tab: &RepoTabState, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2985,7 +3728,7 @@ impl RepositoryView {
             .absolute()
             .left(px(menu.x))
             .top(px(menu.y))
-            .w(px(170.0))
+            .w(px(TAG_MENU_WIDTH))
             .py_1()
             .rounded_sm()
             .border_1()
@@ -3016,7 +3759,7 @@ impl RepositoryView {
             .absolute()
             .left(px(menu.x))
             .top(px(menu.y))
-            .w(px(170.0))
+            .w(px(STASH_MENU_WIDTH))
             .py_1()
             .rounded_sm()
             .border_1()
@@ -3058,7 +3801,7 @@ impl RepositoryView {
             .absolute()
             .left(px(menu.x))
             .top(px(menu.y))
-            .w(px(210.0))
+            .w(px(CHANGE_MENU_WIDTH))
             .py_1()
             .rounded_sm()
             .border_1()
@@ -3067,7 +3810,13 @@ impl RepositoryView {
             .shadow_lg()
             .flex()
             .flex_col()
-            .text_size(px(12.0));
+            .text_size(px(12.0))
+            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .on_mouse_down(MouseButton::Right, |_event, _window, cx| {
+                cx.stop_propagation();
+            });
 
         menu_el = match menu.scope {
             DiffScope::Staged => menu_el
@@ -3082,6 +3831,19 @@ impl RepositoryView {
                     all_count > 0 && !self.busy,
                     |this| this.unstage_all(),
                     cx,
+                ))
+                .child(menu_separator())
+                .child(context_menu_item(
+                    "回滚更改...",
+                    !self.busy,
+                    {
+                        let path = menu.path.clone();
+                        let scope = menu.scope.clone();
+                        move |this| {
+                            this.open_discard_change_confirm_dialog(path.clone(), scope.clone())
+                        }
+                    },
+                    cx,
                 )),
             DiffScope::Unstaged => menu_el
                 .child(context_menu_item(
@@ -3094,6 +3856,19 @@ impl RepositoryView {
                     "暂存所有文件",
                     all_count > 0 && !self.busy,
                     |this| this.stage_all(),
+                    cx,
+                ))
+                .child(menu_separator())
+                .child(context_menu_item(
+                    "回滚更改...",
+                    !self.busy,
+                    {
+                        let path = menu.path.clone();
+                        let scope = menu.scope.clone();
+                        move |this| {
+                            this.open_discard_change_confirm_dialog(path.clone(), scope.clone())
+                        }
+                    },
                     cx,
                 )),
         };
@@ -3111,7 +3886,7 @@ impl RepositoryView {
             .absolute()
             .left(px(menu.x))
             .top(px(menu.y))
-            .w(px(230.0))
+            .w(px(COMMIT_MENU_WIDTH))
             .py_1()
             .rounded_sm()
             .border_1()
@@ -3226,6 +4001,92 @@ impl RepositoryView {
             .child("复制 SHA 到剪贴板")
     }
 
+    pub(crate) fn render_encoding_dropdown(
+        &self,
+        target: EncodingMenuTarget,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        if self.encoding_menu_target != Some(target) {
+            return div().into_any_element();
+        }
+        let current = self.current_diff_encoding_choice();
+        let title = match target {
+            EncodingMenuTarget::Worktree => "工作区差异编码",
+            EncodingMenuTarget::History => "提交差异编码",
+        };
+
+        div()
+            .absolute()
+            .top(px(38.0))
+            .right(px(12.0))
+            .w(px(ENCODING_MENU_WIDTH))
+            .rounded_sm()
+            .border_1()
+            .border_color(rgb(COLOR_BORDER_STRONG))
+            .bg(rgb(COLOR_SURFACE))
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .text_size(px(12.0))
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .on_mouse_down(MouseButton::Right, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_size(px(11.0))
+                    .text_color(rgb(COLOR_TEXT_FAINT))
+                    .child(title),
+            )
+            .child(menu_separator())
+            .child(self.encoding_menu_item(DiffEncodingChoice::Auto, current, cx))
+            .child(self.encoding_menu_item(DiffEncodingChoice::Utf8, current, cx))
+            .child(self.encoding_menu_item(DiffEncodingChoice::Gb18030, current, cx))
+            .child(self.encoding_menu_item(DiffEncodingChoice::Big5, current, cx))
+            .into_any_element()
+    }
+
+    fn encoding_menu_item(
+        &self,
+        choice: DiffEncodingChoice,
+        current: DiffEncodingChoice,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let selected = choice == current;
+        let label = if selected {
+            format!("✓ {}", choice.label())
+        } else {
+            format!("  {}", choice.label())
+        };
+        div()
+            .id(format!("context-menu-encoding-{}", choice.label()))
+            .px_3()
+            .py_1()
+            .text_color(if selected {
+                rgb(COLOR_BLUE_DARK)
+            } else {
+                rgb(COLOR_TEXT)
+            })
+            .bg(if selected {
+                rgb(COLOR_BLUE_SOFT)
+            } else {
+                rgb(COLOR_SURFACE)
+            })
+            .cursor_pointer()
+            .hover(|this| this.bg(rgb(COLOR_BLUE_SOFT)))
+            .on_click(cx.listener(move |this, _event, _window, cx| {
+                cx.stop_propagation();
+                this.choose_diff_encoding(choice);
+                cx.notify();
+            }))
+            .child(label)
+    }
+
     fn render_changes(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let changes = self
             .snapshot
@@ -3268,6 +4129,7 @@ impl RepositoryView {
                 "暂存区加载中...",
                 self.loading.staged(),
                 staged_rows,
+                has_staged || self.loading.staged(),
                 vec![
                         self.button(
                             "取消暂存选定文件",
@@ -3284,6 +4146,7 @@ impl RepositoryView {
                         )
                         .into_any_element(),
                     ],
+                cx,
             ))
             .child(div().flex_none().h(px(1.0)).bg(rgb(COLOR_BORDER)))
             .child(self.render_change_section(
@@ -3292,6 +4155,7 @@ impl RepositoryView {
                 "修改区加载中...",
                 self.loading.unstaged(),
                 unstaged_rows,
+                has_unstaged || self.loading.unstaged(),
                 vec![
                         self.button(
                             "暂存选定文件",
@@ -3308,6 +4172,7 @@ impl RepositoryView {
                         )
                         .into_any_element(),
                     ],
+                cx,
             ))
     }
 
@@ -3318,7 +4183,9 @@ impl RepositoryView {
         loading_text: &'static str,
         loading: bool,
         rows: Vec<gpui::AnyElement>,
+        content_present: bool,
         actions: Vec<gpui::AnyElement>,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let rows = if rows.is_empty() && loading {
             vec![placeholder_row(loading_text).into_any_element()]
@@ -3359,8 +4226,9 @@ impl RepositoryView {
                             .children(actions),
                     ),
             )
-            .child(
-                div()
+            .child({
+                let handle = self.scroll_handle(id);
+                let content = div()
                     .id(id)
                     .flex()
                     .flex_col()
@@ -3370,8 +4238,18 @@ impl RepositoryView {
                     .min_h(px(0.0))
                     .p_2()
                     .overflow_scroll()
-                    .children(rows),
-            )
+                    .track_scroll(&handle)
+                    .children(rows)
+                    .into_any_element();
+                scrollable_frame_when(
+                    id,
+                    ScrollbarMode::Both,
+                    content,
+                    handle,
+                    content_present,
+                    cx,
+                )
+            })
     }
 
     pub(crate) fn render_column_splitter(
@@ -3547,7 +4425,7 @@ impl RepositoryView {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
-                    this.open_change_context_menu(path.clone(), scope.clone(), event);
+                    this.open_change_context_menu(path.clone(), scope.clone(), event, _window);
                     cx.notify();
                 }),
             )
@@ -3589,101 +4467,226 @@ impl RepositoryView {
             .as_ref()
             .map(|diff| format!("差异：{} ({})", diff.path, diff_scope_label(&diff.scope)))
             .unwrap_or_else(|| "差异".to_string());
-        let diff_rows = self.render_diff_rows(cx);
 
         div()
             .flex()
             .flex_col()
             .flex_1()
+            .relative()
             .min_w(px(0.0))
             .min_h(px(260.0))
-            .child(section_header(title))
-            .child(
-                div()
-                    .id("diff-scroll")
-                    .flex()
-                    .flex_col()
-                    .gap_0()
-                    .min_w(px(0.0))
-                    .p_2()
-                    .overflow_scroll()
-                    .font_family("Consolas, monospace")
-                    .text_size(px(12.0))
-                    .bg(rgb(COLOR_PANEL_BG))
-                    .children(diff_rows),
-            )
+            .child(self.diff_section_header(title, EncodingMenuTarget::Worktree, cx))
+            .child(self.render_virtual_diff(
+                "diff-scroll",
+                self.diff.clone(),
+                self.diff_headers_expanded,
+                DiffHeaderTarget::Worktree,
+                "请选择一个变更文件查看差异".to_string(),
+                cx,
+            ))
+            .child(self.render_encoding_dropdown(EncodingMenuTarget::Worktree, cx))
     }
 
-    fn render_diff_rows(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
-        let Some(diff) = self.diff.as_ref() else {
-            return vec![
-                diff_line(
-                    DiffLineKind::Context,
-                    None,
-                    None,
-                    "请选择一个变更文件查看差异".to_string(),
-                )
-                .into_any_element(),
-            ];
-        };
+    pub(crate) fn diff_render_rows(
+        &self,
+        diff: Option<&FileDiff>,
+        headers_expanded: bool,
+    ) -> Vec<DiffRenderRow> {
+        diff_render_rows_for(diff, headers_expanded)
+    }
 
-        self.render_file_diff_rows(
-            diff,
-            self.diff_headers_expanded,
-            DiffHeaderTarget::Worktree,
+    fn render_virtual_diff(
+        &self,
+        scroll_id: &'static str,
+        diff: Option<Arc<FileDiff>>,
+        headers_expanded: bool,
+        header_target: DiffHeaderTarget,
+        empty_message: String,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let rows = self.diff_render_rows(diff.as_deref(), headers_expanded);
+        let row_count = rows.len();
+        let content_present = diff.is_some() && row_count > 0;
+        let width_measure_index = rows
+            .iter()
+            .position(|row| matches!(row, DiffRenderRow::DiffLine(_)))
+            .or_else(|| row_count.checked_sub(1));
+        let handle = self.uniform_scroll_handle(scroll_id);
+        let list_handle = handle.clone();
+        let rows_for_list = rows.clone();
+        let content = div()
+            .id(scroll_id)
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .p_2()
+            .font_family("Consolas, monospace")
+            .text_size(px(12.0))
+            .bg(rgb(COLOR_PANEL_BG))
+            .child(
+                uniform_list(
+                    scroll_id,
+                    row_count,
+                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                        let diff = diff.as_deref();
+                        range
+                            .filter_map(|index| {
+                                rows_for_list.get(index).map(|row| {
+                                    this.render_diff_row(
+                                        diff,
+                                        *row,
+                                        headers_expanded,
+                                        header_target,
+                                        &empty_message,
+                                        cx,
+                                    )
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(&list_handle)
+                .with_width_from_item(width_measure_index)
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+                .flex_1()
+                .min_w(px(0.0))
+                .min_h(px(0.0)),
+            )
+            .into_any_element();
+
+        scrollable_uniform_frame(
+            scroll_id,
+            ScrollbarMode::Both,
+            content,
+            handle,
+            content_present,
             cx,
         )
     }
 
-    pub(crate) fn render_file_diff_rows(
+    fn render_diff_row(
         &self,
-        diff: &FileDiff,
+        diff: Option<&FileDiff>,
+        row: DiffRenderRow,
         headers_expanded: bool,
         header_target: DiffHeaderTarget,
+        empty_message: &str,
         cx: &mut Context<Self>,
-    ) -> Vec<gpui::AnyElement> {
-        let header_count = diff
-            .lines
-            .iter()
-            .take_while(|line| line.kind == DiffLineKind::Header)
-            .count();
-        let mut rows = Vec::new();
-
-        if header_count > 0 {
-            let summary = if headers_expanded {
-                "Diff 元信息（点击折叠）"
-            } else {
-                "Diff 元信息（点击展开）"
-            };
-            rows.push(diff_header_toggle(summary, header_target, cx).into_any_element());
-            if headers_expanded {
-                rows.extend(
-                    diff.lines.iter().take(header_count).cloned().map(|line| {
-                        diff_line(line.kind, None, None, line.content).into_any_element()
-                    }),
-                );
+    ) -> gpui::AnyElement {
+        match row {
+            DiffRenderRow::HeaderToggle => {
+                let summary = if headers_expanded {
+                    "Diff 元信息（点击折叠）"
+                } else {
+                    "Diff 元信息（点击展开）"
+                };
+                diff_header_toggle(summary, header_target, cx).into_any_element()
+            }
+            DiffRenderRow::DiffLine(index) => {
+                let Some(line) = diff.and_then(|diff| diff.lines.get(index)) else {
+                    return diff_line(DiffLineKind::Context, None, None, String::new())
+                        .into_any_element();
+                };
+                if line.kind == DiffLineKind::Header {
+                    diff_line(line.kind.clone(), None, None, line.content.clone())
+                        .into_any_element()
+                } else {
+                    diff_line(
+                        line.kind.clone(),
+                        line.old_lineno,
+                        line.new_lineno,
+                        line.content.clone(),
+                    )
+                    .into_any_element()
+                }
+            }
+            DiffRenderRow::Empty => {
+                let message = diff
+                    .map(|diff| {
+                        if diff.is_binary {
+                            "二进制文件仅显示元信息"
+                        } else {
+                            "没有可显示的文本差异"
+                        }
+                    })
+                    .unwrap_or(empty_message);
+                diff_line(DiffLineKind::Context, None, None, message.to_string()).into_any_element()
             }
         }
+    }
 
-        rows.extend(diff.lines.iter().skip(header_count).cloned().map(|line| {
-            diff_line(line.kind, line.old_lineno, line.new_lineno, line.content).into_any_element()
-        }));
-        if rows.is_empty() {
-            rows.push(
-                diff_line(
-                    DiffLineKind::Context,
-                    None,
-                    None,
-                    if diff.is_binary {
-                        "二进制文件仅显示元信息".to_string()
-                    } else {
-                        "没有可显示的文本差异".to_string()
-                    },
-                )
-                .into_any_element(),
-            );
-        }
-        rows
+    pub(crate) fn diff_section_header(
+        &self,
+        title: String,
+        target: EncodingMenuTarget,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let diff = match target {
+            EncodingMenuTarget::Worktree => self.diff.as_deref(),
+            EncodingMenuTarget::History => self.history_diff.as_deref(),
+        };
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .border_b_1()
+            .border_color(rgb(COLOR_BORDER))
+            .bg(rgb(COLOR_HEADER_BG))
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(rgb(COLOR_TEXT))
+                    .truncate()
+                    .child(title),
+            )
+            .child(self.encoding_button(diff, target, cx))
+    }
+
+    fn encoding_button(
+        &self,
+        diff: Option<&FileDiff>,
+        target: EncodingMenuTarget,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let requested = self.current_diff_encoding_choice();
+        let label = diff
+            .map(diff_encoding_label)
+            .unwrap_or_else(|| format!("编码：{}", requested.label()));
+        div()
+            .id(match target {
+                EncodingMenuTarget::Worktree => "worktree-diff-encoding",
+                EncodingMenuTarget::History => "history-diff-encoding",
+            })
+            .relative()
+            .flex_none()
+            .px_2()
+            .py_1()
+            .rounded_sm()
+            .border_1()
+            .border_color(rgb(COLOR_BORDER))
+            .bg(rgb(COLOR_SURFACE))
+            .text_color(rgb(COLOR_TEXT_MUTED))
+            .text_size(px(11.0))
+            .cursor_pointer()
+            .hover(|this| this.bg(rgb(COLOR_BLUE_SOFT)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+                    cx.stop_propagation();
+                    this.toggle_encoding_menu(target);
+                    cx.notify();
+                }),
+            )
+            .child(label)
     }
 
     fn render_commit_box(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3874,6 +4877,9 @@ impl RepositoryView {
             DialogState::ConfirmRevert { oid, summary } => self
                 .render_confirm_revert_dialog(oid, summary, cx)
                 .into_any_element(),
+            DialogState::ConfirmDiscardChange { path, scope } => self
+                .render_confirm_discard_change_dialog(path, scope, cx)
+                .into_any_element(),
             DialogState::CredentialManager => {
                 self.render_credential_manager_dialog(cx).into_any_element()
             }
@@ -3906,9 +4912,24 @@ impl RepositoryView {
     }
 
     fn render_clone_dialog(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let preview = infer_clone_target_path(&self.clone_url.value, &self.clone_path.value)
+            .map(|path| path.display().to_string());
         self.dialog_panel("克隆仓库", cx)
             .child(self.input(FieldId::CloneUrl, false, window, cx))
             .child(self.input(FieldId::ClonePath, false, window, cx))
+            .child(
+                div()
+                    .px_2()
+                    .text_size(px(12.0))
+                    .text_color(rgb(if preview.is_some() {
+                        COLOR_TEXT_MUTED
+                    } else {
+                        COLOR_TEXT_FAINT
+                    }))
+                    .child(preview.unwrap_or_else(|| {
+                        "填写远程仓库 URL 和父文件夹后显示最终代码路径".to_string()
+                    })),
+            )
             .child(
                 div()
                     .flex()
@@ -4071,6 +5092,51 @@ impl RepositoryView {
             )
     }
 
+    fn render_confirm_discard_change_dialog(
+        &self,
+        path: String,
+        scope: DiffScope,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let help = match scope {
+            DiffScope::Staged => {
+                "将丢弃该文件全部未提交更改，包括暂存区和工作区。新增文件会被删除，删除文件会被恢复。此操作无法从 Khaslana 内撤销。"
+            }
+            DiffScope::Unstaged => {
+                "将仅丢弃该文件尚未暂存的更改，已暂存内容会保留。未跟踪新增文件会被删除。此操作无法从 Khaslana 内撤销。"
+            }
+        };
+        self.dialog_panel("确认回滚更改", cx)
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(COLOR_TEXT))
+                    .child(format!("目标文件：{path}")),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(COLOR_TEXT_MUTED))
+                    .child(help),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(
+                        "确认回滚",
+                        !self.busy,
+                        {
+                            let path = path.clone();
+                            move |this, _, _| this.discard_change(path.clone(), scope.clone())
+                        },
+                        cx,
+                    )),
+            )
+    }
+
     fn render_credential_manager_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = if self.credential_records.is_empty() {
             vec![
@@ -4140,8 +5206,9 @@ impl RepositoryView {
                     .border_color(rgb(COLOR_BORDER))
                     .rounded_sm()
                     .child(self.credential_manager_header())
-                    .child(
-                        div()
+                    .child({
+                        let handle = self.scroll_handle("credential-record-list");
+                        let content = div()
                             .id("credential-record-list")
                             .flex()
                             .flex_col()
@@ -4150,8 +5217,17 @@ impl RepositoryView {
                             .min_w(px(0.0))
                             .min_h(px(0.0))
                             .overflow_y_scroll()
-                            .children(rows),
-                    ),
+                            .track_scroll(&handle)
+                            .children(rows)
+                            .into_any_element();
+                        scrollable_frame(
+                            "credential-record-list",
+                            ScrollbarMode::Vertical,
+                            content,
+                            handle,
+                            cx,
+                        )
+                    }),
             )
             .child(div().flex().justify_end().child(self.button(
                 "关闭",
@@ -4378,6 +5454,7 @@ impl Render for RepositoryView {
             .text_color(rgb(COLOR_TEXT))
             .on_key_down(cx.listener(Self::handle_key))
             .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                this.encoding_menu_closed_by_capture = None;
                 if this.mouse_down_inside_context_menu(event) {
                     return;
                 }
@@ -4386,12 +5463,16 @@ impl Render for RepositoryView {
                     || this.tag_context_menu.is_some()
                     || this.stash_context_menu.is_some()
                     || this.commit_context_menu.is_some()
+                    || this.encoding_menu_target.is_some()
                 {
+                    let closed_encoding_menu = this.encoding_menu_target;
                     this.branch_context_menu = None;
                     this.change_context_menu = None;
                     this.tag_context_menu = None;
                     this.stash_context_menu = None;
                     this.commit_context_menu = None;
+                    this.encoding_menu_target = None;
+                    this.encoding_menu_closed_by_capture = closed_encoding_menu;
                     cx.notify();
                 }
             }))
@@ -4452,6 +5533,46 @@ fn normalize_repo_path(path: &Path) -> String {
         .to_lowercase()
 }
 
+fn infer_clone_directory_name(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let without_fragment = trimmed.split('#').next().unwrap_or(trimmed);
+    let without_query = without_fragment
+        .split('?')
+        .next()
+        .unwrap_or(without_fragment)
+        .trim_end_matches('/');
+    let path_part = if let Some((_, rest)) = without_query.split_once("://") {
+        let (_, path) = rest.split_once('/')?;
+        path
+    } else {
+        without_query
+    };
+    let last_segment = path_part
+        .rsplit(['/', ':'])
+        .find(|segment| !segment.trim().is_empty())?;
+    let name = last_segment
+        .strip_suffix(".git")
+        .unwrap_or(last_segment)
+        .trim();
+    let invalid = name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.chars().any(|ch| {
+            matches!(ch, '<' | '>' | '"' | '|' | '?' | '*' | '\\')
+                || ch.is_control()
+                || ch == std::path::MAIN_SEPARATOR
+        });
+    (!invalid).then(|| name.to_string())
+}
+
+fn infer_clone_target_path(url: &str, parent_path: &str) -> Option<PathBuf> {
+    let parent_path = parent_path.trim();
+    if parent_path.is_empty() {
+        return None;
+    }
+    infer_clone_directory_name(url).map(|name| PathBuf::from(parent_path).join(name))
+}
+
 fn short_oid(oid: &str) -> &str {
     oid.get(..8).unwrap_or(oid)
 }
@@ -4472,6 +5593,19 @@ fn reset_mode_help(mode: ResetMode) -> &'static str {
     }
 }
 
+fn diff_encoding_label(diff: &FileDiff) -> String {
+    let base = if diff.encoding.requested == DiffEncodingChoice::Auto {
+        format!("编码：自动({})", diff.encoding.resolved.label())
+    } else {
+        format!("编码：{}", diff.encoding.requested.label())
+    };
+    if diff.encoding.lossy {
+        format!("{base}，有替换")
+    } else {
+        base
+    }
+}
+
 fn timestamp_label(seconds: i64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0)
         .map(|time| {
@@ -4480,6 +5614,109 @@ fn timestamp_label(seconds: i64) -> String {
                 .to_string()
         })
         .unwrap_or_else(|| "-".to_string())
+}
+
+fn input_segments(
+    display: String,
+    placeholder: String,
+    empty: bool,
+    focused: bool,
+    selection: Option<std::ops::Range<usize>>,
+    caret: usize,
+) -> Vec<gpui::AnyElement> {
+    let caret_el = || {
+        div()
+            .flex_none()
+            .w(px(1.0))
+            .h(px(16.0))
+            .bg(rgb(COLOR_TEXT))
+            .into_any_element()
+    };
+    let text_el = |text: String, color: u32| {
+        div()
+            .flex_none()
+            .text_color(rgb(color))
+            .child(text)
+            .into_any_element()
+    };
+    let selected_el = |text: String| {
+        div()
+            .flex_none()
+            .bg(rgb(COLOR_BLUE_SOFT))
+            .text_color(rgb(COLOR_TEXT))
+            .child(text)
+            .into_any_element()
+    };
+
+    if empty {
+        let mut segments = Vec::new();
+        if focused {
+            segments.push(caret_el());
+        }
+        segments.push(text_el(placeholder, COLOR_TEXT_FAINT));
+        return segments;
+    }
+
+    let mut segments = Vec::new();
+    let push_caret = |segments: &mut Vec<gpui::AnyElement>, inserted: &mut bool| {
+        if focused && !*inserted {
+            segments.push(caret_el());
+            *inserted = true;
+        }
+    };
+    let mut caret_inserted = false;
+
+    if let Some(selection) = selection {
+        let before = display[..selection.start].to_string();
+        let selected = display[selection.clone()].to_string();
+        let after = display[selection.end..].to_string();
+        if caret <= selection.start {
+            push_caret(&mut segments, &mut caret_inserted);
+        }
+        if !before.is_empty() {
+            segments.push(text_el(before, COLOR_TEXT));
+        }
+        if !selected.is_empty() {
+            segments.push(selected_el(selected));
+        }
+        if caret >= selection.end {
+            push_caret(&mut segments, &mut caret_inserted);
+        }
+        if !after.is_empty() {
+            segments.push(text_el(after, COLOR_TEXT));
+        }
+    } else {
+        let before = display[..caret].to_string();
+        let after = display[caret..].to_string();
+        if !before.is_empty() {
+            segments.push(text_el(before, COLOR_TEXT));
+        }
+        push_caret(&mut segments, &mut caret_inserted);
+        if !after.is_empty() {
+            segments.push(text_el(after, COLOR_TEXT));
+        }
+    }
+
+    segments
+}
+
+pub(crate) fn clamped_menu_position(
+    event: &MouseDownEvent,
+    window: &Window,
+    width: f32,
+    height: f32,
+) -> (f32, f32) {
+    let position_x: f32 = event.position.x.into();
+    let position_y: f32 = event.position.y.into();
+    let window_size = window.window_bounds().get_bounds().size;
+    let max_x =
+        (f32::from(window_size.width) - width - MENU_VIEWPORT_MARGIN).max(MENU_VIEWPORT_MARGIN);
+    let max_y =
+        (f32::from(window_size.height) - height - MENU_VIEWPORT_MARGIN).max(MENU_VIEWPORT_MARGIN);
+    (
+        position_x.clamp(MENU_VIEWPORT_MARGIN, max_x),
+        position_y.clamp(MENU_VIEWPORT_MARGIN, max_y),
+    )
 }
 
 fn point_in_menu(x: f32, y: f32, menu_x: f32, menu_y: f32, width: f32, height: f32) -> bool {
@@ -4523,6 +5760,228 @@ mod app_tests {
         assert_eq!(
             paths,
             vec![PathBuf::from("C:/work/a"), PathBuf::from("C:/work/b")]
+        );
+    }
+
+    #[test]
+    fn diff_encoding_preferences_round_trip() {
+        let mut preferences = DiffEncodingPreferences::default();
+        preferences
+            .repositories
+            .insert("c:/work/a".to_string(), DiffEncodingChoice::Gb18030);
+        preferences
+            .repositories
+            .insert("c:/work/b".to_string(), DiffEncodingChoice::Big5);
+
+        let json = serde_json::to_string(&preferences).expect("encode preferences");
+        let decoded: DiffEncodingPreferences =
+            serde_json::from_str(&json).expect("decode preferences");
+
+        assert_eq!(
+            decoded.repositories.get("c:/work/a"),
+            Some(&DiffEncodingChoice::Gb18030)
+        );
+        assert_eq!(
+            decoded.repositories.get("c:/work/b"),
+            Some(&DiffEncodingChoice::Big5)
+        );
+        assert_eq!(DiffEncodingChoice::default(), DiffEncodingChoice::Auto);
+    }
+
+    #[test]
+    fn clone_directory_name_is_inferred_from_remote_url() {
+        assert_eq!(
+            infer_clone_directory_name("https://github.com/FuturePrayer/khaslana.git"),
+            Some("khaslana".to_string())
+        );
+        assert_eq!(
+            infer_clone_directory_name("https://example.invalid/team/repo/"),
+            Some("repo".to_string())
+        );
+        assert_eq!(
+            infer_clone_directory_name("git@github.com:FuturePrayer/khaslana.git"),
+            Some("khaslana".to_string())
+        );
+        assert_eq!(
+            infer_clone_directory_name("https://example.invalid/team/repo.git?ref=main"),
+            Some("repo".to_string())
+        );
+        assert_eq!(infer_clone_directory_name(""), None);
+        assert_eq!(infer_clone_directory_name("https://example.invalid/"), None);
+    }
+
+    #[test]
+    fn clone_target_path_uses_selected_parent_directory() {
+        assert_eq!(
+            infer_clone_target_path("https://github.com/example/abc", "D:/dev"),
+            Some(PathBuf::from("D:/dev").join("abc"))
+        );
+        assert_eq!(
+            infer_clone_target_path("https://github.com/example/abc.git", "D:/dev/"),
+            Some(PathBuf::from("D:/dev/").join("abc"))
+        );
+        assert_eq!(infer_clone_target_path("", "D:/dev"), None);
+        assert_eq!(
+            infer_clone_target_path("https://github.com/example/abc", ""),
+            None
+        );
+    }
+
+    #[test]
+    fn text_field_edits_at_utf8_char_boundaries() {
+        let mut field = TextEditState::for_test("ab你cd", false);
+
+        field.move_caret_to(3, false);
+        assert_eq!(field.caret, 2);
+        field.insert_text("X", false);
+        assert_eq!(field.value, "abX你cd");
+
+        field.delete_backward();
+        assert_eq!(field.value, "ab你cd");
+        assert_eq!(field.caret, 2);
+
+        field.move_caret_to("ab你".len(), false);
+        field.delete_backward();
+        assert_eq!(field.value, "abcd");
+        assert_eq!(field.caret, 2);
+
+        field.set_value("ab你cd");
+        field.move_caret_to(2, false);
+        field.delete_forward();
+        assert_eq!(field.value, "abcd");
+        assert_eq!(field.caret, 2);
+    }
+
+    #[test]
+    fn text_field_selection_replace_and_navigation_work() {
+        let mut field = TextEditState::for_test("abcdef", false);
+
+        field.move_caret_to(2, false);
+        field.move_caret_to(5, true);
+        assert_eq!(field.selected_text().as_deref(), Some("cde"));
+
+        field.insert_text("X", false);
+        assert_eq!(field.value, "abXf");
+        assert_eq!(field.caret, 3);
+        assert_eq!(field.selected_range(), None);
+
+        field.select_all();
+        assert_eq!(field.selected_text().as_deref(), Some("abXf"));
+        field.move_left(false);
+        assert_eq!(field.caret, 0);
+        assert_eq!(field.selected_range(), None);
+
+        field.move_right(false);
+        assert_eq!(field.caret, 1);
+    }
+
+    #[test]
+    fn text_field_single_line_paste_strips_newlines() {
+        let mut single_line = TextEditState::for_test("ab", false);
+        single_line.move_caret_to(1, false);
+        single_line.insert_text("x\ny\r\nz", false);
+        assert_eq!(single_line.value, "axyzb");
+
+        let mut multiline = TextEditState::for_test("ab", false);
+        multiline.move_caret_to(1, false);
+        multiline.insert_text("x\ny", true);
+        assert_eq!(multiline.value, "ax\nyb");
+    }
+
+    #[test]
+    fn text_field_secret_display_masks_and_blocks_copyable_text() {
+        let mut field = TextEditState::for_test("密码12", true);
+
+        assert_eq!(field.display_text(), "****");
+        assert_eq!(field.display_byte_for_value_byte("密码".len()), 2);
+
+        field.select_all();
+        assert_eq!(field.selected_text().as_deref(), Some("密码12"));
+        assert_eq!(field.copyable_selected_text(), None);
+
+        field.clear();
+        assert!(field.value.is_empty());
+        assert_eq!(field.caret, 0);
+        assert_eq!(field.selected_range(), None);
+    }
+
+    #[test]
+    fn text_field_click_position_uses_wide_character_widths() {
+        let field = TextEditState::for_test("a你b", false);
+
+        assert_eq!(field.byte_for_approx_x(0.0), 0);
+        assert_eq!(field.byte_for_approx_x(8.0), 1);
+        assert_eq!(field.byte_for_approx_x(18.0), "a你".len());
+        assert_eq!(field.byte_for_approx_x(80.0), "a你b".len());
+    }
+
+    fn test_diff(lines: Vec<khaslana::DiffLine>, is_binary: bool) -> FileDiff {
+        FileDiff {
+            path: "file.txt".to_string(),
+            scope: DiffScope::Unstaged,
+            is_binary,
+            encoding: khaslana::DiffEncodingInfo {
+                requested: DiffEncodingChoice::Utf8,
+                resolved: DiffEncodingChoice::Utf8,
+                lossy: false,
+            },
+            lines,
+        }
+    }
+
+    fn test_line(kind: DiffLineKind, content: &str) -> khaslana::DiffLine {
+        khaslana::DiffLine {
+            kind,
+            old_lineno: None,
+            new_lineno: None,
+            content: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn diff_render_rows_track_headers_and_empty_states() {
+        let diff = test_diff(
+            vec![
+                test_line(DiffLineKind::Header, "diff --git a/file.txt b/file.txt"),
+                test_line(DiffLineKind::Header, "index 0000000..1111111"),
+                test_line(DiffLineKind::Removed, "-old"),
+                test_line(DiffLineKind::Added, "+new"),
+            ],
+            false,
+        );
+
+        assert_eq!(
+            diff_render_rows_for(Some(&diff), false),
+            vec![
+                DiffRenderRow::HeaderToggle,
+                DiffRenderRow::DiffLine(2),
+                DiffRenderRow::DiffLine(3),
+            ]
+        );
+        assert_eq!(
+            diff_render_rows_for(Some(&diff), true),
+            vec![
+                DiffRenderRow::HeaderToggle,
+                DiffRenderRow::DiffLine(0),
+                DiffRenderRow::DiffLine(1),
+                DiffRenderRow::DiffLine(2),
+                DiffRenderRow::DiffLine(3),
+            ]
+        );
+
+        let empty_text_diff = test_diff(Vec::new(), false);
+        let empty_binary_diff = test_diff(Vec::new(), true);
+        assert_eq!(
+            diff_render_rows_for(Some(&empty_text_diff), false),
+            vec![DiffRenderRow::Empty]
+        );
+        assert_eq!(
+            diff_render_rows_for(Some(&empty_binary_diff), false),
+            vec![DiffRenderRow::Empty]
+        );
+        assert_eq!(
+            diff_render_rows_for(None, false),
+            vec![DiffRenderRow::Empty]
         );
     }
 }

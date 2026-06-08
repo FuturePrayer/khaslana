@@ -7,7 +7,9 @@ build = "build.rs"
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 async-channel = "2"
+chardetng = "1"
 directories = "6"
+encoding_rs = "0.8"
 git2 = { version = "0.21", features = ["https", "ssh"] }
 gpui = { package = "gpui-ce", version = "0.3" }
 keyring = "4"

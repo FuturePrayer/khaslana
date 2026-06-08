@@ -4,10 +4,12 @@ use gpui::{
 use khaslana::{BranchInfo, BranchKind, StashInfo, TagInfo};
 
 use crate::{
-    BranchContextMenu, COLOR_BLUE, COLOR_BLUE_DARK, COLOR_BLUE_SOFT, COLOR_BORDER,
-    COLOR_BORDER_STRONG, COLOR_PANEL_BG, COLOR_ROW_SELECTED, COLOR_SURFACE, COLOR_TEXT,
-    COLOR_TEXT_MUTED, RepositoryView, StashContextMenu, TagContextMenu, context_menu_item,
-    menu_separator, nav_list, nav_row, placeholder_row, section_header_action,
+    BRANCH_MENU_HEIGHT, BRANCH_MENU_WIDTH, BranchContextMenu, COLOR_BLUE, COLOR_BLUE_DARK,
+    COLOR_BLUE_SOFT, COLOR_BORDER, COLOR_BORDER_STRONG, COLOR_PANEL_BG, COLOR_ROW_SELECTED,
+    COLOR_SURFACE, COLOR_TEXT, COLOR_TEXT_MUTED, NAV_ROW_HEIGHT, RepositoryView, STASH_MENU_HEIGHT,
+    STASH_MENU_WIDTH, StashContextMenu, TAG_MENU_HEIGHT, TAG_MENU_WIDTH, TagContextMenu,
+    clamped_menu_position, context_menu_item, menu_separator, nav_list, nav_row, placeholder_row,
+    section_header_action,
 };
 
 const COLOR_ROW_SELECTED_BORDER: u32 = 0x9bbcff;
@@ -78,6 +80,7 @@ impl RepositoryView {
                         )
                         .into_any_element(),
                     ),
+                    cx,
                 ),
             )
             .child(self.render_nav_section(
@@ -87,6 +90,7 @@ impl RepositoryView {
                 self.loading.remote().then_some("远端加载中..."),
                 2.0,
                 None,
+                cx,
             ))
             .child(self.render_nav_section(
                 "远端分支",
@@ -95,11 +99,12 @@ impl RepositoryView {
                 self.loading.remote().then_some("远端分支加载中..."),
                 3.0,
                 None,
+                cx,
             ));
 
         if !tag_rows.is_empty() {
             sidebar = sidebar
-                .child(self.render_nav_section("标签", "tag-list", tag_rows, None, 2.0, None));
+                .child(self.render_nav_section("标签", "tag-list", tag_rows, None, 2.0, None, cx));
         }
         if !stash_rows.is_empty() {
             sidebar = sidebar.child(self.render_nav_section(
@@ -109,6 +114,7 @@ impl RepositoryView {
                 None,
                 2.0,
                 None,
+                cx,
             ));
         }
 
@@ -123,6 +129,7 @@ impl RepositoryView {
         placeholder: Option<&'static str>,
         weight: f32,
         action: Option<gpui::AnyElement>,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let rows = if rows.is_empty() {
             placeholder
@@ -145,7 +152,7 @@ impl RepositoryView {
                 this
             })
             .child(section_header_action(title, action))
-            .child(nav_list(id, rows))
+            .child(nav_list(self, id, rows, cx))
     }
 
     fn remote_row(&self, remote: String, cx: &mut Context<Self>) -> impl IntoElement {
@@ -199,22 +206,28 @@ impl RepositoryView {
         nav_row(format!("tag-{}", tag.name), false, false)
             .child(
                 div()
+                    .flex_1()
+                    .min_w(px(0.0))
                     .text_size(px(12.0))
                     .text_color(rgb(COLOR_TEXT_MUTED))
+                    .truncate()
                     .child(name),
             )
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     this.branch_context_menu = None;
                     this.change_context_menu = None;
                     this.stash_context_menu = None;
                     this.commit_context_menu = None;
+                    this.encoding_menu_target = None;
                     this.active_dialog = None;
+                    let (x, y) =
+                        clamped_menu_position(event, window, TAG_MENU_WIDTH, TAG_MENU_HEIGHT);
                     this.tag_context_menu = Some(TagContextMenu {
                         tag: right_click_name.clone(),
-                        x: event.position.x.into(),
-                        y: event.position.y.into(),
+                        x,
+                        y,
                     });
                     cx.notify();
                 }),
@@ -228,24 +241,25 @@ impl RepositoryView {
         nav_row(format!("stash-{}", stash.index), false, false)
             .child(
                 div()
+                    .flex_1()
+                    .min_w(px(0.0))
                     .text_size(px(12.0))
                     .text_color(rgb(COLOR_TEXT_MUTED))
-                    .overflow_hidden()
+                    .truncate()
                     .child(label),
             )
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     this.branch_context_menu = None;
                     this.change_context_menu = None;
                     this.tag_context_menu = None;
                     this.commit_context_menu = None;
+                    this.encoding_menu_target = None;
                     this.active_dialog = None;
-                    this.stash_context_menu = Some(StashContextMenu {
-                        index,
-                        x: event.position.x.into(),
-                        y: event.position.y.into(),
-                    });
+                    let (x, y) =
+                        clamped_menu_position(event, window, STASH_MENU_WIDTH, STASH_MENU_HEIGHT);
+                    this.stash_context_menu = Some(StashContextMenu { index, x, y });
                     cx.notify();
                 }),
             )
@@ -292,6 +306,8 @@ impl RepositoryView {
         div()
             .id(format!("branch-{}", branch.name))
             .flex()
+            .h(px(NAV_ROW_HEIGHT))
+            .min_h(px(NAV_ROW_HEIGHT))
             .items_center()
             .justify_between()
             .gap_2()
@@ -337,6 +353,7 @@ impl RepositoryView {
                 this.branch_context_menu = None;
                 this.change_context_menu = None;
                 this.commit_context_menu = None;
+                this.encoding_menu_target = None;
                 if event.standard_click() && event.click_count() >= 2 && !this.busy {
                     match click_kind {
                         BranchKind::Local if !click_is_head => this.checkout(click_name.clone()),
@@ -350,20 +367,23 @@ impl RepositoryView {
             }))
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     this.selected_branch = Some(right_click_name.clone());
                     this.active_dialog = None;
+                    let (x, y) =
+                        clamped_menu_position(event, window, BRANCH_MENU_WIDTH, BRANCH_MENU_HEIGHT);
                     this.branch_context_menu = Some(BranchContextMenu {
                         branch: right_click_name.clone(),
                         kind: right_click_kind.clone(),
                         is_head: right_click_is_head,
-                        x: event.position.x.into(),
-                        y: event.position.y.into(),
+                        x,
+                        y,
                     });
                     this.tag_context_menu = None;
                     this.stash_context_menu = None;
                     this.change_context_menu = None;
                     this.commit_context_menu = None;
+                    this.encoding_menu_target = None;
                     cx.notify();
                 }),
             )
@@ -379,7 +399,7 @@ impl RepositoryView {
             .absolute()
             .left(px(menu.x))
             .top(px(menu.y))
-            .w(px(190.0))
+            .w(px(BRANCH_MENU_WIDTH))
             .py_1()
             .rounded_sm()
             .border_1()
