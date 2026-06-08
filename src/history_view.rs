@@ -1,14 +1,18 @@
 use std::collections::BTreeSet;
 
-use gpui::{Context, IntoElement, PathBuilder, div, point, prelude::*, px, rgb};
+use gpui::{
+    Context, IntoElement, ListSizingBehavior, PathBuilder, div, point, prelude::*, px, rgb,
+    uniform_list,
+};
 use khaslana::{CommitFileChange, CommitInfo, CommitRefInfo, CommitRefKind};
 
 use crate::{
     CHANGE_ROW_HEIGHT, COLOR_BLUE, COLOR_BLUE_DARK, COLOR_BLUE_SOFT, COLOR_BORDER,
     COLOR_BORDER_STRONG, COLOR_HASH_BG, COLOR_PANEL_BG, COLOR_ROW_SELECTED, COLOR_SURFACE,
     COLOR_TEXT, COLOR_TEXT_FAINT, COLOR_TEXT_MUTED, DiffHeaderTarget, EncodingMenuTarget,
-    RepositoryView, ResizeTarget, author_avatar, commit_time_label, nav_list, placeholder_row,
-    section_header,
+    RepositoryView, ResizeTarget, ScrollbarMode, author_avatar, commit_time_label,
+    history_scope_button, placeholder_row, scrollable_uniform_frame, section_header,
+    section_header_action,
 };
 
 const HISTORY_GRAPH_WIDTH: f32 = 96.0;
@@ -20,7 +24,7 @@ const GRAPH_COLORS: [u32; 8] = [
 ];
 
 #[derive(Clone, Debug, Default)]
-struct CommitGraphRow {
+pub(crate) struct CommitGraphRow {
     lane: usize,
     lanes: Vec<usize>,
     connectors: Vec<usize>,
@@ -50,46 +54,80 @@ impl RepositoryView {
     }
 
     fn render_commit_history(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let graph_rows = commit_graph_rows(&self.history_commits);
-        let mut rows = Vec::new();
-        if self.history_commits.is_empty() {
-            rows.push(
-                placeholder_row(if self.history_loading.commits {
-                    "提交记录加载中..."
-                } else if self.repo_path.is_some() {
-                    "暂无提交记录"
-                } else {
-                    "请先打开一个仓库"
-                })
-                .into_any_element(),
-            );
+        let row_count = if self.history_commits.is_empty() {
+            1
         } else {
-            rows.extend(
-                self.history_commits
-                    .iter()
-                    .cloned()
-                    .zip(graph_rows)
-                    .map(|(commit, graph)| self.commit_row(commit, graph, cx).into_any_element()),
-            );
-            if self.history_has_more {
-                rows.push(
-                    div()
-                        .flex_none()
-                        .py_1()
-                        .child(self.button(
-                            if self.history_loading.commits {
-                                "加载中..."
-                            } else {
-                                "加载更多"
-                            },
-                            !self.history_loading.commits,
-                            |this, _, _| this.load_more_history(),
-                            cx,
-                        ))
-                        .into_any_element(),
-                );
-            }
-        }
+            self.history_commits.len() + usize::from(self.history_has_more)
+        };
+        let content_present = !self.history_commits.is_empty();
+        let handle = self.uniform_scroll_handle("commit-history-list");
+        let list_handle = handle.clone();
+        let content = div()
+            .id("commit-history-list")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .p_2()
+            .bg(rgb(COLOR_PANEL_BG))
+            .child(
+                uniform_list(
+                    "commit-history-list",
+                    row_count,
+                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                        range
+                            .map(|index| {
+                                if this.history_commits.is_empty() {
+                                    return placeholder_row(if this.history_loading.commits {
+                                        "提交记录加载中..."
+                                    } else if this.repo_path.is_some() {
+                                        "暂无提交记录"
+                                    } else {
+                                        "请先打开一个仓库"
+                                    })
+                                    .into_any_element();
+                                }
+                                if index == this.history_commits.len() {
+                                    return div()
+                                        .flex_none()
+                                        .w_full()
+                                        .min_w(px(0.0))
+                                        .h(px(HISTORY_GRAPH_ROW_HEIGHT))
+                                        .items_center()
+                                        .py_1()
+                                        .child(this.button(
+                                            if this.history_loading.commits {
+                                                "加载中..."
+                                            } else {
+                                                "加载更多"
+                                            },
+                                            !this.history_loading.commits,
+                                            |this, _, _| this.load_more_history(),
+                                            cx,
+                                        ))
+                                        .into_any_element();
+                                }
+                                let Some(commit) = this.history_commits.get(index).cloned() else {
+                                    return placeholder_row("").into_any_element();
+                                };
+                                let graph = this
+                                    .history_graph_rows
+                                    .get(index)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                this.commit_row(commit, graph, cx).into_any_element()
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(&list_handle)
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .flex_1()
+                .min_w(px(0.0))
+                .min_h(px(0.0)),
+            )
+            .into_any_element();
 
         div()
             .flex()
@@ -99,8 +137,36 @@ impl RepositoryView {
             .h(px(self.history_top_height))
             .min_h(px(180.0))
             .w_full()
-            .child(section_header("提交记录（所有分支）"))
-            .child(nav_list(self, "commit-history-list", rows, cx))
+            .child(section_header_action(
+                format!("提交记录（{}）", self.history_scope.label()),
+                Some(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(history_scope_button(
+                            "当前分支",
+                            self.history_scope == khaslana::HistoryScope::CurrentBranch,
+                            |this| this.set_history_scope(khaslana::HistoryScope::CurrentBranch),
+                            cx,
+                        ))
+                        .child(history_scope_button(
+                            "所有分支",
+                            self.history_scope == khaslana::HistoryScope::AllRefs,
+                            |this| this.set_history_scope(khaslana::HistoryScope::AllRefs),
+                            cx,
+                        ))
+                        .into_any_element(),
+                ),
+            ))
+            .child(scrollable_uniform_frame(
+                "commit-history-list",
+                ScrollbarMode::Vertical,
+                content,
+                handle,
+                content_present,
+                cx,
+            ))
     }
 
     fn commit_row(
@@ -124,6 +190,8 @@ impl RepositoryView {
             .id(format!("commit-{}", commit.short_oid))
             .flex()
             .flex_none()
+            .w_full()
+            .min_w(px(0.0))
             .items_center()
             .gap_2()
             .pr_2()
@@ -226,24 +294,52 @@ impl RepositoryView {
     }
 
     fn render_commit_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows = if self.history_files.is_empty() {
-            vec![
-                placeholder_row(if self.history_loading.files {
-                    "提交文件加载中..."
-                } else if self.history_selected_commit.is_some() {
-                    "该提交没有文件变更"
-                } else {
-                    "请选择一个提交"
-                })
-                .into_any_element(),
-            ]
-        } else {
-            self.history_files
-                .iter()
-                .cloned()
-                .map(|file| self.commit_file_row(file, cx).into_any_element())
-                .collect()
-        };
+        let row_count = self.history_files.len().max(1);
+        let content_present = !self.history_files.is_empty();
+        let handle = self.uniform_scroll_handle("commit-file-list");
+        let list_handle = handle.clone();
+        let content = div()
+            .id("commit-file-list")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .p_2()
+            .bg(rgb(COLOR_PANEL_BG))
+            .child(
+                uniform_list(
+                    "commit-file-list",
+                    row_count,
+                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                        range
+                            .map(|index| {
+                                if this.history_files.is_empty() {
+                                    return placeholder_row(if this.history_loading.files {
+                                        "提交文件加载中..."
+                                    } else if this.history_selected_commit.is_some() {
+                                        "该提交没有文件变更"
+                                    } else {
+                                        "请选择一个提交"
+                                    })
+                                    .into_any_element();
+                                }
+                                this.history_files
+                                    .get(index)
+                                    .cloned()
+                                    .map(|file| this.commit_file_row(file, cx).into_any_element())
+                                    .unwrap_or_else(|| placeholder_row("").into_any_element())
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(&list_handle)
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .flex_1()
+                .min_w(px(0.0))
+                .min_h(px(0.0)),
+            )
+            .into_any_element();
 
         div()
             .flex()
@@ -254,7 +350,14 @@ impl RepositoryView {
             .min_h(px(0.0))
             .h_full()
             .child(section_header("提交文件"))
-            .child(nav_list(self, "commit-file-list", rows, cx))
+            .child(scrollable_uniform_frame(
+                "commit-file-list",
+                ScrollbarMode::Vertical,
+                content,
+                handle,
+                content_present,
+                cx,
+            ))
     }
 
     fn commit_file_row(&self, file: CommitFileChange, cx: &mut Context<Self>) -> impl IntoElement {
@@ -272,6 +375,8 @@ impl RepositoryView {
             .id(format!("commit-file-{}", file.path))
             .flex()
             .flex_none()
+            .w_full()
+            .min_w(px(0.0))
             .items_center()
             .gap_1()
             .h(px(CHANGE_ROW_HEIGHT))
@@ -348,7 +453,7 @@ impl RepositoryView {
     }
 }
 
-fn commit_graph_rows(commits: &[CommitInfo]) -> Vec<CommitGraphRow> {
+pub(crate) fn commit_graph_rows(commits: &[CommitInfo]) -> Vec<CommitGraphRow> {
     let loaded_oids = commits
         .iter()
         .map(|commit| commit.oid.as_str())

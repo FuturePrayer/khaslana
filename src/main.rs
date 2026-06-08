@@ -11,6 +11,7 @@ use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 
 use async_channel::{Receiver, Sender};
 use directories::ProjectDirs;
@@ -25,10 +26,11 @@ use gpui::{
 use khaslana::{
     BranchKind, BranchName, CommitFileChange, CommitInfo, CommitMessage, CredentialProvider,
     CredentialRecord, CredentialRequest, CredentialScope, CredentialStore, DiffEncodingChoice,
-    DiffLineKind, DiffScope, FileDiff, GitCredential, GitService, KeyringCredentialStore,
-    OperationEvent, ProgressEmitter, RemoteName, RepoPath, RepositorySnapshot, ResetMode, TagName,
-    credential_display_target, credential_key_filename, credential_kind_label,
-    credential_record_label, credential_scope_label, test_credential_connection,
+    DiffLineKind, DiffScope, FileDiff, GitCredential, GitService, HistoryScope,
+    KeyringCredentialStore, OperationEvent, ProgressEmitter, RemoteName, RepoPath,
+    RepositorySnapshot, ResetMode, TagName, credential_display_target, credential_key_filename,
+    credential_kind_label, credential_record_label, credential_scope_label,
+    test_credential_connection,
 };
 use serde::{Deserialize, Serialize};
 use ui_helpers::*;
@@ -57,6 +59,8 @@ const COMMIT_MENU_WIDTH: f32 = 230.0;
 const COMMIT_MENU_HEIGHT: f32 = 230.0;
 const ENCODING_MENU_WIDTH: f32 = 170.0;
 const MENU_VIEWPORT_MARGIN: f32 = 8.0;
+const MAX_CONCURRENT_REPO_LOADS: usize = 2;
+const LARGE_DIFF_CACHE_LINE_LIMIT: usize = 20_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FieldId {
@@ -443,6 +447,27 @@ impl Default for ChangeSelection {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct ChangeListIndexes {
+    staged: Vec<usize>,
+    unstaged: Vec<usize>,
+}
+
+impl ChangeListIndexes {
+    fn rebuild(changes: &[khaslana::WorktreeChange]) -> Self {
+        let mut indexes = Self::default();
+        for (index, change) in changes.iter().enumerate() {
+            if change.staged.is_some() {
+                indexes.staged.push(index);
+            }
+            if change.unstaged.is_some() {
+                indexes.unstaged.push(index);
+            }
+        }
+        indexes
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ChangeContextMenu {
     path: String,
@@ -464,29 +489,72 @@ enum DiffRenderRow {
     Empty,
 }
 
-fn diff_render_rows_for(diff: Option<&FileDiff>, headers_expanded: bool) -> Vec<DiffRenderRow> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiffRenderModel {
+    row_count: usize,
+    header_count: usize,
+    headers_expanded: bool,
+    empty: bool,
+}
+
+impl DiffRenderModel {
+    fn row_at(&self, row_index: usize) -> DiffRenderRow {
+        if self.empty {
+            return DiffRenderRow::Empty;
+        }
+        if self.header_count > 0 {
+            if row_index == 0 {
+                return DiffRenderRow::HeaderToggle;
+            }
+            if self.headers_expanded && row_index <= self.header_count {
+                return DiffRenderRow::DiffLine(row_index - 1);
+            }
+        }
+        let body_start = if self.header_count > 0 { 1 } else { 0 };
+        let header_offset = if self.headers_expanded {
+            self.header_count
+        } else {
+            0
+        };
+        DiffRenderRow::DiffLine(self.header_count + row_index - body_start - header_offset)
+    }
+}
+
+fn diff_render_model_for(diff: Option<&FileDiff>, headers_expanded: bool) -> DiffRenderModel {
     let Some(diff) = diff else {
-        return vec![DiffRenderRow::Empty];
+        return DiffRenderModel {
+            row_count: 1,
+            header_count: 0,
+            headers_expanded,
+            empty: true,
+        };
     };
     let header_count = diff
         .lines
         .iter()
         .take_while(|line| line.kind == DiffLineKind::Header)
         .count();
-    let mut rows = Vec::new();
-
+    let mut row_count = diff.lines.len().saturating_sub(header_count);
     if header_count > 0 {
-        rows.push(DiffRenderRow::HeaderToggle);
+        row_count += 1;
         if headers_expanded {
-            rows.extend((0..header_count).map(DiffRenderRow::DiffLine));
+            row_count += header_count;
         }
     }
-
-    rows.extend((header_count..diff.lines.len()).map(DiffRenderRow::DiffLine));
-    if rows.is_empty() {
-        rows.push(DiffRenderRow::Empty);
+    DiffRenderModel {
+        row_count: row_count.max(1),
+        header_count,
+        headers_expanded,
+        empty: row_count == 0,
     }
-    rows
+}
+
+#[cfg(test)]
+fn diff_render_rows_for(diff: Option<&FileDiff>, headers_expanded: bool) -> Vec<DiffRenderRow> {
+    let model = diff_render_model_for(diff, headers_expanded);
+    (0..model.row_count)
+        .map(|index| model.row_at(index))
+        .collect()
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -505,6 +573,7 @@ struct RepoTabState {
     pub(crate) selected_branch: Option<String>,
     pub(crate) selected_remote: Option<String>,
     pub(crate) change_selection: ChangeSelection,
+    pub(crate) change_indexes: ChangeListIndexes,
     pub(crate) diff: Option<Arc<FileDiff>>,
     pub(crate) diff_headers_expanded: bool,
     pub(crate) main_mode: MainMode,
@@ -516,6 +585,8 @@ struct RepoTabState {
     pub(crate) history_diff: Option<Arc<FileDiff>>,
     pub(crate) history_diff_headers_expanded: bool,
     pub(crate) history_loading: HistoryLoading,
+    pub(crate) history_scope: HistoryScope,
+    pub(crate) history_graph_rows: Vec<history_view::CommitGraphRow>,
     pub(crate) busy: bool,
     pub(crate) loading: RepositoryLoading,
     pub(crate) repository_load_id: u64,
@@ -532,6 +603,7 @@ impl RepoTabState {
             selected_branch: None,
             selected_remote: None,
             change_selection: ChangeSelection::default(),
+            change_indexes: ChangeListIndexes::default(),
             diff: None,
             diff_headers_expanded: false,
             main_mode: MainMode::Worktree,
@@ -543,6 +615,8 @@ impl RepoTabState {
             history_diff: None,
             history_diff_headers_expanded: false,
             history_loading: HistoryLoading::default(),
+            history_scope: HistoryScope::default(),
+            history_graph_rows: Vec::new(),
             busy: false,
             loading: RepositoryLoading::default(),
             repository_load_id: 0,
@@ -565,6 +639,25 @@ impl RepoTabState {
             .as_ref()
             .map(|path| normalize_repo_path(path))
     }
+
+    fn release_large_diff_caches(&mut self) {
+        if self
+            .diff
+            .as_ref()
+            .is_some_and(|diff| diff.lines.len() > LARGE_DIFF_CACHE_LINE_LIMIT)
+        {
+            self.diff = None;
+            self.diff_headers_expanded = false;
+        }
+        if self
+            .history_diff
+            .as_ref()
+            .is_some_and(|diff| diff.lines.len() > LARGE_DIFF_CACHE_LINE_LIMIT)
+        {
+            self.history_diff = None;
+            self.history_diff_headers_expanded = false;
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -579,6 +672,20 @@ struct ResizeState {
     start_y: f32,
     start_width: f32,
     start_height: f32,
+}
+
+#[derive(Clone, Debug)]
+struct RepositoryLoadRequest {
+    tab_id: RepoTabId,
+    path: PathBuf,
+    started: &'static str,
+    finished: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum LoadPriority {
+    Background,
+    User,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -668,6 +775,10 @@ enum UiEvent {
         error: String,
         load_id: u64,
     },
+    RepositoryLoadFinished {
+        tab_id: RepoTabId,
+        load_id: u64,
+    },
     OperationFinished {
         tab_id: Option<RepoTabId>,
         message: String,
@@ -686,6 +797,7 @@ enum UiEvent {
         commits: Vec<CommitInfo>,
         append: bool,
         has_more: bool,
+        scope: HistoryScope,
         load_id: u64,
     },
     HistoryFilesLoaded {
@@ -852,6 +964,18 @@ fn send_ui_event(tx: &Sender<UiEvent>, event: UiEvent) {
     let _ = tx.try_send(event);
 }
 
+fn perf_log(stage: &'static str, started: Instant, details: impl AsRef<str>) {
+    if std::env::var_os("KHASLANA_PERF_LOG").is_some() {
+        tracing::info!(
+            target: "khaslana::perf",
+            stage,
+            elapsed_ms = started.elapsed().as_millis(),
+            "{}",
+            details.as_ref()
+        );
+    }
+}
+
 pub(crate) struct RepositoryView {
     tx: Sender<UiEvent>,
     rx: Receiver<UiEvent>,
@@ -877,6 +1001,8 @@ pub(crate) struct RepositoryView {
     pub(crate) scrollbar_drag: Option<ScrollbarDragState>,
     pending_credential: Option<PendingCredential>,
     pending_credentials: VecDeque<PendingCredential>,
+    repository_load_queue: VecDeque<RepositoryLoadRequest>,
+    active_repository_loads: usize,
     pub(crate) active_dialog: Option<DialogState>,
     pub(crate) branch_context_menu: Option<BranchContextMenu>,
     change_context_menu: Option<ChangeContextMenu>,
@@ -930,6 +1056,8 @@ impl RepositoryView {
             scrollbar_drag: None,
             pending_credential: None,
             pending_credentials: VecDeque::new(),
+            repository_load_queue: VecDeque::new(),
+            active_repository_loads: 0,
             active_dialog: None,
             branch_context_menu: None,
             change_context_menu: None,
@@ -1072,6 +1200,11 @@ impl RepositoryView {
             return;
         }
         self.close_popups();
+        if let Some(active) = self.active_tab
+            && let Some(tab) = self.tab_mut(active)
+        {
+            tab.release_large_diff_caches();
+        }
         self.active_tab = Some(tab_id);
         self.ensure_history_loaded();
         self.save_session();
@@ -1085,6 +1218,8 @@ impl RepositoryView {
         self.tabs.remove(index);
         self.pending_credentials
             .retain(|pending| pending.tab_id != Some(tab_id));
+        self.repository_load_queue
+            .retain(|request| request.tab_id != tab_id);
         if self
             .pending_credential
             .as_ref()
@@ -1284,7 +1419,13 @@ impl RepositoryView {
         let tabs = self.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>();
         for tab_id in tabs {
             if let Some(path) = self.tab(tab_id).and_then(|tab| tab.repo_path.clone()) {
-                self.load_repository_for_tab(tab_id, path, "正在恢复仓库", "仓库已恢复");
+                self.queue_repository_load(
+                    tab_id,
+                    path,
+                    "正在恢复仓库",
+                    "仓库已恢复",
+                    LoadPriority::Background,
+                );
             }
         }
         self.restoring_session = false;
@@ -1430,6 +1571,7 @@ impl RepositoryView {
                         this.change_selection.clear();
                         this.repo_path = Some(snapshot.path.clone());
                         this.sync_selected_remote(&snapshot);
+                        this.change_indexes = ChangeListIndexes::rebuild(&snapshot.changes);
                         this.snapshot = Some(snapshot);
                         this.scroll_local_branch_to_current();
                         this.reload_history_if_active();
@@ -1493,12 +1635,25 @@ impl RepositoryView {
                     }
                 });
             }
+            UiEvent::RepositoryLoadFinished { tab_id, load_id } => {
+                self.active_repository_loads = self.active_repository_loads.saturating_sub(1);
+                if self
+                    .tab(tab_id)
+                    .is_some_and(|tab| tab.repository_load_id == load_id)
+                {
+                    self.apply_status_event(Some(tab_id), |this| {
+                        this.busy = false;
+                    });
+                }
+                self.start_queued_repository_loads();
+            }
             UiEvent::OperationFinished {
                 tab_id,
                 message,
                 snapshot,
                 diff,
             } => {
+                let mut full_status_request = None;
                 self.apply_status_event(tab_id, |this| {
                     this.busy = false;
                     this.loading = RepositoryLoading::default();
@@ -1508,11 +1663,19 @@ impl RepositoryView {
                             .then(|| snapshot.path.clone())
                             .or_else(|| this.repo_path.clone());
                         this.sync_selected_remote(&snapshot);
+                        this.change_indexes = ChangeListIndexes::rebuild(&snapshot.changes);
                         this.snapshot = Some(snapshot);
                         this.prune_change_selection();
                         this.clear_history();
                         this.scroll_local_branch_to_current();
                         this.reload_history_if_active();
+                        if let Some(tab_id) = tab_id {
+                            full_status_request = this
+                                .repo_path
+                                .clone()
+                                .map(|path| (tab_id, path, this.repository_load_id));
+                            this.loading.status_full = true;
+                        }
                     }
                     if let Some(diff) = diff {
                         this.diff = Some(Arc::new(diff));
@@ -1520,6 +1683,9 @@ impl RepositoryView {
                         this.reset_uniform_scroll("diff-scroll");
                     }
                 });
+                if let Some((tab_id, path, load_id)) = full_status_request {
+                    self.load_full_status_for_tab(tab_id, path, load_id, "变更已补全".to_string());
+                }
             }
             UiEvent::DiscardChangeFinished {
                 tab_id,
@@ -1536,6 +1702,7 @@ impl RepositoryView {
                         this.last_error = None;
                         this.repo_path = Some(snapshot.path.clone());
                         this.sync_selected_remote(&snapshot);
+                        this.change_indexes = ChangeListIndexes::rebuild(&snapshot.changes);
                         this.snapshot = Some(snapshot);
                         this.replace_changes(changes);
                         this.diff = None;
@@ -1558,10 +1725,11 @@ impl RepositoryView {
                 commits,
                 append,
                 has_more,
+                scope,
                 load_id,
             } => {
                 self.with_tab_context(tab_id, |this| {
-                    if load_id == this.repository_load_id {
+                    if load_id == this.repository_load_id && scope == this.history_scope {
                         this.history_loading.commits = false;
                         this.history_has_more = has_more;
                         if append {
@@ -1573,6 +1741,8 @@ impl RepositoryView {
                             this.history_selected_file = None;
                             this.history_diff = None;
                         }
+                        this.history_graph_rows =
+                            history_view::commit_graph_rows(&this.history_commits);
 
                         if this.history_selected_commit.is_none() {
                             if let Some(commit) = this.history_commits.first() {
@@ -1687,12 +1857,16 @@ impl RepositoryView {
         merged.conflicts = snapshot.conflicts;
         self.repo_path = Some(merged.path.clone());
         self.sync_selected_remote(&merged);
+        self.change_indexes = ChangeListIndexes::rebuild(&merged.changes);
         self.snapshot = Some(merged);
     }
 
     fn replace_changes(&mut self, changes: Vec<khaslana::WorktreeChange>) {
         if let Some(snapshot) = self.snapshot.as_mut() {
             snapshot.changes = changes;
+            self.change_indexes = ChangeListIndexes::rebuild(&snapshot.changes);
+        } else {
+            self.change_indexes = ChangeListIndexes::default();
         }
         self.prune_change_selection();
     }
@@ -2021,7 +2195,13 @@ impl RepositoryView {
 
     fn open_repo(&mut self, path: PathBuf) {
         let tab_id = self.ensure_tab_for_path(path.clone());
-        self.load_repository_for_tab(tab_id, path, "正在打开仓库", "仓库已打开");
+        self.queue_repository_load(
+            tab_id,
+            path,
+            "正在打开仓库",
+            "仓库已打开",
+            LoadPriority::User,
+        );
     }
 
     fn clone_repo(&mut self) {
@@ -2078,18 +2258,17 @@ impl RepositoryView {
             self.last_error = Some("请先打开一个仓库".into());
             return;
         };
-        self.load_repository_for_tab(tab_id, path, "正在刷新仓库", "已刷新");
+        self.queue_repository_load(tab_id, path, "正在刷新仓库", "已刷新", LoadPriority::User);
     }
 
-    fn load_repository_for_tab(
+    fn queue_repository_load(
         &mut self,
         tab_id: RepoTabId,
         path: PathBuf,
         started: &'static str,
         finished: &'static str,
+        priority: LoadPriority,
     ) {
-        let service = self.service_for_tab(tab_id);
-        let tx = self.tx.clone();
         let load_id = {
             let Some(tab) = self.tab_mut(tab_id) else {
                 return;
@@ -2105,6 +2284,58 @@ impl RepositoryView {
         };
         self.close_popups();
         self.save_session();
+        self.repository_load_queue
+            .retain(|request| request.tab_id != tab_id);
+        let request = RepositoryLoadRequest {
+            tab_id,
+            path,
+            started,
+            finished,
+        };
+        if priority == LoadPriority::User {
+            self.repository_load_queue.push_front(request);
+        } else {
+            self.repository_load_queue.push_back(request);
+        }
+        self.start_queued_repository_loads();
+        if let Some(tab) = self.tab(tab_id)
+            && tab.repository_load_id == load_id
+            && self
+                .repository_load_queue
+                .iter()
+                .any(|request| request.tab_id == tab_id)
+        {
+            self.apply_status_event(Some(tab_id), |this| {
+                this.status = "等待加载仓库".to_string();
+            });
+        }
+    }
+
+    fn start_queued_repository_loads(&mut self) {
+        while self.active_repository_loads < MAX_CONCURRENT_REPO_LOADS {
+            let Some(request) = self.repository_load_queue.pop_front() else {
+                break;
+            };
+            if self.tab(request.tab_id).is_none() {
+                continue;
+            }
+            self.active_repository_loads += 1;
+            self.spawn_repository_load(request);
+        }
+    }
+
+    fn spawn_repository_load(&mut self, request: RepositoryLoadRequest) {
+        let tab_id = request.tab_id;
+        let path = request.path;
+        let started = request.started;
+        let finished = request.finished;
+        let service = self.service_for_tab(tab_id);
+        let tx = self.tx.clone();
+        let load_id = self
+            .tab(tab_id)
+            .map(|tab| tab.repository_load_id)
+            .unwrap_or_default();
+        let load_started = Instant::now();
         send_ui_event(
             &tx,
             UiEvent::OperationStarted {
@@ -2113,6 +2344,7 @@ impl RepositoryView {
             },
         );
         thread::spawn(move || {
+            let stage_started = Instant::now();
             let repo_path = RepoPath::new(path);
             let fast = match service.open_fast(&repo_path) {
                 Ok(snapshot) => snapshot,
@@ -2124,9 +2356,15 @@ impl RepositoryView {
                             error: err.to_string(),
                         },
                     );
+                    send_ui_event(&tx, UiEvent::RepositoryLoadFinished { tab_id, load_id });
                     return;
                 }
             };
+            perf_log(
+                "repo.open_fast",
+                stage_started,
+                format!("tab={} branches={}", tab_id.0, fast.branches.len()),
+            );
             send_ui_event(
                 &tx,
                 UiEvent::RepositoryFastLoaded {
@@ -2148,12 +2386,27 @@ impl RepositoryView {
                             load_id,
                         },
                     );
+                    send_ui_event(&tx, UiEvent::RepositoryLoadFinished { tab_id, load_id });
                     return;
                 }
             };
 
+            let stage_started = Instant::now();
             match service.snapshot_metadata(&mut repo) {
                 Ok(snapshot) => {
+                    perf_log(
+                        "repo.metadata",
+                        stage_started,
+                        format!(
+                            "tab={} branches={} remotes={} tags={} stashes={} conflicts={}",
+                            tab_id.0,
+                            snapshot.branches.len(),
+                            snapshot.remotes.len(),
+                            snapshot.tags.len(),
+                            snapshot.stashes.len(),
+                            snapshot.conflicts.len()
+                        ),
+                    );
                     send_ui_event(
                         &tx,
                         UiEvent::RepositoryMetadataLoaded {
@@ -2173,12 +2426,19 @@ impl RepositoryView {
                             load_id,
                         },
                     );
+                    send_ui_event(&tx, UiEvent::RepositoryLoadFinished { tab_id, load_id });
                     return;
                 }
             }
 
+            let stage_started = Instant::now();
             match service.status_fast(&repo) {
                 Ok(changes) => {
+                    perf_log(
+                        "repo.status_fast",
+                        stage_started,
+                        format!("tab={} changes={}", tab_id.0, changes.len()),
+                    );
                     send_ui_event(
                         &tx,
                         UiEvent::RepositoryStatusFastLoaded {
@@ -2198,17 +2458,76 @@ impl RepositoryView {
                             load_id,
                         },
                     );
+                    send_ui_event(&tx, UiEvent::RepositoryLoadFinished { tab_id, load_id });
                     return;
                 }
             }
 
+            let stage_started = Instant::now();
             match service.status_full(&repo) {
                 Ok(changes) => {
+                    perf_log(
+                        "repo.status_full",
+                        stage_started,
+                        format!("tab={} changes={}", tab_id.0, changes.len()),
+                    );
                     send_ui_event(
                         &tx,
                         UiEvent::RepositoryStatusFullLoaded {
                             tab_id,
                             message: finished.to_string(),
+                            changes,
+                            load_id,
+                        },
+                    );
+                }
+                Err(err) => {
+                    send_ui_event(
+                        &tx,
+                        UiEvent::RepositoryLoadStageFailed {
+                            tab_id,
+                            error: err.to_string(),
+                            load_id,
+                        },
+                    );
+                }
+            }
+            perf_log(
+                "repo.load_total",
+                load_started,
+                format!("tab={} load_id={}", tab_id.0, load_id),
+            );
+            send_ui_event(&tx, UiEvent::RepositoryLoadFinished { tab_id, load_id });
+        });
+    }
+
+    fn load_full_status_for_tab(
+        &self,
+        tab_id: RepoTabId,
+        path: PathBuf,
+        load_id: u64,
+        message: String,
+    ) {
+        let service = self.service_for_tab(tab_id);
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let started = Instant::now();
+            let result = (|| -> khaslana::Result<Vec<khaslana::WorktreeChange>> {
+                let repo = Repository::open(path)?;
+                service.status_full(&repo)
+            })();
+            match result {
+                Ok(changes) => {
+                    perf_log(
+                        "repo.status_full.operation",
+                        started,
+                        format!("tab={} changes={}", tab_id.0, changes.len()),
+                    );
+                    send_ui_event(
+                        &tx,
+                        UiEvent::RepositoryStatusFullLoaded {
+                            tab_id,
+                            message,
                             changes,
                             load_id,
                         },
@@ -2896,6 +3215,17 @@ impl RepositoryView {
         self.history_diff = None;
         self.history_diff_headers_expanded = false;
         self.history_loading = HistoryLoading::default();
+        self.history_graph_rows.clear();
+    }
+
+    pub(crate) fn set_history_scope(&mut self, scope: HistoryScope) {
+        if self.history_scope == scope {
+            return;
+        }
+        self.history_scope = scope;
+        self.clear_history();
+        self.status = format!("提交记录范围已切换为{}", scope.label());
+        self.load_history_page(false);
     }
 
     fn reload_history_if_active(&mut self) {
@@ -2929,6 +3259,7 @@ impl RepositoryView {
 
         let service = self.service_for_tab(tab_id);
         let tx = self.tx.clone();
+        let scope = self.history_scope;
         let offset = if append {
             self.history_commits.len()
         } else {
@@ -2944,16 +3275,32 @@ impl RepositoryView {
         self.last_error = None;
 
         thread::spawn(move || {
+            let started = Instant::now();
             let result = (|| -> khaslana::Result<UiEvent> {
                 let repo = Repository::open(repo_path)?;
-                let mut commits = service.commit_history(&repo, offset, HISTORY_PAGE_SIZE + 1)?;
+                let mut commits =
+                    service.commit_history(&repo, scope, offset, HISTORY_PAGE_SIZE + 1)?;
                 let has_more = commits.len() > HISTORY_PAGE_SIZE;
                 commits.truncate(HISTORY_PAGE_SIZE);
+                perf_log(
+                    "history.commits",
+                    started,
+                    format!(
+                        "tab={} scope={} append={} offset={} commits={} has_more={}",
+                        tab_id.0,
+                        scope.label(),
+                        append,
+                        offset,
+                        commits.len(),
+                        has_more
+                    ),
+                );
                 Ok(UiEvent::HistoryCommitsLoaded {
                     tab_id,
                     commits,
                     append,
                     has_more,
+                    scope,
                     load_id,
                 })
             })();
@@ -3011,9 +3358,15 @@ impl RepositoryView {
         let load_id = self.repository_load_id;
 
         thread::spawn(move || {
+            let started = Instant::now();
             let result = (|| -> khaslana::Result<UiEvent> {
                 let repo = Repository::open(repo_path)?;
                 let files = service.commit_files(&repo, &oid)?;
+                perf_log(
+                    "history.files",
+                    started,
+                    format!("tab={} files={}", tab_id.0, files.len()),
+                );
                 Ok(UiEvent::HistoryFilesLoaded {
                     tab_id,
                     commit_oid: oid,
@@ -3074,10 +3427,16 @@ impl RepositoryView {
         let load_id = self.repository_load_id;
 
         thread::spawn(move || {
+            let started = Instant::now();
             let result = (|| -> khaslana::Result<UiEvent> {
                 let repo = Repository::open(repo_path)?;
                 let diff =
                     service.commit_file_diff(&repo, &commit_oid, Path::new(&path), encoding)?;
+                perf_log(
+                    "history.diff",
+                    started,
+                    format!("tab={} lines={}", tab_id.0, diff.lines.len()),
+                );
                 Ok(UiEvent::HistoryDiffLoaded {
                     tab_id,
                     commit_oid,
@@ -3178,14 +3537,22 @@ impl RepositoryView {
         let encoding = self.diff_encoding_choice_for_path(&repo_path);
         let service = self.service_for_tab(tab_id);
         self.spawn_operation_for_tab(Some(tab_id), "正在加载差异", move || {
+            let started = Instant::now();
             let repo = Repository::open(repo_path)?;
             service
                 .diff_for_path(&repo, Path::new(&path), scope, encoding)
-                .map(|diff| UiEvent::OperationFinished {
-                    tab_id: Some(tab_id),
-                    message: "差异已加载".to_string(),
-                    snapshot: None,
-                    diff: Some(diff),
+                .map(|diff| {
+                    perf_log(
+                        "worktree.diff",
+                        started,
+                        format!("tab={} lines={}", tab_id.0, diff.lines.len()),
+                    );
+                    UiEvent::OperationFinished {
+                        tab_id: Some(tab_id),
+                        message: "差异已加载".to_string(),
+                        snapshot: None,
+                        diff: Some(diff),
+                    }
                 })
         });
     }
@@ -4088,28 +4455,33 @@ impl RepositoryView {
     }
 
     fn render_changes(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let changes = self
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.changes.clone())
-            .unwrap_or_default();
-        let unstaged_rows = changes
-            .iter()
-            .filter(|change| change.unstaged.is_some())
-            .cloned()
-            .map(|change| {
-                self.change_row(change, DiffScope::Unstaged, cx)
-                    .into_any_element()
-            })
-            .collect::<Vec<_>>();
-        let staged_rows = changes
-            .into_iter()
-            .filter(|change| change.staged.is_some())
-            .map(|change| {
-                self.change_row(change, DiffScope::Staged, cx)
-                    .into_any_element()
-            })
-            .collect::<Vec<_>>();
+        let (staged_rows, unstaged_rows) = if let Some(snapshot) = self.snapshot.as_ref() {
+            let staged_rows = self
+                .change_indexes
+                .staged
+                .iter()
+                .filter_map(|index| snapshot.changes.get(*index))
+                .cloned()
+                .map(|change| {
+                    self.change_row(change, DiffScope::Staged, cx)
+                        .into_any_element()
+                })
+                .collect::<Vec<_>>();
+            let unstaged_rows = self
+                .change_indexes
+                .unstaged
+                .iter()
+                .filter_map(|index| snapshot.changes.get(*index))
+                .cloned()
+                .map(|change| {
+                    self.change_row(change, DiffScope::Unstaged, cx)
+                        .into_any_element()
+                })
+                .collect::<Vec<_>>();
+            (staged_rows, unstaged_rows)
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let has_staged_selection = !self.change_selection.staged.is_empty();
         let has_unstaged_selection = !self.change_selection.unstaged.is_empty();
         let has_staged = !staged_rows.is_empty();
@@ -4487,14 +4859,6 @@ impl RepositoryView {
             .child(self.render_encoding_dropdown(EncodingMenuTarget::Worktree, cx))
     }
 
-    pub(crate) fn diff_render_rows(
-        &self,
-        diff: Option<&FileDiff>,
-        headers_expanded: bool,
-    ) -> Vec<DiffRenderRow> {
-        diff_render_rows_for(diff, headers_expanded)
-    }
-
     fn render_virtual_diff(
         &self,
         scroll_id: &'static str,
@@ -4504,16 +4868,15 @@ impl RepositoryView {
         empty_message: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let rows = self.diff_render_rows(diff.as_deref(), headers_expanded);
-        let row_count = rows.len();
+        let model = diff_render_model_for(diff.as_deref(), headers_expanded);
+        let row_count = model.row_count;
         let content_present = diff.is_some() && row_count > 0;
-        let width_measure_index = rows
-            .iter()
-            .position(|row| matches!(row, DiffRenderRow::DiffLine(_)))
+        let width_measure_index = (0..row_count)
+            .find(|index| matches!(model.row_at(*index), DiffRenderRow::DiffLine(_)))
             .or_else(|| row_count.checked_sub(1));
         let handle = self.uniform_scroll_handle(scroll_id);
         let list_handle = handle.clone();
-        let rows_for_list = rows.clone();
+        let model_for_list = model.clone();
         let content = div()
             .id(scroll_id)
             .flex()
@@ -4532,17 +4895,15 @@ impl RepositoryView {
                     cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
                         let diff = diff.as_deref();
                         range
-                            .filter_map(|index| {
-                                rows_for_list.get(index).map(|row| {
-                                    this.render_diff_row(
-                                        diff,
-                                        *row,
-                                        headers_expanded,
-                                        header_target,
-                                        &empty_message,
-                                        cx,
-                                    )
-                                })
+                            .map(|index| {
+                                this.render_diff_row(
+                                    diff,
+                                    model_for_list.row_at(index),
+                                    headers_expanded,
+                                    header_target,
+                                    &empty_message,
+                                    cx,
+                                )
                             })
                             .collect::<Vec<_>>()
                     }),

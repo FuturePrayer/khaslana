@@ -202,6 +202,22 @@ pub enum CommitRefKind {
     Head,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HistoryScope {
+    #[default]
+    CurrentBranch,
+    AllRefs,
+}
+
+impl HistoryScope {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CurrentBranch => "当前分支",
+            Self::AllRefs => "所有分支",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitFileChange {
     pub path: String,

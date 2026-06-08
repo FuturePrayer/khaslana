@@ -533,6 +533,44 @@ pub(crate) fn section_header_action(
     }
 }
 
+pub(crate) fn history_scope_button(
+    label: &'static str,
+    selected: bool,
+    action: impl Fn(&mut RepositoryView) + 'static,
+    cx: &mut Context<RepositoryView>,
+) -> impl IntoElement {
+    div()
+        .id(format!("history-scope-{label}"))
+        .flex_none()
+        .px_2()
+        .py_1()
+        .rounded_sm()
+        .border_1()
+        .border_color(if selected {
+            rgb(COLOR_BORDER_STRONG)
+        } else {
+            rgb(COLOR_BORDER)
+        })
+        .bg(if selected {
+            rgb(COLOR_BLUE_SOFT)
+        } else {
+            rgb(COLOR_SURFACE)
+        })
+        .text_size(px(11.0))
+        .text_color(if selected {
+            rgb(COLOR_BLUE_DARK)
+        } else {
+            rgb(COLOR_TEXT_MUTED)
+        })
+        .cursor_pointer()
+        .hover(|this| this.bg(rgb(COLOR_BLUE_SOFT)))
+        .on_click(cx.listener(move |this, _event, _window, cx| {
+            action(this);
+            cx.notify();
+        }))
+        .child(label)
+}
+
 pub(crate) fn nav_list(
     owner: &RepositoryView,
     id: &'static str,

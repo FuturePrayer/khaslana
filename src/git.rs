@@ -17,8 +17,8 @@ use crate::credentials::{CredentialProvider, CredentialRequest, to_git_credentia
 use crate::types::{
     BranchInfo, BranchKind, BranchName, ChangeState, CommitFileChange, CommitInfo, CommitMessage,
     CommitRefInfo, CommitRefKind, DiffEncodingChoice, DiffEncodingInfo, DiffLine, DiffLineKind,
-    DiffScope, FileDiff, GitError, OperationEvent, RemoteName, RepoPath, RepositorySnapshot,
-    ResetMode, Result, StashInfo, TagInfo, TagName, WorktreeChange,
+    DiffScope, FileDiff, GitError, HistoryScope, OperationEvent, RemoteName, RepoPath,
+    RepositorySnapshot, ResetMode, Result, StashInfo, TagInfo, TagName, WorktreeChange,
 };
 
 const DIFF_CONTEXT_LINES: u32 = 3;
@@ -87,6 +87,12 @@ impl GitService {
 
     pub fn snapshot(&self, repo: &mut Repository) -> Result<RepositorySnapshot> {
         self.snapshot_details(repo)
+    }
+
+    pub fn snapshot_after_operation(&self, repo: &mut Repository) -> Result<RepositorySnapshot> {
+        let mut snapshot = self.snapshot_metadata(repo)?;
+        snapshot.changes = self.status_fast(repo)?;
+        Ok(snapshot)
     }
 
     pub fn fast_snapshot(&self, repo: &Repository) -> Result<RepositorySnapshot> {
@@ -290,7 +296,7 @@ impl GitService {
         drop(options);
         self.progress
             .emit(OperationEvent::Finished(format!("已获取 {}", remote.0)));
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn pull(&self, repo: &mut Repository, remote: &RemoteName) -> Result<RepositorySnapshot> {
@@ -310,7 +316,7 @@ impl GitService {
 
         self.progress
             .emit(OperationEvent::Finished(format!("已拉取 {}", remote.0)));
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn push(&self, repo: &mut Repository, remote: &RemoteName) -> Result<RepositorySnapshot> {
@@ -335,7 +341,7 @@ impl GitService {
 
         self.progress
             .emit(OperationEvent::Finished(format!("已推送 {branch}")));
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn merge_branch(
@@ -352,7 +358,7 @@ impl GitService {
         drop(reference);
         self.progress
             .emit(OperationEvent::Finished(format!("已合并 {}", branch.0)));
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn checkout_branch(
@@ -374,7 +380,7 @@ impl GitService {
         repo.set_head(refname)?;
         drop(object);
         drop(branch_handle);
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn checkout_remote_branch(
@@ -421,7 +427,7 @@ impl GitService {
         repo.set_head_detached(commit.id())?;
         drop(commit);
         drop(object);
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn create_branch(
@@ -433,7 +439,7 @@ impl GitService {
         let head = repo.head()?.peel_to_commit()?;
         repo.branch(&branch.0, &head, false)?;
         drop(head);
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn delete_branch(
@@ -444,7 +450,7 @@ impl GitService {
         let mut branch_handle = repo.find_branch(&branch.0, BranchType::Local)?;
         branch_handle.delete()?;
         drop(branch_handle);
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn rename_branch(
@@ -457,7 +463,7 @@ impl GitService {
         let mut branch = repo.find_branch(&old.0, BranchType::Local)?;
         branch.rename(&new.0, false)?;
         drop(branch);
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn stage_path(&self, repo: &mut Repository, path: &Path) -> Result<RepositorySnapshot> {
@@ -483,7 +489,7 @@ impl GitService {
             }
         }
         index.write()?;
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn unstage_path(&self, repo: &mut Repository, path: &Path) -> Result<RepositorySnapshot> {
@@ -502,7 +508,7 @@ impl GitService {
         let paths = paths.into_iter().collect::<Vec<_>>();
         repo.reset_default(object.as_ref().map(|tree| tree.as_object()), paths)?;
         drop(object);
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn discard_unstaged_path(
@@ -527,7 +533,7 @@ impl GitService {
 
         self.progress
             .emit(OperationEvent::Finished("已回滚未暂存更改".into()));
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn discard_all_path(
@@ -571,7 +577,7 @@ impl GitService {
 
         self.progress
             .emit(OperationEvent::Finished("已回滚文件全部更改".into()));
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn commit(
@@ -606,7 +612,7 @@ impl GitService {
         repo.cleanup_state()?;
         drop(tree);
         drop(parent_commits);
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn apply_stash(&self, repo: &mut Repository, index: usize) -> Result<RepositorySnapshot> {
@@ -618,7 +624,7 @@ impl GitService {
         self.progress.emit(OperationEvent::Finished(format!(
             "已应用贮藏 stash@{{{index}}}"
         )));
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn pop_stash(&self, repo: &mut Repository, index: usize) -> Result<RepositorySnapshot> {
@@ -630,7 +636,7 @@ impl GitService {
         self.progress.emit(OperationEvent::Finished(format!(
             "已弹出贮藏 stash@{{{index}}}"
         )));
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn diff_for_path(
@@ -660,10 +666,32 @@ impl GitService {
     pub fn commit_history(
         &self,
         repo: &Repository,
+        scope: HistoryScope,
         offset: usize,
         limit: usize,
     ) -> Result<Vec<CommitInfo>> {
-        self.commit_graph(repo, offset, limit)
+        match scope {
+            HistoryScope::CurrentBranch => self.current_branch_commit_graph(repo, offset, limit),
+            HistoryScope::AllRefs => self.commit_graph(repo, offset, limit),
+        }
+    }
+
+    pub fn current_branch_commit_graph(
+        &self,
+        repo: &Repository,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<CommitInfo>> {
+        let (_, refs_by_oid) = self.commit_graph_refs(repo)?;
+        let mut walk = repo.revwalk()?;
+        walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
+        if let Err(err) = walk.push_head() {
+            if is_empty_head_error(&err) {
+                return Ok(Vec::new());
+            }
+            return Err(err.into());
+        }
+        self.collect_commit_infos(repo, walk.skip(offset).take(limit), refs_by_oid)
     }
 
     pub fn reset_to_commit(
@@ -689,7 +717,7 @@ impl GitService {
         drop(commit);
         self.progress
             .emit(OperationEvent::Finished("分支已重置".into()));
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn revert_commit(
@@ -742,7 +770,7 @@ impl GitService {
         drop(revert_commit);
         self.progress
             .emit(OperationEvent::Finished("回滚提交完成".into()));
-        self.snapshot(repo)
+        self.snapshot_after_operation(repo)
     }
 
     pub fn commit_graph(
@@ -768,8 +796,20 @@ impl GitService {
             }
         }
 
+        self.collect_commit_infos(repo, walk.skip(offset).take(limit), refs_by_oid)
+    }
+
+    fn collect_commit_infos<I>(
+        &self,
+        repo: &Repository,
+        oids: I,
+        refs_by_oid: BTreeMap<String, Vec<CommitRefInfo>>,
+    ) -> Result<Vec<CommitInfo>>
+    where
+        I: IntoIterator<Item = std::result::Result<git2::Oid, git2::Error>>,
+    {
         let mut commits = Vec::new();
-        for oid in walk.skip(offset).take(limit) {
+        for oid in oids {
             let oid = oid?;
             let commit = repo.find_commit(oid)?;
             let author = commit.author();
@@ -2200,12 +2240,16 @@ mod tests {
         write_file(dir.path(), "file.txt", "one\ntwo\n");
         commit_all(&repo, "modify file");
 
-        let first_page = service.commit_history(&repo, 0, 2).unwrap();
+        let first_page = service
+            .commit_history(&repo, HistoryScope::CurrentBranch, 0, 2)
+            .unwrap();
         assert_eq!(first_page.len(), 2);
         assert_eq!(first_page[0].summary, "modify file");
         assert_eq!(first_page[1].summary, "add file");
 
-        let second_page = service.commit_history(&repo, 2, 2).unwrap();
+        let second_page = service
+            .commit_history(&repo, HistoryScope::CurrentBranch, 2, 2)
+            .unwrap();
         assert_eq!(second_page.len(), 1);
         assert_eq!(second_page[0].summary, "root commit");
         assert_ne!(first_page[1].oid, second_page[0].oid);
@@ -2250,6 +2294,34 @@ mod tests {
                 .iter()
                 .any(|line| line.kind == DiffLineKind::Added && line.content.contains("root"))
         );
+    }
+
+    #[test]
+    fn commit_history_scope_current_branch_excludes_other_branch_commits() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "base.txt", "base\n");
+        commit_all(&repo, "base");
+        service
+            .create_branch(&mut repo, &BranchName::new("side"))
+            .unwrap();
+        service
+            .checkout_branch(&mut repo, &BranchName::new("side"))
+            .unwrap();
+        write_file(dir.path(), "side.txt", "side\n");
+        commit_all(&repo, "side only");
+        service
+            .checkout_branch(&mut repo, &BranchName::new("main"))
+            .unwrap();
+
+        let current = service
+            .commit_history(&repo, HistoryScope::CurrentBranch, 0, 20)
+            .unwrap();
+        let all = service
+            .commit_history(&repo, HistoryScope::AllRefs, 0, 20)
+            .unwrap();
+
+        assert!(!current.iter().any(|commit| commit.summary == "side only"));
+        assert!(all.iter().any(|commit| commit.summary == "side only"));
     }
 
     #[test]
