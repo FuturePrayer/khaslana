@@ -18,6 +18,8 @@ pub struct CredentialRequest {
     pub url: String,
     pub username_from_url: Option<String>,
     pub allowed_types: CredentialType,
+    pub repo_path: Option<PathBuf>,
+    pub remote_name: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +33,13 @@ pub enum CredentialScope {
 pub enum StoredCredentialKind {
     HttpsUserPass,
     SshKey,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoteCredentialPolicy {
+    AutoMatch,
+    NoCredential,
+    Record(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,6 +204,12 @@ pub trait CredentialStore: Send + Sync {
     fn delete_record(&self, record_id: &str) -> Result<()>;
     fn list_records(&self) -> Result<Vec<CredentialRecord>>;
     fn credential_for_record(&self, record_id: &str) -> Result<Option<GitCredential>>;
+    fn touch_record(&self, record_id: &str) -> Result<Option<CredentialRecord>>;
+    fn update_record_remote_url(
+        &self,
+        record_id: &str,
+        remote_url: &str,
+    ) -> Result<CredentialRecord>;
 }
 
 #[derive(Default)]
@@ -368,6 +383,42 @@ impl CredentialStore for MemoryCredentialStore {
             .get(record_id)
             .cloned();
         Ok(secret.and_then(|secret| GitCredential::from_record(&record, secret)))
+    }
+
+    fn touch_record(&self, record_id: &str) -> Result<Option<CredentialRecord>> {
+        let mut index = self
+            .index
+            .lock()
+            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?;
+        let now = next_record_timestamp(&index);
+        let Some(record) = index.iter_mut().find(|record| record.id == record_id) else {
+            return Ok(None);
+        };
+        record.last_used = Some(now);
+        record.updated_at = now;
+        Ok(Some(record.clone()))
+    }
+
+    fn update_record_remote_url(
+        &self,
+        record_id: &str,
+        remote_url: &str,
+    ) -> Result<CredentialRecord> {
+        let metadata = remote_metadata(remote_url)
+            .ok_or_else(|| GitError::Credential("无法解析远端地址，不能绑定凭据".to_string()))?;
+        let mut index = self
+            .index
+            .lock()
+            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?;
+        let now = next_record_timestamp(&index);
+        let Some(record) = index.iter_mut().find(|record| record.id == record_id) else {
+            return Err(GitError::Credential("凭据记录不存在".into()));
+        };
+        record.remote_url = remote_url.to_string();
+        record.host = metadata.host_key;
+        record.last_used = Some(now);
+        record.updated_at = now;
+        Ok(record.clone())
     }
 }
 
@@ -641,6 +692,36 @@ impl CredentialStore for KeyringCredentialStore {
             Err(err) => Err(GitError::Credential(format!("系统凭据读取失败：{err:?}"))),
         }
     }
+
+    fn touch_record(&self, record_id: &str) -> Result<Option<CredentialRecord>> {
+        KeyringCredentialStore::touch_record(self, record_id)
+    }
+
+    fn update_record_remote_url(
+        &self,
+        record_id: &str,
+        remote_url: &str,
+    ) -> Result<CredentialRecord> {
+        self.ensure_store()?;
+        let metadata = remote_metadata(remote_url)
+            .ok_or_else(|| GitError::Credential("无法解析远端地址，不能绑定凭据".to_string()))?;
+        let mut index = self.load_index()?;
+        let now = next_record_timestamp(&index.records);
+        let Some(record) = index
+            .records
+            .iter_mut()
+            .find(|record| record.id == record_id)
+        else {
+            return Err(GitError::Credential("凭据记录不存在".into()));
+        };
+        record.remote_url = remote_url.to_string();
+        record.host = metadata.host_key;
+        record.last_used = Some(now);
+        record.updated_at = now;
+        let updated = record.clone();
+        self.save_index(&index)?;
+        Ok(updated)
+    }
 }
 
 pub trait CredentialProvider: Send + Sync {
@@ -701,6 +782,8 @@ pub fn test_credential_connection(
             StoredCredentialKind::HttpsUserPass => CredentialType::USER_PASS_PLAINTEXT,
             StoredCredentialKind::SshKey => CredentialType::SSH_KEY,
         },
+        repo_path: None,
+        remote_name: None,
     };
     let temp = tempfile_dir_for_credential_test()?;
     let repo = git2::Repository::init_bare(&temp)?;
@@ -873,6 +956,35 @@ pub fn credential_key_filename(record: &CredentialRecord) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
+pub fn credential_record_is_compatible_with_url(record: &CredentialRecord, url: &str) -> bool {
+    let Some(metadata) = remote_metadata(url) else {
+        return false;
+    };
+    matches!(
+        (metadata.protocol_family, record.kind),
+        (ProtocolFamily::Https, StoredCredentialKind::HttpsUserPass)
+            | (ProtocolFamily::Ssh, StoredCredentialKind::SshKey)
+    )
+}
+
+pub fn credential_record_matches_remote_url(record: &CredentialRecord, url: &str) -> bool {
+    if !credential_record_is_compatible_with_url(record, url) {
+        return false;
+    }
+    let Some(metadata) = remote_metadata(url) else {
+        return false;
+    };
+    if record.host != metadata.host_key {
+        return false;
+    }
+    match record.scope {
+        CredentialScope::RemoteUrl => {
+            normalize_remote_url(&record.remote_url) == normalize_remote_url(url)
+        }
+        CredentialScope::Host => true,
+    }
+}
+
 fn remote_metadata(url: &str) -> Option<RemoteMetadata> {
     let trimmed = url.trim();
     let lower = trimmed.to_ascii_lowercase();
@@ -1000,6 +1112,8 @@ mod tests {
             url: url.to_string(),
             username_from_url: Some("git".to_string()),
             allowed_types,
+            repo_path: None,
+            remote_name: None,
         }
     }
 
@@ -1102,6 +1216,33 @@ mod tests {
     }
 
     #[test]
+    fn touch_record_makes_host_scope_credential_preferred() {
+        let store = MemoryCredentialStore::new();
+        let req_a = request(
+            "https://example.com/team/a.git",
+            CredentialType::USER_PASS_PLAINTEXT,
+        );
+        let req_b = request(
+            "https://example.com/team/b.git",
+            CredentialType::USER_PASS_PLAINTEXT,
+        );
+        let old = store
+            .save_record(&req_a, &https_credential(CredentialScope::Host, "old"))
+            .unwrap();
+        store
+            .save_record(&req_b, &https_credential(CredentialScope::Host, "new"))
+            .unwrap();
+
+        store.touch_record(&old.id).unwrap();
+
+        let credential = store.get(&req_b).unwrap().unwrap();
+        assert!(matches!(
+            credential,
+            GitCredential::UserPass { secret, .. } if secret == "old"
+        ));
+    }
+
+    #[test]
     fn rejected_record_is_not_reused() {
         let store = MemoryCredentialStore::new();
         let req = request(
@@ -1116,6 +1257,82 @@ mod tests {
             .unwrap();
         let stored = store.get_stored(&req, &[record.id]).unwrap();
         assert!(stored.is_none());
+    }
+
+    #[test]
+    fn credential_record_url_compatibility_matches_protocol_family() {
+        let https = CredentialRecord {
+            id: "https".to_string(),
+            scope: CredentialScope::RemoteUrl,
+            kind: StoredCredentialKind::HttpsUserPass,
+            host: "https://example.com".to_string(),
+            remote_url: "https://example.com/team/repo.git".to_string(),
+            username: "git".to_string(),
+            key_path: None,
+            created_at: 1,
+            updated_at: 1,
+            last_used: Some(1),
+        };
+        let ssh = CredentialRecord {
+            id: "ssh".to_string(),
+            scope: CredentialScope::Host,
+            kind: StoredCredentialKind::SshKey,
+            host: "ssh://example.com".to_string(),
+            remote_url: "git@example.com:team/repo.git".to_string(),
+            username: "git".to_string(),
+            key_path: Some("C:/Users/me/.ssh/id_ed25519".to_string()),
+            created_at: 1,
+            updated_at: 1,
+            last_used: Some(1),
+        };
+
+        assert!(credential_record_is_compatible_with_url(
+            &https,
+            "https://example.com/other/repo.git"
+        ));
+        assert!(!credential_record_is_compatible_with_url(
+            &https,
+            "git@example.com:other/repo.git"
+        ));
+        assert!(credential_record_matches_remote_url(
+            &ssh,
+            "git@example.com:other/repo.git"
+        ));
+        assert!(!credential_record_matches_remote_url(
+            &ssh,
+            "https://example.com/other/repo.git"
+        ));
+    }
+
+    #[test]
+    fn update_record_remote_url_rebinds_remote_url_scope_record() {
+        let store = MemoryCredentialStore::new();
+        let req = request(
+            "https://example.com/team/repo.git",
+            CredentialType::USER_PASS_PLAINTEXT,
+        );
+        let record = store
+            .save_record(
+                &req,
+                &https_credential(CredentialScope::RemoteUrl, "secret"),
+            )
+            .unwrap();
+
+        let updated = store
+            .update_record_remote_url(&record.id, "https://other.example/new/repo.git")
+            .unwrap();
+
+        assert_eq!(updated.remote_url, "https://other.example/new/repo.git");
+        assert_eq!(updated.host, "https://other.example");
+        assert!(!credential_record_matches_remote_url(
+            &updated,
+            "https://example.com/team/repo.git"
+        ));
+        assert!(credential_record_matches_remote_url(
+            &updated,
+            "https://other.example/new/repo.git"
+        ));
+        assert!(store.credential_for_record(&record.id).unwrap().is_some());
     }
 
     #[test]

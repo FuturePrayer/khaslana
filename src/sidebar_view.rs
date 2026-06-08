@@ -1,7 +1,7 @@
 use gpui::{
     ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent, Window, div, prelude::*, px, rgb,
 };
-use khaslana::{BranchInfo, BranchKind, StashInfo, TagInfo};
+use khaslana::{BranchInfo, BranchKind, RemoteInfo, StashInfo, TagInfo};
 
 use crate::{
     BRANCH_MENU_HEIGHT, BRANCH_MENU_WIDTH, BranchContextMenu, COLOR_BLUE, COLOR_BLUE_DARK,
@@ -83,15 +83,25 @@ impl RepositoryView {
                     cx,
                 ),
             )
-            .child(self.render_nav_section(
-                "远端",
-                "remote-list",
-                remote_rows,
-                self.loading.remote().then_some("远端加载中..."),
-                2.0,
-                None,
-                cx,
-            ))
+            .child(
+                self.render_nav_section(
+                    "远端",
+                    "remote-list",
+                    remote_rows,
+                    self.loading.remote().then_some("远端加载中..."),
+                    2.0,
+                    Some(
+                        self.button(
+                            "管理",
+                            self.repo_path.is_some() && !self.busy,
+                            |this, _, _| this.open_remote_manager(),
+                            cx,
+                        )
+                        .into_any_element(),
+                    ),
+                    cx,
+                ),
+            )
             .child(self.render_nav_section(
                 "远端分支",
                 "remote-branch-list",
@@ -155,11 +165,11 @@ impl RepositoryView {
             .child(nav_list(self, id, rows, cx))
     }
 
-    fn remote_row(&self, remote: String, cx: &mut Context<Self>) -> impl IntoElement {
-        let selected = self.current_remote().as_deref() == Some(remote.as_str());
-        let name = remote.clone();
+    fn remote_row(&self, remote: RemoteInfo, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = self.current_remote().as_deref() == Some(remote.name.as_str());
+        let name = remote.name.clone();
 
-        nav_row(format!("remote-{remote}"), false, selected)
+        nav_row(format!("remote-{}", remote.name), false, selected)
             .hover(move |this| {
                 if selected {
                     this.bg(rgb(COLOR_BLUE_SOFT))
@@ -190,7 +200,7 @@ impl RepositoryView {
                         rgb(COLOR_TEXT)
                     })
                     .truncate()
-                    .child(remote),
+                    .child(remote.name),
             )
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 this.selected_remote = Some(name.clone());

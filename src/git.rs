@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
 use encoding_rs::{BIG5, Encoding, GB18030, UTF_8};
@@ -17,7 +17,7 @@ use crate::credentials::{CredentialProvider, CredentialRequest, to_git_credentia
 use crate::types::{
     BranchInfo, BranchKind, BranchName, ChangeState, CommitFileChange, CommitInfo, CommitMessage,
     CommitRefInfo, CommitRefKind, DiffEncodingChoice, DiffEncodingInfo, DiffLine, DiffLineKind,
-    DiffScope, FileDiff, GitError, HistoryScope, OperationEvent, RemoteName, RepoPath,
+    DiffScope, FileDiff, GitError, HistoryScope, OperationEvent, RemoteInfo, RemoteName, RepoPath,
     RepositorySnapshot, ResetMode, Result, StashInfo, TagInfo, TagName, WorktreeChange,
 };
 
@@ -38,6 +38,19 @@ impl ProgressEmitter for NoopProgress {
 pub struct GitService {
     credential_provider: Arc<dyn CredentialProvider>,
     progress: Arc<dyn ProgressEmitter>,
+    remote_context: Arc<Mutex<Option<(std::path::PathBuf, String)>>>,
+}
+
+struct RemoteContextGuard {
+    context: Arc<Mutex<Option<(std::path::PathBuf, String)>>>,
+}
+
+impl Drop for RemoteContextGuard {
+    fn drop(&mut self) {
+        if let Ok(mut context) = self.context.lock() {
+            *context = None;
+        }
+    }
 }
 
 impl GitService {
@@ -48,6 +61,7 @@ impl GitService {
         Self {
             credential_provider,
             progress,
+            remote_context: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -246,16 +260,73 @@ impl GitService {
         Ok(changes.into_values().collect())
     }
 
-    pub fn remotes(&self, repo: &Repository) -> Result<Vec<String>> {
+    pub fn remotes(&self, repo: &Repository) -> Result<Vec<RemoteInfo>> {
         let remotes = repo.remotes()?;
-        let mut names = remotes.iter().try_fold(Vec::new(), |mut names, name| {
+        let mut infos = remotes.iter().try_fold(Vec::new(), |mut infos, name| {
             if let Some(name) = name? {
-                names.push(name.to_string());
+                let url = repo
+                    .find_remote(name)
+                    .ok()
+                    .and_then(|remote| remote.url().ok().map(str::to_string))
+                    .unwrap_or_default();
+                infos.push(RemoteInfo {
+                    name: name.to_string(),
+                    url,
+                    credential_record_id: None,
+                });
             }
-            Ok::<_, git2::Error>(names)
+            Ok::<_, git2::Error>(infos)
         })?;
-        names.sort();
-        Ok(names)
+        infos.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(infos)
+    }
+
+    pub fn add_remote(
+        &self,
+        repo: &mut Repository,
+        name: &RemoteName,
+        url: &str,
+    ) -> Result<RepositorySnapshot> {
+        validate_remote_name(&name.0)?;
+        validate_remote_url(url)?;
+        if repo.find_remote(&name.0).is_ok() {
+            return Err(GitError::Message(format!("远端名称已存在：{}", name.0)));
+        }
+        repo.remote(&name.0, url.trim())?;
+        self.snapshot_after_operation(repo)
+    }
+
+    pub fn update_remote(
+        &self,
+        repo: &mut Repository,
+        old_name: &RemoteName,
+        new_name: &RemoteName,
+        url: &str,
+    ) -> Result<RepositorySnapshot> {
+        validate_remote_name(&old_name.0)?;
+        validate_remote_name(&new_name.0)?;
+        validate_remote_url(url)?;
+        if old_name.0 != new_name.0 {
+            if repo.find_remote(&new_name.0).is_ok() {
+                return Err(GitError::Message(format!("远端名称已存在：{}", new_name.0)));
+            }
+            repo.remote_rename(&old_name.0, &new_name.0)?;
+        } else {
+            repo.find_remote(&old_name.0)?;
+        }
+        repo.remote_set_url(&new_name.0, url.trim())?;
+        repo.remote_set_pushurl(&new_name.0, Some(url.trim()))?;
+        self.snapshot_after_operation(repo)
+    }
+
+    pub fn delete_remote(
+        &self,
+        repo: &mut Repository,
+        name: &RemoteName,
+    ) -> Result<RepositorySnapshot> {
+        validate_remote_name(&name.0)?;
+        repo.remote_delete(&name.0)?;
+        self.snapshot_after_operation(repo)
     }
 
     pub fn tags(&self, repo: &Repository) -> Result<Vec<TagInfo>> {
@@ -288,21 +359,29 @@ impl GitService {
     pub fn fetch(&self, repo: &mut Repository, remote: &RemoteName) -> Result<RepositorySnapshot> {
         self.progress
             .emit(OperationEvent::Started(format!("正在获取 {}", remote.0)));
-        let mut remote_handle = repo.find_remote(&remote.0)?;
-        let mut options = FetchOptions::new();
-        options.remote_callbacks(self.remote_callbacks(Some(repo)));
-        remote_handle.fetch(&[] as &[&str], Some(&mut options), Some("khaslana fetch"))?;
-        drop(remote_handle);
-        drop(options);
+        self.fetch_remote_refs(repo, remote)?;
         self.progress
             .emit(OperationEvent::Finished(format!("已获取 {}", remote.0)));
         self.snapshot_after_operation(repo)
     }
 
+    fn fetch_remote_refs(&self, repo: &mut Repository, remote: &RemoteName) -> Result<()> {
+        let _remote_context = self.set_remote_context(repo, remote);
+        let mut remote_handle = repo.find_remote(&remote.0)?;
+        let mut options = FetchOptions::new();
+        options.remote_callbacks(self.remote_callbacks(Some(repo)));
+        let result =
+            remote_handle.fetch(&[] as &[&str], Some(&mut options), Some("khaslana fetch"));
+        drop(remote_handle);
+        drop(options);
+        result?;
+        Ok(())
+    }
+
     pub fn pull(&self, repo: &mut Repository, remote: &RemoteName) -> Result<RepositorySnapshot> {
         self.progress
             .emit(OperationEvent::Started(format!("正在拉取 {}", remote.0)));
-        self.fetch(repo, remote)?;
+        self.fetch_remote_refs(repo, remote)?;
 
         let head = repo.head()?;
         let branch = head.shorthand().map_err(GitError::from)?.to_string();
@@ -326,13 +405,15 @@ impl GitService {
 
         self.progress
             .emit(OperationEvent::Started(format!("正在推送 {branch}")));
+        let _remote_context = self.set_remote_context(repo, remote);
         let mut remote_handle = repo.find_remote(&remote.0)?;
         let mut options = PushOptions::new();
         options.remote_callbacks(self.remote_callbacks(Some(repo)));
         let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-        remote_handle.push(&[refspec.as_str()], Some(&mut options))?;
+        let result = remote_handle.push(&[refspec.as_str()], Some(&mut options));
         drop(remote_handle);
         drop(options);
+        result?;
 
         if let Ok(mut local) = repo.find_branch(&branch, BranchType::Local) {
             let upstream = format!("{}/{}", remote.0, branch);
@@ -516,18 +597,34 @@ impl GitService {
         repo: &mut Repository,
         path: &Path,
     ) -> Result<RepositorySnapshot> {
-        self.ensure_path_not_conflicted(repo, path)?;
+        self.discard_unstaged_paths(repo, [path])
+    }
+
+    pub fn discard_unstaged_paths<'a, I>(
+        &self,
+        repo: &mut Repository,
+        paths: I,
+    ) -> Result<RepositorySnapshot>
+    where
+        I: IntoIterator<Item = &'a Path>,
+    {
+        let paths = paths.into_iter().collect::<Vec<_>>();
+        for path in &paths {
+            self.ensure_path_not_conflicted(repo, path)?;
+        }
         self.progress
             .emit(OperationEvent::Started("正在回滚未暂存更改".into()));
 
         let mut index = repo.index()?;
-        let has_index_entry = index.get_path(path, 0).is_some();
-        if has_index_entry {
-            let mut checkout = CheckoutBuilder::new();
-            checkout.force().path(path).disable_pathspec_match(true);
-            repo.checkout_index(Some(&mut index), Some(&mut checkout))?;
-        } else {
-            remove_worktree_path(repo, path)?;
+        for path in paths {
+            let has_index_entry = index.get_path(path, 0).is_some();
+            if has_index_entry {
+                let mut checkout = CheckoutBuilder::new();
+                checkout.force().path(path).disable_pathspec_match(true);
+                repo.checkout_index(Some(&mut index), Some(&mut checkout))?;
+            } else {
+                remove_worktree_path(repo, path)?;
+            }
         }
         drop(index);
 
@@ -541,7 +638,21 @@ impl GitService {
         repo: &mut Repository,
         path: &Path,
     ) -> Result<RepositorySnapshot> {
-        self.ensure_path_not_conflicted(repo, path)?;
+        self.discard_all_paths(repo, [path])
+    }
+
+    pub fn discard_all_paths<'a, I>(
+        &self,
+        repo: &mut Repository,
+        paths: I,
+    ) -> Result<RepositorySnapshot>
+    where
+        I: IntoIterator<Item = &'a Path>,
+    {
+        let paths = paths.into_iter().collect::<Vec<_>>();
+        for path in &paths {
+            self.ensure_path_not_conflicted(repo, path)?;
+        }
         self.progress
             .emit(OperationEvent::Started("正在回滚文件全部更改".into()));
 
@@ -549,29 +660,35 @@ impl GitService {
             let head_commit = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
             if let Some(head_commit) = head_commit {
                 let head_tree = head_commit.tree()?;
-                let head_has_path = head_tree.get_path(path).is_ok();
-                repo.reset_default(Some(head_commit.as_object()), [path])?;
+                repo.reset_default(Some(head_commit.as_object()), paths.clone())?;
 
-                if head_has_path {
-                    let mut checkout = CheckoutBuilder::new();
-                    checkout.force().path(path).disable_pathspec_match(true);
-                    repo.checkout_head(Some(&mut checkout))?;
-                } else {
-                    let mut index = repo.index()?;
-                    let _ = index.remove_path(path);
-                    index.write()?;
-                    remove_worktree_path(repo, path)?;
+                for path in paths {
+                    let head_has_path = head_tree.get_path(path).is_ok();
+                    if head_has_path {
+                        let mut checkout = CheckoutBuilder::new();
+                        checkout.force().path(path).disable_pathspec_match(true);
+                        repo.checkout_head(Some(&mut checkout))?;
+                    } else {
+                        let mut index = repo.index()?;
+                        let _ = index.remove_path(path);
+                        index.write()?;
+                        remove_worktree_path(repo, path)?;
+                    }
                 }
             } else {
                 let mut index = repo.index()?;
-                if index.get_path(path, 0).is_none() {
-                    return Err(GitError::Message(
-                        "当前仓库还没有 HEAD，不能回滚该文件更改".into(),
-                    ));
+                for path in &paths {
+                    if index.get_path(path, 0).is_none() {
+                        return Err(GitError::Message(
+                            "当前仓库还没有 HEAD，不能回滚该文件更改".into(),
+                        ));
+                    }
                 }
-                index.remove_path(path)?;
+                for path in paths {
+                    index.remove_path(path)?;
+                    remove_worktree_path(repo, path)?;
+                }
                 index.write()?;
-                remove_worktree_path(repo, path)?;
             }
         }
 
@@ -1074,10 +1191,21 @@ impl GitService {
             .and_then(|head| head.shorthand().ok().map(str::to_string))
     }
 
+    fn set_remote_context(&self, repo: &Repository, remote: &RemoteName) -> RemoteContextGuard {
+        let repo_path = repo.path().parent().map(Path::to_path_buf);
+        if let (Some(repo_path), Ok(mut context)) = (repo_path, self.remote_context.lock()) {
+            *context = Some((repo_path, remote.0.clone()));
+        }
+        RemoteContextGuard {
+            context: self.remote_context.clone(),
+        }
+    }
+
     fn remote_callbacks<'a>(&'a self, repo: Option<&'a Repository>) -> RemoteCallbacks<'a> {
         let provider = self.credential_provider.clone();
         let progress = self.progress.clone();
         let config = repo.and_then(|repo| repo.config().ok());
+        let remote_context = self.remote_context.clone();
 
         let mut callbacks = RemoteCallbacks::new();
         callbacks.transfer_progress(move |stats| {
@@ -1091,12 +1219,17 @@ impl GitService {
 
         let provider_for_credentials = provider;
         callbacks.credentials(move |url, username_from_url, allowed_types| {
+            let context = remote_context
+                .lock()
+                .ok()
+                .and_then(|context| context.clone());
             credential_for_remote(
                 config.as_ref(),
                 provider_for_credentials.as_ref(),
                 url,
                 username_from_url,
                 allowed_types,
+                context,
             )
         });
         callbacks
@@ -1236,6 +1369,27 @@ fn validate_branch_name(name: &str) -> Result<()> {
         || !git2::Branch::name_is_valid(name)?
     {
         return Err(GitError::InvalidBranchName(name.to_string()));
+    }
+    Ok(())
+}
+
+fn validate_remote_name(name: &str) -> Result<()> {
+    let trimmed = name.trim();
+    let refname = format!("refs/remotes/{trimmed}/HEAD");
+    if trimmed.is_empty()
+        || trimmed.contains(char::is_whitespace)
+        || trimmed.contains('\\')
+        || trimmed.starts_with('-')
+        || !git2::Reference::is_valid_name(&refname)
+    {
+        return Err(GitError::Message(format!("远端名称无效：{name}")));
+    }
+    Ok(())
+}
+
+fn validate_remote_url(url: &str) -> Result<()> {
+    if url.trim().is_empty() {
+        return Err(GitError::Message("远端地址不能为空".into()));
     }
     Ok(())
 }
@@ -1389,45 +1543,31 @@ fn parents(repo: &Repository) -> Result<Vec<git2::Commit<'_>>> {
 
 fn fast_forward(repo: &Repository, annotated: &AnnotatedCommit<'_>) -> Result<()> {
     let refname = repo.head()?.name().map_err(GitError::from)?.to_string();
+    let target = repo.find_object(annotated.id(), None)?;
+    let mut checkout = CheckoutBuilder::new();
+    checkout.safe();
+    repo.checkout_tree(&target, Some(&mut checkout))?;
+
     let mut reference = repo.find_reference(&refname)?;
     reference.set_target(annotated.id(), "khaslana fast-forward")?;
     repo.set_head(&refname)?;
-    let mut checkout = CheckoutBuilder::new();
-    checkout.safe();
-    repo.checkout_head(Some(&mut checkout))?;
     Ok(())
 }
 
 fn credential_for_remote(
-    config: Option<&git2::Config>,
+    _config: Option<&git2::Config>,
     provider: &dyn CredentialProvider,
     url: &str,
     username_from_url: Option<&str>,
     allowed_types: CredentialType,
+    context: Option<(std::path::PathBuf, String)>,
 ) -> std::result::Result<Cred, git2::Error> {
-    if let Some(config) = config
-        && let Ok(cred) = Cred::credential_helper(config, url, username_from_url)
-    {
-        return Ok(cred);
-    }
-
-    if allowed_types.contains(CredentialType::SSH_KEY) {
-        let username = username_from_url.unwrap_or("git");
-        if let Ok(cred) = Cred::ssh_key_from_agent(username) {
-            return Ok(cred);
-        }
-    }
-
-    if allowed_types.contains(CredentialType::DEFAULT)
-        && let Ok(cred) = Cred::default()
-    {
-        return Ok(cred);
-    }
-
     let request = CredentialRequest {
         url: url.to_string(),
         username_from_url: username_from_url.map(str::to_string),
         allowed_types,
+        repo_path: context.as_ref().map(|(repo_path, _)| repo_path.clone()),
+        remote_name: context.map(|(_, remote_name)| remote_name),
     };
     match provider.credential_for(request.clone()) {
         Ok(Some(credential)) => to_git_credential(&request, credential),
@@ -1591,6 +1731,25 @@ mod tests {
         let clone_repo = Repository::open(&clone_path).unwrap();
         configure_user(&clone_repo);
         (remote_dir, clone_dir, clone_path, clone_repo, service)
+    }
+
+    fn advance_remote_feature(remote_dir: &Path, service: &GitService) {
+        let work_dir = TempDir::new().unwrap();
+        let work_path = work_dir.path().join("remote-work");
+        service
+            .clone_repo(&path_url(remote_dir), &RepoPath::new(&work_path))
+            .unwrap();
+        let mut repo = Repository::open(&work_path).unwrap();
+        configure_user(&repo);
+        service
+            .fetch(&mut repo, &RemoteName::new("origin"))
+            .unwrap();
+        service
+            .checkout_remote_branch(&mut repo, &BranchName::new("origin/feature"))
+            .unwrap();
+        write_file(&work_path, "feature.txt", "feature\nremote update\n");
+        commit_all(&repo, "remote feature update");
+        service.push(&mut repo, &RemoteName::new("origin")).unwrap();
     }
 
     #[test]
@@ -1829,6 +1988,110 @@ mod tests {
     }
 
     #[test]
+    fn discard_unstaged_paths_handles_multiple_tracked_changes() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "one.txt", "one\n");
+        write_file(dir.path(), "two.txt", "two\n");
+        commit_all(&repo, "initial");
+        write_file(dir.path(), "one.txt", "one changed\n");
+        write_file(dir.path(), "two.txt", "two changed\n");
+
+        service
+            .discard_unstaged_paths(&mut repo, [Path::new("one.txt"), Path::new("two.txt")])
+            .unwrap();
+
+        assert_file_text(dir.path(), "one.txt", "one\n");
+        assert_file_text(dir.path(), "two.txt", "two\n");
+        assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn discard_unstaged_paths_removes_multiple_untracked_files() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "base.txt", "base\n");
+        commit_all(&repo, "initial");
+        write_file(dir.path(), "one.txt", "one\n");
+        write_file(dir.path(), "two.txt", "two\n");
+
+        service
+            .discard_unstaged_paths(&mut repo, [Path::new("one.txt"), Path::new("two.txt")])
+            .unwrap();
+
+        assert!(!dir.path().join("one.txt").exists());
+        assert!(!dir.path().join("two.txt").exists());
+        assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn discard_all_paths_removes_multiple_staged_changes() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "modify.txt", "base\n");
+        write_file(dir.path(), "delete.txt", "delete\n");
+        commit_all(&repo, "initial");
+        write_file(dir.path(), "modify.txt", "changed\n");
+        fs::remove_file(dir.path().join("delete.txt")).unwrap();
+        write_file(dir.path(), "new.txt", "new\n");
+        service
+            .stage_paths(
+                &mut repo,
+                [
+                    Path::new("modify.txt"),
+                    Path::new("delete.txt"),
+                    Path::new("new.txt"),
+                ],
+            )
+            .unwrap();
+
+        service
+            .discard_all_paths(
+                &mut repo,
+                [
+                    Path::new("modify.txt"),
+                    Path::new("delete.txt"),
+                    Path::new("new.txt"),
+                ],
+            )
+            .unwrap();
+
+        assert_file_text(dir.path(), "modify.txt", "base\n");
+        assert_file_text(dir.path(), "delete.txt", "delete\n");
+        assert!(!dir.path().join("new.txt").exists());
+        assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn discard_paths_respect_staged_and_unstaged_scope() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "same.txt", "base\n");
+        commit_all(&repo, "initial");
+        write_file(dir.path(), "same.txt", "staged\n");
+        service
+            .stage_path(&mut repo, Path::new("same.txt"))
+            .unwrap();
+        write_file(dir.path(), "same.txt", "worktree\n");
+
+        service
+            .discard_unstaged_paths(&mut repo, [Path::new("same.txt")])
+            .unwrap();
+
+        assert_file_text(dir.path(), "same.txt", "staged\n");
+        let changes = service.status_full(&repo).unwrap();
+        let change = changes
+            .iter()
+            .find(|change| change.path == "same.txt")
+            .unwrap();
+        assert_eq!(change.staged, Some(ChangeState::Modified));
+        assert_eq!(change.unstaged, None);
+
+        service
+            .discard_all_paths(&mut repo, [Path::new("same.txt")])
+            .unwrap();
+
+        assert_file_text(dir.path(), "same.txt", "base\n");
+        assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
     fn discard_rejects_conflicted_file() {
         let (dir, mut repo, service) = init_repo();
         write_file(dir.path(), "same.txt", "base\n");
@@ -1854,6 +2117,38 @@ mod tests {
             .discard_unstaged_path(&mut repo, Path::new("same.txt"))
             .unwrap_err();
         assert!(err.to_string().contains("存在冲突"));
+    }
+
+    #[test]
+    fn discard_paths_reject_conflicts_before_touching_other_files() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "same.txt", "base\n");
+        write_file(dir.path(), "safe.txt", "base\n");
+        commit_all(&repo, "initial");
+
+        service
+            .create_branch(&mut repo, &BranchName::new("feature"))
+            .unwrap();
+        service
+            .checkout_branch(&mut repo, &BranchName::new("feature"))
+            .unwrap();
+        write_file(dir.path(), "same.txt", "feature\n");
+        commit_all(&repo, "feature");
+
+        service
+            .checkout_branch(&mut repo, &BranchName::new("main"))
+            .unwrap();
+        write_file(dir.path(), "same.txt", "main\n");
+        commit_all(&repo, "main");
+        write_file(dir.path(), "safe.txt", "changed\n");
+
+        let _ = service.merge_branch(&mut repo, &BranchName::new("feature"));
+        let err = service
+            .discard_unstaged_paths(&mut repo, [Path::new("safe.txt"), Path::new("same.txt")])
+            .unwrap_err();
+
+        assert!(err.to_string().contains("存在冲突"));
+        assert_file_text(dir.path(), "safe.txt", "changed\n");
     }
 
     #[test]
@@ -1928,6 +2223,33 @@ mod tests {
             .unwrap();
         assert!(dir.path().join("feature.txt").exists());
         assert!(service.conflicts(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fast_forward_merge_keeps_index_clean() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "base.txt", "base\n");
+        commit_all(&repo, "initial");
+
+        service
+            .create_branch(&mut repo, &BranchName::new("feature"))
+            .unwrap();
+        service
+            .checkout_branch(&mut repo, &BranchName::new("feature"))
+            .unwrap();
+        write_file(dir.path(), "feature.txt", "feature\n");
+        commit_all(&repo, "feature");
+
+        service
+            .checkout_branch(&mut repo, &BranchName::new("main"))
+            .unwrap();
+        let snapshot = service
+            .merge_branch(&mut repo, &BranchName::new("feature"))
+            .unwrap();
+
+        assert!(dir.path().join("feature.txt").exists());
+        assert!(snapshot.changes.is_empty());
+        assert!(service.status_full(&repo).unwrap().is_empty());
     }
 
     #[test]
@@ -2018,10 +2340,130 @@ mod tests {
         assert!(fast.stashes.is_empty());
 
         let details = service.snapshot_details(&mut repo).unwrap();
-        assert!(details.remotes.iter().any(|remote| remote == "origin"));
+        assert!(details.remotes.iter().any(|remote| remote.name == "origin"));
         assert!(details.branches.iter().any(|branch| {
             branch.kind == BranchKind::Remote && branch.name == "origin/feature"
         }));
+    }
+
+    #[test]
+    fn add_remote_returns_name_and_url() {
+        let (dir, mut repo, service) = init_repo();
+        let remote_dir = TempDir::new().unwrap();
+        let snapshot = service
+            .add_remote(
+                &mut repo,
+                &RemoteName::new("upstream"),
+                &path_url(remote_dir.path()),
+            )
+            .unwrap();
+
+        let remote = snapshot
+            .remotes
+            .iter()
+            .find(|remote| remote.name == "upstream")
+            .unwrap();
+        assert_eq!(remote.url, path_url(remote_dir.path()));
+        assert!(dir.path().join(".git").exists());
+    }
+
+    #[test]
+    fn update_remote_renames_and_updates_fetch_and_push_url() {
+        let (_dir, mut repo, service) = init_repo();
+        let old_dir = TempDir::new().unwrap();
+        let new_dir = TempDir::new().unwrap();
+        service
+            .add_remote(
+                &mut repo,
+                &RemoteName::new("origin"),
+                &path_url(old_dir.path()),
+            )
+            .unwrap();
+
+        let snapshot = service
+            .update_remote(
+                &mut repo,
+                &RemoteName::new("origin"),
+                &RemoteName::new("upstream"),
+                &path_url(new_dir.path()),
+            )
+            .unwrap();
+
+        assert!(
+            snapshot.remotes.iter().any(|remote| {
+                remote.name == "upstream" && remote.url == path_url(new_dir.path())
+            })
+        );
+        assert!(
+            snapshot
+                .remotes
+                .iter()
+                .all(|remote| remote.name != "origin")
+        );
+        let remote = repo.find_remote("upstream").unwrap();
+        assert_eq!(remote.url().unwrap(), path_url(new_dir.path()));
+        assert_eq!(
+            remote.pushurl().unwrap(),
+            Some(path_url(new_dir.path()).as_str())
+        );
+    }
+
+    #[test]
+    fn delete_remote_removes_it_from_snapshot() {
+        let (_dir, mut repo, service) = init_repo();
+        let remote_dir = TempDir::new().unwrap();
+        service
+            .add_remote(
+                &mut repo,
+                &RemoteName::new("origin"),
+                &path_url(remote_dir.path()),
+            )
+            .unwrap();
+
+        let snapshot = service
+            .delete_remote(&mut repo, &RemoteName::new("origin"))
+            .unwrap();
+
+        assert!(
+            snapshot
+                .remotes
+                .iter()
+                .all(|remote| remote.name != "origin")
+        );
+        assert!(repo.find_remote("origin").is_err());
+    }
+
+    #[test]
+    fn remote_validation_rejects_empty_url_and_duplicate_name() {
+        let (_dir, mut repo, service) = init_repo();
+        let remote_dir = TempDir::new().unwrap();
+
+        assert!(
+            service
+                .add_remote(&mut repo, &RemoteName::new("origin"), "")
+                .unwrap_err()
+                .to_string()
+                .contains("远端地址不能为空")
+        );
+
+        service
+            .add_remote(
+                &mut repo,
+                &RemoteName::new("origin"),
+                &path_url(remote_dir.path()),
+            )
+            .unwrap();
+        assert!(
+            service
+                .add_remote(
+                    &mut repo,
+                    &RemoteName::new("origin"),
+                    &path_url(remote_dir.path()),
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("远端名称已存在")
+        );
     }
 
     #[test]
@@ -2042,6 +2484,8 @@ mod tests {
         let upstream = branch.upstream().unwrap();
         assert_eq!(upstream.name().unwrap(), Some("origin/feature"));
         assert!(repo.workdir().unwrap().join("feature.txt").exists());
+        assert!(snapshot.changes.is_empty());
+        assert!(service.status_full(&repo).unwrap().is_empty());
     }
 
     #[test]
@@ -2063,6 +2507,33 @@ mod tests {
         let branch = repo.find_branch("feature", BranchType::Local).unwrap();
         let upstream = branch.upstream().unwrap();
         assert_eq!(upstream.name().unwrap(), Some("origin/feature"));
+        assert!(snapshot.changes.is_empty());
+        assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fast_forward_pull_keeps_index_clean_after_branch_switch() {
+        let (remote_dir, _clone_dir, _clone_path, mut repo, service) =
+            clone_repo_with_remote_feature();
+        service
+            .fetch(&mut repo, &RemoteName::new("origin"))
+            .unwrap();
+        service
+            .checkout_remote_branch(&mut repo, &BranchName::new("origin/feature"))
+            .unwrap();
+
+        advance_remote_feature(remote_dir.path(), &service);
+
+        let snapshot = service.pull(&mut repo, &RemoteName::new("origin")).unwrap();
+
+        assert_eq!(snapshot.head.as_deref(), Some("feature"));
+        assert!(
+            fs::read_to_string(repo.workdir().unwrap().join("feature.txt"))
+                .unwrap()
+                .contains("remote update")
+        );
+        assert!(snapshot.changes.is_empty());
+        assert!(service.status_full(&repo).unwrap().is_empty());
     }
 
     #[test]
@@ -2090,9 +2561,40 @@ mod tests {
             "https://example.invalid/repo.git",
             None,
             CredentialType::USER_PASS_PLAINTEXT,
+            None,
         );
         assert!(result.is_err());
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn credential_provider_credential_is_used_before_external_fallbacks() {
+        struct StaticProvider;
+
+        impl CredentialProvider for StaticProvider {
+            fn credential_for(
+                &self,
+                request: CredentialRequest,
+            ) -> Result<Option<crate::credentials::GitCredential>> {
+                Ok(Some(crate::credentials::GitCredential::UserPass {
+                    username: request.username_from_url.unwrap_or_else(|| "git".into()),
+                    secret: "token".into(),
+                    save_to_keyring: false,
+                    scope: crate::credentials::CredentialScope::RemoteUrl,
+                }))
+            }
+        }
+
+        let result = credential_for_remote(
+            None,
+            &StaticProvider,
+            "https://example.invalid/repo.git",
+            Some("alice"),
+            CredentialType::USER_PASS_PLAINTEXT | CredentialType::DEFAULT,
+            None,
+        );
+
+        assert!(result.is_ok());
     }
 
     #[test]

@@ -74,6 +74,13 @@ pub struct TagInfo {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteInfo {
+    pub name: String,
+    pub url: String,
+    pub credential_record_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StashInfo {
     pub index: usize,
     pub message: String,
@@ -231,7 +238,7 @@ pub struct RepositorySnapshot {
     pub head: Option<String>,
     pub branches: Vec<BranchInfo>,
     pub changes: Vec<WorktreeChange>,
-    pub remotes: Vec<String>,
+    pub remotes: Vec<RemoteInfo>,
     pub tags: Vec<TagInfo>,
     pub stashes: Vec<StashInfo>,
     pub conflicts: Vec<String>,

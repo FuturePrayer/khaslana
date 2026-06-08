@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Instant;
 
@@ -27,9 +27,10 @@ use khaslana::{
     BranchKind, BranchName, CommitFileChange, CommitInfo, CommitMessage, CredentialProvider,
     CredentialRecord, CredentialRequest, CredentialScope, CredentialStore, DiffEncodingChoice,
     DiffLineKind, DiffScope, FileDiff, GitCredential, GitService, HistoryScope,
-    KeyringCredentialStore, OperationEvent, ProgressEmitter, RemoteName, RepoPath,
-    RepositorySnapshot, ResetMode, TagName, credential_display_target, credential_key_filename,
-    credential_kind_label, credential_record_label, credential_scope_label,
+    KeyringCredentialStore, OperationEvent, ProgressEmitter, RemoteCredentialPolicy, RemoteInfo,
+    RemoteName, RepoPath, RepositorySnapshot, ResetMode, TagName, credential_display_target,
+    credential_key_filename, credential_kind_label, credential_record_is_compatible_with_url,
+    credential_record_label, credential_record_matches_remote_url, credential_scope_label,
     test_credential_connection,
 };
 use serde::{Deserialize, Serialize};
@@ -50,7 +51,7 @@ const HISTORY_PAGE_SIZE: usize = 50;
 pub(crate) const BRANCH_MENU_WIDTH: f32 = 190.0;
 pub(crate) const BRANCH_MENU_HEIGHT: f32 = 230.0;
 const CHANGE_MENU_WIDTH: f32 = 210.0;
-const CHANGE_MENU_HEIGHT: f32 = 205.0;
+const CHANGE_MENU_HEIGHT: f32 = 255.0;
 pub(crate) const TAG_MENU_WIDTH: f32 = 170.0;
 pub(crate) const TAG_MENU_HEIGHT: f32 = 80.0;
 pub(crate) const STASH_MENU_WIDTH: f32 = 170.0;
@@ -68,11 +69,14 @@ enum FieldId {
     ClonePath,
     BranchName,
     BranchRename,
+    RemoteName,
+    RemoteUrl,
     CommitMessage,
     CredentialUsername,
     CredentialSecret,
     CredentialKeyPath,
     CredentialPassphrase,
+    CredentialRemoteUrl,
 }
 
 #[derive(Clone, Debug)]
@@ -329,6 +333,27 @@ fn ch_width_is_wide(ch: char) -> bool {
 struct PendingCredential {
     tab_id: Option<RepoTabId>,
     request: CredentialRequest,
+    response_tx: Arc<Mutex<Option<mpsc::Sender<khaslana::Result<Option<GitCredential>>>>>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CredentialFormMode {
+    Https,
+    Ssh,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct RemoteCredentialBindings {
+    #[serde(default)]
+    remotes: Vec<RemoteCredentialBinding>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+struct RemoteCredentialBinding {
+    repo_path: String,
+    remote_name: String,
+    remote_url: String,
+    policy: RemoteCredentialPolicy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -348,10 +373,21 @@ pub(crate) enum DialogState {
         summary: String,
     },
     ConfirmDiscardChange {
-        path: String,
         scope: DiffScope,
+        target: DiscardTarget,
+        paths: Vec<String>,
     },
     CredentialManager,
+    CredentialForm {
+        editing: Option<String>,
+    },
+    RemoteManager,
+    RemoteForm {
+        editing: Option<String>,
+    },
+    ConfirmDeleteRemote {
+        name: String,
+    },
     ConfirmDeleteCredential {
         record_id: String,
         label: String,
@@ -476,6 +512,13 @@ struct ChangeContextMenu {
     y: f32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DiscardTarget {
+    Single,
+    Selected,
+    All,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EncodingMenuTarget {
     Worktree,
@@ -487,6 +530,17 @@ enum DiffRenderRow {
     HeaderToggle,
     DiffLine(usize),
     Empty,
+}
+
+fn discard_paths_preview(paths: &[String]) -> String {
+    let mut preview = paths.iter().take(5).cloned().collect::<Vec<_>>().join("\n");
+    if paths.len() > 5 {
+        if !preview.is_empty() {
+            preview.push('\n');
+        }
+        preview.push_str(&format!("... 以及另外 {} 个文件", paths.len() - 5));
+    }
+    preview
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -829,6 +883,7 @@ enum UiEvent {
     CredentialRequested {
         tab_id: Option<RepoTabId>,
         request: CredentialRequest,
+        response_tx: Arc<Mutex<Option<mpsc::Sender<khaslana::Result<Option<GitCredential>>>>>>,
     },
 }
 
@@ -861,8 +916,8 @@ impl ProgressEmitter for TabProgress {
 #[derive(Clone)]
 struct TabCredentialProvider {
     store: Arc<dyn khaslana::CredentialStore>,
+    remote_bindings: Arc<Mutex<RemoteCredentialBindings>>,
     tx: Sender<UiEvent>,
-    supplied: Arc<Mutex<Option<GitCredential>>>,
     rejected_record_ids: Arc<Mutex<Vec<String>>>,
     last_stored_attempt: Arc<Mutex<Option<(String, String)>>>,
     tab_id: RepoTabId,
@@ -871,14 +926,14 @@ struct TabCredentialProvider {
 impl TabCredentialProvider {
     fn new(
         store: Arc<dyn khaslana::CredentialStore>,
+        remote_bindings: Arc<Mutex<RemoteCredentialBindings>>,
         tx: Sender<UiEvent>,
-        supplied: Arc<Mutex<Option<GitCredential>>>,
         tab_id: RepoTabId,
     ) -> Self {
         Self {
             store,
+            remote_bindings,
             tx,
-            supplied,
             rejected_record_ids: Arc::new(Mutex::new(Vec::new())),
             last_stored_attempt: Arc::new(Mutex::new(None)),
             tab_id,
@@ -911,7 +966,38 @@ impl CredentialProvider for TabCredentialProvider {
             .lock()
             .map(|rejected| rejected.clone())
             .unwrap_or_default();
-        match self.store.get_stored(&request, &rejected_record_ids) {
+
+        let binding_policy = remote_binding_for_request(&self.remote_bindings, &request);
+        let stored = match binding_policy {
+            RemoteCredentialPolicy::NoCredential => Ok(None),
+            RemoteCredentialPolicy::Record(record_id) => {
+                if rejected_record_ids.contains(&record_id) {
+                    Ok(None)
+                } else {
+                    match self.store.credential_for_record(&record_id) {
+                        Ok(Some(credential)) => {
+                            let touched = self.store.touch_record(&record_id)?;
+                            let Some(record) = touched else {
+                                return Ok(None);
+                            };
+                            if !credential_record_matches_remote_url(&record, &request.url) {
+                                return Ok(None);
+                            }
+                            Ok(Some(khaslana::credentials::StoredCredential {
+                                record,
+                                credential,
+                            }))
+                        }
+                        Ok(None) => Ok(None),
+                        Err(err) => Err(err),
+                    }
+                }
+            }
+            RemoteCredentialPolicy::AutoMatch => {
+                self.store.get_stored(&request, &rejected_record_ids)
+            }
+        };
+        match stored {
             Ok(Some(stored)) => {
                 if let Ok(mut last) = self.last_stored_attempt.lock() {
                     *last = Some((request.url.clone(), stored.record.id.clone()));
@@ -922,18 +1008,34 @@ impl CredentialProvider for TabCredentialProvider {
             Err(err) => tracing::warn!("keyring read skipped: {err}"),
         }
 
-        let supplied = self
-            .supplied
-            .lock()
-            .map_err(|_| khaslana::GitError::Credential("凭据输入状态异常".into()))?
-            .take();
+        let (response_tx, response_rx) = mpsc::channel();
+        let response_tx = Arc::new(Mutex::new(Some(response_tx)));
+        send_ui_event(
+            &self.tx,
+            UiEvent::CredentialRequested {
+                tab_id: Some(self.tab_id),
+                request: request.clone(),
+                response_tx: response_tx.clone(),
+            },
+        );
+        let credential = response_rx
+            .recv()
+            .map_err(|_| khaslana::GitError::Credential("凭据输入已取消".into()))??;
 
-        if let Some(credential) = supplied {
+        if let Some(credential) = credential {
             if credential.should_save() {
                 match self.store.save_record(&request, &credential) {
                     Ok(record) => {
                         if let Ok(mut last) = self.last_stored_attempt.lock() {
-                            *last = Some((request.url.clone(), record.id));
+                            *last = Some((request.url.clone(), record.id.clone()));
+                        }
+                        set_remote_binding_for_request(
+                            &self.remote_bindings,
+                            &request,
+                            RemoteCredentialPolicy::Record(record.id),
+                        );
+                        if let Ok(bindings) = self.remote_bindings.lock() {
+                            save_remote_credential_bindings_to_disk(&bindings);
                         }
                     }
                     Err(err) => {
@@ -949,14 +1051,117 @@ impl CredentialProvider for TabCredentialProvider {
             return Ok(Some(credential));
         }
 
-        send_ui_event(
-            &self.tx,
-            UiEvent::CredentialRequested {
-                tab_id: Some(self.tab_id),
-                request,
-            },
-        );
         Ok(None)
+    }
+}
+
+fn remote_binding_key(repo_path: &Path, remote_name: &str) -> (String, String) {
+    (normalize_repo_path(repo_path), remote_name.to_string())
+}
+
+fn remote_binding_for_request(
+    bindings: &Arc<Mutex<RemoteCredentialBindings>>,
+    request: &CredentialRequest,
+) -> RemoteCredentialPolicy {
+    let (Some(repo_path), Some(remote_name)) = (&request.repo_path, request.remote_name.as_ref())
+    else {
+        return RemoteCredentialPolicy::AutoMatch;
+    };
+    let (repo_key, remote_key) = remote_binding_key(repo_path, remote_name);
+    bindings
+        .lock()
+        .ok()
+        .and_then(|bindings| {
+            bindings
+                .remotes
+                .iter()
+                .find(|binding| {
+                    binding.repo_path == repo_key
+                        && binding.remote_name == remote_key
+                        && binding.remote_url == request.url
+                })
+                .map(|binding| binding.policy.clone())
+        })
+        .unwrap_or(RemoteCredentialPolicy::AutoMatch)
+}
+
+fn set_remote_binding_for_request(
+    bindings: &Arc<Mutex<RemoteCredentialBindings>>,
+    request: &CredentialRequest,
+    policy: RemoteCredentialPolicy,
+) {
+    let (Some(repo_path), Some(remote_name)) = (&request.repo_path, request.remote_name.as_ref())
+    else {
+        return;
+    };
+    let (repo_key, remote_key) = remote_binding_key(repo_path, remote_name);
+    let Ok(mut bindings) = bindings.lock() else {
+        return;
+    };
+    if let Some(binding) = bindings
+        .remotes
+        .iter_mut()
+        .find(|binding| binding.repo_path == repo_key && binding.remote_name == remote_key)
+    {
+        binding.remote_url = request.url.clone();
+        binding.policy = policy;
+    } else {
+        bindings.remotes.push(RemoteCredentialBinding {
+            repo_path: repo_key,
+            remote_name: remote_key,
+            remote_url: request.url.clone(),
+            policy,
+        });
+    }
+}
+
+fn save_remote_credential_bindings_to_disk(bindings: &RemoteCredentialBindings) {
+    let Some(path) = RepositoryView::remote_credential_bindings_path() else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if let Err(err) = fs::create_dir_all(parent) {
+        tracing::warn!("remote credential bindings directory create skipped: {err}");
+        return;
+    }
+    match serde_json::to_string_pretty(bindings) {
+        Ok(content) => {
+            if let Err(err) = fs::write(path, content) {
+                tracing::warn!("remote credential bindings write skipped: {err}");
+            }
+        }
+        Err(err) => tracing::warn!("remote credential bindings encode skipped: {err}"),
+    }
+}
+
+fn send_credential_response(
+    pending: &PendingCredential,
+    response: khaslana::Result<Option<GitCredential>>,
+) -> bool {
+    let Ok(mut response_tx) = pending.response_tx.lock() else {
+        return false;
+    };
+    let Some(response_tx) = response_tx.take() else {
+        return false;
+    };
+    response_tx.send(response).is_ok()
+}
+
+fn credential_form_mode_for_request(request: &CredentialRequest) -> CredentialFormMode {
+    let lower = request.url.to_ascii_lowercase();
+    if lower.starts_with("ssh://")
+        || lower.starts_with("git@")
+        || (!lower.starts_with("http://")
+            && !lower.starts_with("https://")
+            && request
+                .allowed_types
+                .contains(git2::CredentialType::SSH_KEY))
+    {
+        CredentialFormMode::Ssh
+    } else {
+        CredentialFormMode::Https
     }
 }
 
@@ -979,8 +1184,8 @@ fn perf_log(stage: &'static str, started: Instant, details: impl AsRef<str>) {
 pub(crate) struct RepositoryView {
     tx: Sender<UiEvent>,
     rx: Receiver<UiEvent>,
-    supplied_credential: Arc<Mutex<Option<GitCredential>>>,
     credential_store: Arc<KeyringCredentialStore>,
+    remote_credential_bindings: Arc<Mutex<RemoteCredentialBindings>>,
     credential_records: Vec<CredentialRecord>,
     diff_encoding_preferences: DiffEncodingPreferences,
     tabs: Vec<RepoTabState>,
@@ -1013,6 +1218,8 @@ pub(crate) struct RepositoryView {
     encoding_menu_closed_by_capture: Option<EncodingMenuTarget>,
     save_credential: bool,
     credential_scope: CredentialScope,
+    credential_form_mode: CredentialFormMode,
+    credential_use_ssh_agent: bool,
     clone_url: TextFieldState,
     clone_path: TextFieldState,
     branch_name: TextFieldState,
@@ -1022,20 +1229,25 @@ pub(crate) struct RepositoryView {
     credential_secret: TextFieldState,
     credential_key_path: TextFieldState,
     credential_passphrase: TextFieldState,
+    credential_remote_url: TextFieldState,
+    remote_name: TextFieldState,
+    remote_url: TextFieldState,
+    remote_credential_policy: RemoteCredentialPolicy,
 }
 
 impl RepositoryView {
     fn new(cx: &mut Context<Self>) -> Self {
         let (tx, rx) = async_channel::unbounded();
-        let supplied_credential = Arc::new(Mutex::new(None));
         let credential_store = Arc::new(KeyringCredentialStore::new());
+        let remote_credential_bindings =
+            Arc::new(Mutex::new(Self::load_remote_credential_bindings()));
         Self::spawn_event_pump(rx.clone(), cx);
 
         Self {
             tx,
             rx,
-            supplied_credential,
             credential_store,
+            remote_credential_bindings,
             credential_records: Vec::new(),
             diff_encoding_preferences: Self::load_diff_encoding_preferences(),
             tabs: Vec::new(),
@@ -1068,6 +1280,8 @@ impl RepositoryView {
             encoding_menu_closed_by_capture: None,
             save_credential: false,
             credential_scope: CredentialScope::RemoteUrl,
+            credential_form_mode: CredentialFormMode::Https,
+            credential_use_ssh_agent: false,
             clone_url: TextFieldState::new(cx, "远程仓库 URL"),
             clone_path: TextFieldState::new(cx, "克隆到父文件夹"),
             branch_name: TextFieldState::new(cx, "新分支名称"),
@@ -1077,6 +1291,10 @@ impl RepositoryView {
             credential_secret: TextFieldState::new(cx, "密码或 PAT").secret(),
             credential_key_path: TextFieldState::new(cx, "SSH 私钥路径"),
             credential_passphrase: TextFieldState::new(cx, "SSH 密码短语").secret(),
+            credential_remote_url: TextFieldState::new(cx, "适用远端 URL"),
+            remote_name: TextFieldState::new(cx, "远端名称"),
+            remote_url: TextFieldState::new(cx, "远端地址"),
+            remote_credential_policy: RemoteCredentialPolicy::AutoMatch,
         }
     }
 
@@ -1216,8 +1434,15 @@ impl RepositoryView {
         };
         self.close_popups();
         self.tabs.remove(index);
-        self.pending_credentials
-            .retain(|pending| pending.tab_id != Some(tab_id));
+        let mut retained = VecDeque::new();
+        while let Some(pending) = self.pending_credentials.pop_front() {
+            if pending.tab_id == Some(tab_id) {
+                send_credential_response(&pending, Ok(None));
+            } else {
+                retained.push_back(pending);
+            }
+        }
+        self.pending_credentials = retained;
         self.repository_load_queue
             .retain(|request| request.tab_id != tab_id);
         if self
@@ -1226,6 +1451,9 @@ impl RepositoryView {
             .and_then(|pending| pending.tab_id)
             == Some(tab_id)
         {
+            if let Some(pending) = self.pending_credential.as_ref() {
+                send_credential_response(pending, Ok(None));
+            }
             self.show_next_credential_request();
         }
         if self.active_tab == Some(tab_id) {
@@ -1247,6 +1475,11 @@ impl RepositoryView {
             .map(|dirs| dirs.config_dir().join("diff-encodings.json"))
     }
 
+    fn remote_credential_bindings_path() -> Option<PathBuf> {
+        ProjectDirs::from("", "", "Khaslana")
+            .map(|dirs| dirs.config_dir().join("remote-credentials.json"))
+    }
+
     fn load_session_state() -> Option<SessionState> {
         let path = Self::session_path()?;
         let content = fs::read_to_string(path).ok()?;
@@ -1259,6 +1492,16 @@ impl RepositoryView {
         };
         let Ok(content) = fs::read_to_string(path) else {
             return DiffEncodingPreferences::default();
+        };
+        serde_json::from_str(&content).unwrap_or_default()
+    }
+
+    fn load_remote_credential_bindings() -> RemoteCredentialBindings {
+        let Some(path) = Self::remote_credential_bindings_path() else {
+            return RemoteCredentialBindings::default();
+        };
+        let Ok(content) = fs::read_to_string(path) else {
+            return RemoteCredentialBindings::default();
         };
         serde_json::from_str(&content).unwrap_or_default()
     }
@@ -1282,6 +1525,14 @@ impl RepositoryView {
             }
             Err(err) => tracing::warn!("diff encoding preferences encode skipped: {err}"),
         }
+    }
+
+    fn save_remote_credential_bindings(&self) {
+        let Ok(bindings) = self.remote_credential_bindings.lock() else {
+            tracing::warn!("remote credential bindings state read skipped");
+            return;
+        };
+        save_remote_credential_bindings_to_disk(&bindings);
     }
 
     fn diff_encoding_choice_for_path(&self, path: &Path) -> DiffEncodingChoice {
@@ -1450,8 +1701,8 @@ impl RepositoryView {
         GitService::new(
             Arc::new(TabCredentialProvider::new(
                 self.credential_store.clone(),
+                self.remote_credential_bindings.clone(),
                 self.tx.clone(),
-                self.supplied_credential.clone(),
                 tab_id,
             )),
             Arc::new(TabProgress {
@@ -1506,9 +1757,31 @@ impl RepositoryView {
                 .is_none_or(|tab_id| self.tab(tab_id).is_some())
             {
                 self.pending_credential = Some(pending);
+                self.prepare_current_credential_prompt();
                 break;
             }
         }
+    }
+
+    fn prepare_current_credential_prompt(&mut self) {
+        let Some(pending) = self.pending_credential.as_ref() else {
+            return;
+        };
+        let request = pending.request.clone();
+        self.save_credential = true;
+        self.credential_scope = CredentialScope::RemoteUrl;
+        self.credential_form_mode = credential_form_mode_for_request(&request);
+        self.credential_use_ssh_agent = false;
+        self.credential_username.set_value(
+            request
+                .username_from_url
+                .clone()
+                .unwrap_or_else(|| "git".to_string()),
+        );
+        self.credential_secret.clear();
+        self.credential_key_path.clear();
+        self.credential_passphrase.clear();
+        self.credential_remote_url.set_value(request.url);
     }
 
     fn spawn_event_pump(rx: Receiver<UiEvent>, cx: &mut Context<Self>) {
@@ -1821,26 +2094,28 @@ impl RepositoryView {
                     this.last_error = Some(error);
                 });
             }
-            UiEvent::CredentialRequested { tab_id, request } => {
+            UiEvent::CredentialRequested {
+                tab_id,
+                request,
+                response_tx,
+            } => {
                 if tab_id.is_some_and(|tab_id| self.tab(tab_id).is_none()) {
+                    if let Ok(mut response_tx) = response_tx.lock()
+                        && let Some(response_tx) = response_tx.take()
+                    {
+                        let _ = response_tx.send(Ok(None));
+                    }
                     return;
                 }
                 self.apply_status_event(tab_id, |this| {
-                    this.busy = false;
                     this.status = "需要凭据".to_string();
                 });
-                self.save_credential = false;
-                self.credential_scope = CredentialScope::RemoteUrl;
-                self.credential_username.set_value(
-                    request
-                        .username_from_url
-                        .clone()
-                        .unwrap_or_else(|| "git".to_string()),
-                );
-                self.credential_secret.clear();
-                self.credential_key_path.clear();
-                self.credential_passphrase.clear();
-                self.enqueue_credential_request(PendingCredential { tab_id, request });
+                self.enqueue_credential_request(PendingCredential {
+                    tab_id,
+                    request,
+                    response_tx,
+                });
+                self.prepare_current_credential_prompt();
             }
         }
         cx.notify();
@@ -1970,11 +2245,23 @@ impl RepositoryView {
                     if let Some(DialogState::RenameBranch { branch }) = self.active_dialog.clone() {
                         self.rename_branch(branch);
                     }
+                } else if matches!(field, FieldId::RemoteName | FieldId::RemoteUrl) {
+                    if let Some(DialogState::RemoteForm { editing }) = self.active_dialog.clone() {
+                        self.save_remote(editing);
+                    }
                 } else if matches!(
                     field,
-                    FieldId::CredentialSecret | FieldId::CredentialPassphrase
+                    FieldId::CredentialSecret
+                        | FieldId::CredentialPassphrase
+                        | FieldId::CredentialUsername
+                        | FieldId::CredentialKeyPath
+                        | FieldId::CredentialRemoteUrl
                 ) {
-                    self.use_credentials();
+                    if matches!(self.active_dialog, Some(DialogState::CredentialForm { .. })) {
+                        self.save_credential_form();
+                    } else {
+                        self.use_credentials();
+                    }
                 }
             }
             _ => {
@@ -2020,11 +2307,14 @@ impl RepositoryView {
             (FieldId::ClonePath, &self.clone_path),
             (FieldId::BranchName, &self.branch_name),
             (FieldId::BranchRename, &self.branch_rename),
+            (FieldId::RemoteName, &self.remote_name),
+            (FieldId::RemoteUrl, &self.remote_url),
             (FieldId::CommitMessage, &self.commit_message),
             (FieldId::CredentialUsername, &self.credential_username),
             (FieldId::CredentialSecret, &self.credential_secret),
             (FieldId::CredentialKeyPath, &self.credential_key_path),
             (FieldId::CredentialPassphrase, &self.credential_passphrase),
+            (FieldId::CredentialRemoteUrl, &self.credential_remote_url),
         ]
         .into_iter()
         .find_map(|(id, field)| field.focus.is_focused(window).then_some(id))
@@ -2036,11 +2326,14 @@ impl RepositoryView {
             FieldId::ClonePath => &self.clone_path,
             FieldId::BranchName => &self.branch_name,
             FieldId::BranchRename => &self.branch_rename,
+            FieldId::RemoteName => &self.remote_name,
+            FieldId::RemoteUrl => &self.remote_url,
             FieldId::CommitMessage => &self.commit_message,
             FieldId::CredentialUsername => &self.credential_username,
             FieldId::CredentialSecret => &self.credential_secret,
             FieldId::CredentialKeyPath => &self.credential_key_path,
             FieldId::CredentialPassphrase => &self.credential_passphrase,
+            FieldId::CredentialRemoteUrl => &self.credential_remote_url,
         }
     }
 
@@ -2050,11 +2343,14 @@ impl RepositoryView {
             FieldId::ClonePath => &mut self.clone_path,
             FieldId::BranchName => &mut self.branch_name,
             FieldId::BranchRename => &mut self.branch_rename,
+            FieldId::RemoteName => &mut self.remote_name,
+            FieldId::RemoteUrl => &mut self.remote_url,
             FieldId::CommitMessage => &mut self.commit_message,
             FieldId::CredentialUsername => &mut self.credential_username,
             FieldId::CredentialSecret => &mut self.credential_secret,
             FieldId::CredentialKeyPath => &mut self.credential_key_path,
             FieldId::CredentialPassphrase => &mut self.credential_passphrase,
+            FieldId::CredentialRemoteUrl => &mut self.credential_remote_url,
         }
     }
 
@@ -2116,6 +2412,265 @@ impl RepositoryView {
         self.close_popups();
         self.active_dialog = Some(DialogState::CredentialManager);
         self.reload_credential_records("凭据列表已加载");
+    }
+
+    fn open_credential_form(&mut self) {
+        self.credential_form_mode = CredentialFormMode::Https;
+        self.credential_scope = CredentialScope::RemoteUrl;
+        self.credential_use_ssh_agent = false;
+        self.credential_remote_url.clear();
+        self.credential_username.clear();
+        self.credential_secret.clear();
+        self.credential_key_path.clear();
+        self.credential_passphrase.clear();
+        self.active_dialog = Some(DialogState::CredentialForm { editing: None });
+        self.last_error = None;
+    }
+
+    fn save_credential_form(&mut self) {
+        let url = self.credential_remote_url.value.trim().to_string();
+        if url.is_empty() {
+            self.last_error = Some("需要填写适用远端 URL".into());
+            return;
+        }
+        let inferred_mode = credential_form_mode_for_request(&CredentialRequest {
+            url: url.clone(),
+            username_from_url: None,
+            allowed_types: git2::CredentialType::USER_PASS_PLAINTEXT
+                | git2::CredentialType::SSH_KEY,
+            repo_path: None,
+            remote_name: None,
+        });
+        if inferred_mode != self.credential_form_mode {
+            self.last_error = Some("凭据类型与远端 URL 协议不匹配".into());
+            return;
+        }
+        let username = self
+            .credential_username
+            .value
+            .trim()
+            .to_string()
+            .if_empty_then(|| "git".into());
+        let credential = match self.credential_form_mode {
+            CredentialFormMode::Https => {
+                if self.credential_secret.value.is_empty() {
+                    self.last_error = Some("需要填写密码或 PAT".into());
+                    return;
+                }
+                GitCredential::UserPass {
+                    username,
+                    secret: self.credential_secret.value.clone(),
+                    save_to_keyring: true,
+                    scope: self.credential_scope,
+                }
+            }
+            CredentialFormMode::Ssh => {
+                let key_path = self.credential_key_path.value.trim().to_string();
+                if !self.credential_use_ssh_agent && key_path.is_empty() {
+                    self.last_error = Some("需要填写 SSH 私钥路径或选择使用 SSH agent".into());
+                    return;
+                }
+                GitCredential::SshPassphrase {
+                    username,
+                    private_key_path: (!self.credential_use_ssh_agent).then_some(key_path),
+                    passphrase: (!self.credential_passphrase.value.is_empty())
+                        .then(|| self.credential_passphrase.value.clone()),
+                    save_to_keyring: true,
+                    scope: self.credential_scope,
+                }
+            }
+        };
+        let request = CredentialRequest {
+            url,
+            username_from_url: Some(credential.username().to_string()),
+            allowed_types: match self.credential_form_mode {
+                CredentialFormMode::Https => git2::CredentialType::USER_PASS_PLAINTEXT,
+                CredentialFormMode::Ssh => git2::CredentialType::SSH_KEY,
+            },
+            repo_path: None,
+            remote_name: None,
+        };
+        match self.credential_store.save_record(&request, &credential) {
+            Ok(_) => {
+                self.active_dialog = Some(DialogState::CredentialManager);
+                self.reload_credential_records("凭据已添加");
+            }
+            Err(err) => {
+                self.last_error = Some(err.to_string());
+            }
+        }
+    }
+
+    pub(crate) fn open_remote_manager(&mut self) {
+        if self.repo_path.is_none() {
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        }
+        self.close_popups();
+        self.active_dialog = Some(DialogState::RemoteManager);
+        self.reload_credential_records("远端管理已打开");
+    }
+
+    fn open_remote_form(&mut self, editing: Option<String>) {
+        let remote = match editing.as_ref() {
+            Some(name) => {
+                let Some(snapshot) = self.snapshot.as_ref() else {
+                    self.last_error = Some("请先打开一个仓库".into());
+                    return;
+                };
+                let Some(remote) = snapshot.remotes.iter().find(|remote| remote.name == *name)
+                else {
+                    self.last_error = Some("远端不存在".into());
+                    return;
+                };
+                Some(remote.clone())
+            }
+            None => None,
+        };
+
+        self.remote_credential_policy = RemoteCredentialPolicy::AutoMatch;
+        if let Some(remote) = remote {
+            self.remote_name.set_value(remote.name.clone());
+            self.remote_url.set_value(remote.url.clone());
+            if let Some(repo_path) = self.repo_path.as_ref() {
+                self.remote_credential_policy =
+                    self.remote_credential_policy_for_remote(repo_path, &remote.name, &remote.url);
+            }
+        } else {
+            self.remote_name.clear();
+            self.remote_url.clear();
+        }
+        self.active_dialog = Some(DialogState::RemoteForm { editing });
+        self.last_error = None;
+    }
+
+    fn open_delete_remote_confirm(&mut self, name: String) {
+        self.active_dialog = Some(DialogState::ConfirmDeleteRemote { name });
+        self.last_error = None;
+    }
+
+    fn save_remote(&mut self, editing: Option<String>) {
+        let name = self.remote_name.value.trim().to_string();
+        let url = self.remote_url.value.trim().to_string();
+        if name.is_empty() {
+            self.last_error = Some("需要填写远端名称".into());
+            return;
+        }
+        if url.is_empty() {
+            self.last_error = Some("需要填写远端地址".into());
+            return;
+        }
+        if name.contains(char::is_whitespace) || name.contains('\\') || name.starts_with('-') {
+            self.last_error = Some(format!("远端名称无效：{name}"));
+            return;
+        }
+
+        let existing_remotes = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.remotes.clone())
+            .unwrap_or_default();
+        if editing.as_deref() != Some(name.as_str())
+            && existing_remotes.iter().any(|remote| remote.name == name)
+        {
+            self.last_error = Some(format!("远端名称已存在：{name}"));
+            return;
+        }
+
+        let selected_record =
+            if let RemoteCredentialPolicy::Record(id) = &self.remote_credential_policy {
+                let Some(record) = self
+                    .credential_records
+                    .iter()
+                    .find(|record| record.id == *id)
+                    .cloned()
+                else {
+                    self.last_error = Some("所选凭据记录不存在".into());
+                    return;
+                };
+                Some(record)
+            } else {
+                None
+            };
+        if let Some(record) = selected_record.as_ref() {
+            let compatible = match record.scope {
+                CredentialScope::RemoteUrl => {
+                    credential_record_is_compatible_with_url(record, &url)
+                }
+                CredentialScope::Host => credential_record_matches_remote_url(record, &url),
+            };
+            if !compatible {
+                self.last_error = Some("所选凭据与远端地址协议或站点不匹配".into());
+                return;
+            }
+            if record.scope == CredentialScope::RemoteUrl
+                && let Err(err) = self
+                    .credential_store
+                    .update_record_remote_url(&record.id, &url)
+            {
+                self.last_error = Some(err.to_string());
+                return;
+            }
+            if record.scope == CredentialScope::Host
+                && let Err(err) = self.credential_store.touch_record(&record.id)
+            {
+                self.last_error = Some(err.to_string());
+                return;
+            }
+            self.reload_credential_records("远端凭据绑定已更新");
+        }
+
+        if let Some(repo_path) = self.repo_path.as_ref() {
+            let request = CredentialRequest {
+                url: url.clone(),
+                username_from_url: None,
+                allowed_types: git2::CredentialType::USER_PASS_PLAINTEXT
+                    | git2::CredentialType::SSH_KEY,
+                repo_path: Some(repo_path.clone()),
+                remote_name: Some(name.clone()),
+            };
+            set_remote_binding_for_request(
+                &self.remote_credential_bindings,
+                &request,
+                self.remote_credential_policy.clone(),
+            );
+            self.save_remote_credential_bindings();
+        }
+
+        let old_selected = self.selected_remote.clone();
+        if let Some(old_name) = editing.as_ref() {
+            if old_selected.as_deref() == Some(old_name.as_str()) {
+                self.selected_remote = Some(name.clone());
+            }
+        }
+        let new_name = name.clone();
+        match editing {
+            Some(old_name) => {
+                self.with_repo("远端已更新", move |service, repo| {
+                    service.update_remote(
+                        repo,
+                        &RemoteName::new(old_name),
+                        &RemoteName::new(new_name),
+                        &url,
+                    )
+                });
+            }
+            None => {
+                self.selected_remote = Some(name.clone());
+                self.with_repo("远端已新增", move |service, repo| {
+                    service.add_remote(repo, &RemoteName::new(name), &url)
+                });
+            }
+        }
+    }
+
+    fn delete_remote(&mut self, name: String) {
+        if self.selected_remote.as_deref() == Some(name.as_str()) {
+            self.selected_remote = None;
+        }
+        self.with_repo("远端已删除", move |service, repo| {
+            service.delete_remote(repo, &RemoteName::new(name))
+        });
     }
 
     fn reload_credential_records(&mut self, message: &'static str) {
@@ -2191,6 +2746,50 @@ impl RepositoryView {
                 }
             },
         );
+    }
+
+    fn matching_credential_for_remote_url(&self, url: &str) -> Option<&CredentialRecord> {
+        self.credential_records
+            .iter()
+            .filter(|record| credential_record_matches_remote_url(record, url))
+            .max_by(|a, b| {
+                let a_scope = match a.scope {
+                    CredentialScope::RemoteUrl => 1,
+                    CredentialScope::Host => 0,
+                };
+                let b_scope = match b.scope {
+                    CredentialScope::RemoteUrl => 1,
+                    CredentialScope::Host => 0,
+                };
+                a_scope
+                    .cmp(&b_scope)
+                    .then_with(|| a.last_used.unwrap_or(0).cmp(&b.last_used.unwrap_or(0)))
+                    .then_with(|| a.updated_at.cmp(&b.updated_at))
+            })
+    }
+
+    fn remote_credential_policy_for_remote(
+        &self,
+        repo_path: &Path,
+        remote_name: &str,
+        remote_url: &str,
+    ) -> RemoteCredentialPolicy {
+        let (repo_key, remote_key) = remote_binding_key(repo_path, remote_name);
+        self.remote_credential_bindings
+            .lock()
+            .ok()
+            .and_then(|bindings| {
+                bindings
+                    .remotes
+                    .iter()
+                    .find(|binding| {
+                        binding.repo_path == repo_key
+                            && binding.remote_name == remote_key
+                            && binding.remote_url == remote_url
+                    })
+                    .map(|binding| binding.policy.clone())
+            })
+            .unwrap_or(RemoteCredentialPolicy::AutoMatch)
     }
 
     fn open_repo(&mut self, path: PathBuf) {
@@ -2577,16 +3176,16 @@ impl RepositoryView {
         let snapshot = self.snapshot.as_ref()?;
         self.selected_remote
             .as_ref()
-            .filter(|remote| snapshot.remotes.contains(*remote))
+            .filter(|remote| snapshot.remotes.iter().any(|info| info.name == **remote))
             .cloned()
             .or_else(|| {
                 snapshot
                     .remotes
                     .iter()
-                    .find(|remote| remote.as_str() == "origin")
-                    .cloned()
+                    .find(|remote| remote.name.as_str() == "origin")
+                    .map(|remote| remote.name.clone())
             })
-            .or_else(|| snapshot.remotes.first().cloned())
+            .or_else(|| snapshot.remotes.first().map(|remote| remote.name.clone()))
     }
 
     fn sync_selected_remote(&mut self, snapshot: &RepositorySnapshot) {
@@ -2598,7 +3197,7 @@ impl RepositoryView {
         if self
             .selected_remote
             .as_ref()
-            .is_some_and(|remote| snapshot.remotes.contains(remote))
+            .is_some_and(|remote| snapshot.remotes.iter().any(|info| info.name == *remote))
         {
             return;
         }
@@ -2606,9 +3205,9 @@ impl RepositoryView {
         self.selected_remote = snapshot
             .remotes
             .iter()
-            .find(|remote| remote.as_str() == "origin")
-            .cloned()
-            .or_else(|| snapshot.remotes.first().cloned());
+            .find(|remote| remote.name.as_str() == "origin")
+            .map(|remote| remote.name.clone())
+            .or_else(|| snapshot.remotes.first().map(|remote| remote.name.clone()));
     }
 
     fn fetch(&mut self) {
@@ -2722,10 +3321,33 @@ impl RepositoryView {
         self.last_error = None;
     }
 
-    fn open_discard_change_confirm_dialog(&mut self, path: String, scope: DiffScope) {
+    fn open_discard_change_confirm_dialog(
+        &mut self,
+        paths: Vec<String>,
+        scope: DiffScope,
+        target: DiscardTarget,
+    ) {
+        if paths.is_empty() {
+            self.last_error = Some("没有可回滚的文件".into());
+            self.change_context_menu = None;
+            return;
+        }
         self.close_popups();
-        self.select_only_change(path.clone(), scope.clone(), false);
-        self.active_dialog = Some(DialogState::ConfirmDiscardChange { path, scope });
+        match target {
+            DiscardTarget::Single => {
+                if let Some(path) = paths.first() {
+                    self.select_only_change(path.clone(), scope.clone(), false);
+                }
+            }
+            DiscardTarget::Selected | DiscardTarget::All => {
+                self.clear_opposite_change_selection(&scope);
+            }
+        }
+        self.active_dialog = Some(DialogState::ConfirmDiscardChange {
+            scope,
+            target,
+            paths,
+        });
         self.last_error = None;
     }
 
@@ -2741,10 +3363,18 @@ impl RepositoryView {
         });
     }
 
-    fn discard_change(&mut self, path: String, scope: DiffScope) {
+    fn discard_change(&mut self, paths: Vec<String>, scope: DiffScope, target: DiscardTarget) {
         let message = match scope {
-            DiffScope::Staged => "已回滚文件全部更改",
-            DiffScope::Unstaged => "已回滚未暂存更改",
+            DiffScope::Staged => match target {
+                DiscardTarget::Single => "已回滚文件全部更改",
+                DiscardTarget::Selected => "已回滚选定文件全部更改",
+                DiscardTarget::All => "已回滚暂存区全部更改",
+            },
+            DiffScope::Unstaged => match target {
+                DiscardTarget::Single => "已回滚未暂存更改",
+                DiscardTarget::Selected => "已回滚选定未暂存更改",
+                DiscardTarget::All => "已回滚修改区全部更改",
+            },
         };
         let Some(tab_id) = self.active_tab_id() else {
             self.last_error = Some("请先打开一个仓库".into());
@@ -2756,7 +3386,10 @@ impl RepositoryView {
         };
         self.close_dialog();
         self.change_context_menu = None;
-        self.change_selection.selected_mut(&scope).remove(&path);
+        let path_set = paths.iter().cloned().collect::<BTreeSet<_>>();
+        self.change_selection
+            .selected_mut(&scope)
+            .retain(|path| !path_set.contains(path));
         self.clear_change_anchor_if_empty(&scope);
         self.diff = None;
         self.diff_headers_expanded = false;
@@ -2775,10 +3408,11 @@ impl RepositoryView {
             "正在回滚文件更改",
             move || {
                 let mut repo = Repository::open(repo_path)?;
-                let path = PathBuf::from(path);
+                let paths = paths.iter().map(PathBuf::from).collect::<Vec<_>>();
+                let path_refs = paths.iter().map(PathBuf::as_path).collect::<Vec<_>>();
                 let snapshot = match scope {
-                    DiffScope::Staged => service.discard_all_path(&mut repo, &path)?,
-                    DiffScope::Unstaged => service.discard_unstaged_path(&mut repo, &path)?,
+                    DiffScope::Staged => service.discard_all_paths(&mut repo, path_refs)?,
+                    DiffScope::Unstaged => service.discard_unstaged_paths(&mut repo, path_refs)?,
                 };
                 let changes = service.status_full(&repo)?;
                 Ok(UiEvent::DiscardChangeFinished {
@@ -3578,10 +4212,11 @@ impl RepositoryView {
         let key_path = self.credential_key_path.value.trim().to_string();
         let passphrase = self.credential_passphrase.value.clone();
 
-        let credential = if !key_path.is_empty() || pending.request.url.starts_with("ssh") {
+        let credential = if self.credential_form_mode == CredentialFormMode::Ssh {
             GitCredential::SshPassphrase {
                 username,
-                private_key_path: (!key_path.is_empty()).then_some(key_path),
+                private_key_path: (!self.credential_use_ssh_agent && !key_path.is_empty())
+                    .then_some(key_path),
                 passphrase: (!passphrase.is_empty()).then_some(passphrase),
                 save_to_keyring: self.save_credential,
                 scope: self.credential_scope,
@@ -3595,22 +4230,30 @@ impl RepositoryView {
             }
         };
 
-        let supplied_ok = {
-            match self.supplied_credential.lock() {
-                Ok(mut supplied) => {
-                    *supplied = Some(credential);
-                    true
-                }
-                Err(_) => false,
-            }
-        };
-        if !supplied_ok {
-            self.last_error = Some("凭据输入状态异常".into());
+        if !send_credential_response(&pending, Ok(Some(credential))) {
+            self.last_error = Some("凭据请求已失效".into());
             return;
         }
         self.show_next_credential_request();
         self.apply_status_event(pending.tab_id, |this| {
-            this.status = "凭据已准备好，请重试远程操作".into();
+            this.status = "凭据已提交，正在继续操作".into();
+            this.last_error = None;
+        });
+        self.reload_credential_records("凭据已提交");
+        self.save_remote_credential_bindings();
+    }
+
+    fn cancel_credential_request(&mut self) {
+        let Some(pending) = self.pending_credential.clone() else {
+            return;
+        };
+        let _ = send_credential_response(
+            &pending,
+            Err(khaslana::GitError::Credential("已取消凭据输入".into())),
+        );
+        self.show_next_credential_request();
+        self.apply_status_event(pending.tab_id, |this| {
+            this.status = "凭据输入已取消".into();
             this.last_error = None;
         });
     }
@@ -3791,6 +4434,82 @@ impl RepositoryView {
                 }
             }))
             .child(label)
+    }
+
+    fn credential_kind_button(
+        &self,
+        label: &'static str,
+        mode: CredentialFormMode,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let selected = self.credential_form_mode == mode;
+        div()
+            .id(format!("credential-kind-{label}"))
+            .flex_none()
+            .px_2()
+            .py_1()
+            .rounded_sm()
+            .border_1()
+            .border_color(if selected {
+                rgb(COLOR_BORDER_STRONG)
+            } else {
+                rgb(COLOR_BORDER)
+            })
+            .bg(if selected {
+                rgb(COLOR_BLUE_SOFT)
+            } else {
+                rgb(COLOR_SURFACE)
+            })
+            .text_size(px(12.0))
+            .text_color(if selected {
+                rgb(COLOR_BLUE_DARK)
+            } else {
+                rgb(COLOR_TEXT_MUTED)
+            })
+            .cursor_pointer()
+            .hover(|this| this.bg(rgb(COLOR_BLUE_SOFT)))
+            .on_click(cx.listener(move |this, _event, _window, cx| {
+                this.credential_form_mode = mode;
+                cx.notify();
+            }))
+            .child(label)
+    }
+
+    fn toggle_row(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        checked: bool,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .gap_2()
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _event, window, cx| {
+                on_click(this, window, cx);
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .size(px(14.0))
+                    .border_1()
+                    .border_color(rgb(COLOR_BORDER_STRONG))
+                    .bg(if checked {
+                        rgb(COLOR_BLUE)
+                    } else {
+                        rgb(COLOR_SURFACE)
+                    }),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(COLOR_TEXT))
+                    .child(label),
+            )
     }
 
     fn input(
@@ -4162,7 +4881,9 @@ impl RepositoryView {
             return div().into_any_element();
         };
         let selected_count = self.change_selection.selected(&menu.scope).len();
-        let all_count = self.change_paths(menu.scope.clone()).len();
+        let selected_paths = self.selected_change_paths(menu.scope.clone());
+        let all_paths = self.change_paths(menu.scope.clone());
+        let all_count = all_paths.len();
 
         let mut menu_el = div()
             .absolute()
@@ -4207,7 +4928,43 @@ impl RepositoryView {
                         let path = menu.path.clone();
                         let scope = menu.scope.clone();
                         move |this| {
-                            this.open_discard_change_confirm_dialog(path.clone(), scope.clone())
+                            this.open_discard_change_confirm_dialog(
+                                vec![path.clone()],
+                                scope.clone(),
+                                DiscardTarget::Single,
+                            )
+                        }
+                    },
+                    cx,
+                ))
+                .child(context_menu_item(
+                    "回滚指定更改...",
+                    selected_count > 0 && !self.busy,
+                    {
+                        let paths = selected_paths.clone();
+                        let scope = menu.scope.clone();
+                        move |this| {
+                            this.open_discard_change_confirm_dialog(
+                                paths.clone(),
+                                scope.clone(),
+                                DiscardTarget::Selected,
+                            )
+                        }
+                    },
+                    cx,
+                ))
+                .child(context_menu_item(
+                    "回滚全部更改...",
+                    all_count > 0 && !self.busy,
+                    {
+                        let paths = all_paths.clone();
+                        let scope = menu.scope.clone();
+                        move |this| {
+                            this.open_discard_change_confirm_dialog(
+                                paths.clone(),
+                                scope.clone(),
+                                DiscardTarget::All,
+                            )
                         }
                     },
                     cx,
@@ -4233,7 +4990,43 @@ impl RepositoryView {
                         let path = menu.path.clone();
                         let scope = menu.scope.clone();
                         move |this| {
-                            this.open_discard_change_confirm_dialog(path.clone(), scope.clone())
+                            this.open_discard_change_confirm_dialog(
+                                vec![path.clone()],
+                                scope.clone(),
+                                DiscardTarget::Single,
+                            )
+                        }
+                    },
+                    cx,
+                ))
+                .child(context_menu_item(
+                    "回滚指定更改...",
+                    selected_count > 0 && !self.busy,
+                    {
+                        let paths = selected_paths;
+                        let scope = menu.scope.clone();
+                        move |this| {
+                            this.open_discard_change_confirm_dialog(
+                                paths.clone(),
+                                scope.clone(),
+                                DiscardTarget::Selected,
+                            )
+                        }
+                    },
+                    cx,
+                ))
+                .child(context_menu_item(
+                    "回滚全部更改...",
+                    all_count > 0 && !self.busy,
+                    {
+                        let paths = all_paths;
+                        let scope = menu.scope.clone();
+                        move |this| {
+                            this.open_discard_change_confirm_dialog(
+                                paths.clone(),
+                                scope.clone(),
+                                DiscardTarget::All,
+                            )
                         }
                     },
                     cx,
@@ -5149,38 +5942,38 @@ impl RepositoryView {
                     .child(format!("远端：{}", pending.request.url)),
             )
             .child(self.input(FieldId::CredentialUsername, true, window, cx))
-            .child(self.input(FieldId::CredentialSecret, true, window, cx))
-            .child(self.input(FieldId::CredentialKeyPath, true, window, cx))
-            .child(self.input(FieldId::CredentialPassphrase, true, window, cx))
-            .child(
-                div()
-                    .id("save-credential")
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.save_credential = !this.save_credential;
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .size(px(14.0))
-                            .border_1()
-                            .border_color(rgb(COLOR_BORDER_STRONG))
-                            .bg(if self.save_credential {
-                                rgb(COLOR_BLUE)
-                            } else {
-                                rgb(COLOR_SURFACE)
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(rgb(COLOR_TEXT))
-                            .child("保存到系统凭据管理器"),
-                    ),
+            .when(
+                self.credential_form_mode == CredentialFormMode::Https,
+                |this| this.child(self.input(FieldId::CredentialSecret, true, window, cx)),
             )
+            .when(
+                self.credential_form_mode == CredentialFormMode::Ssh,
+                |this| {
+                    this.child(self.toggle_row(
+                        "credential-use-ssh-agent",
+                        "使用 SSH agent",
+                        self.credential_use_ssh_agent,
+                        |this, _, _| this.credential_use_ssh_agent = !this.credential_use_ssh_agent,
+                        cx,
+                    ))
+                    .when(!self.credential_use_ssh_agent, |this| {
+                        this.child(self.input(FieldId::CredentialKeyPath, true, window, cx))
+                    })
+                    .child(self.input(
+                        FieldId::CredentialPassphrase,
+                        true,
+                        window,
+                        cx,
+                    ))
+                },
+            )
+            .child(self.toggle_row(
+                "save-credential",
+                "保存到系统凭据管理器",
+                self.save_credential,
+                |this, _, _| this.save_credential = !this.save_credential,
+                cx,
+            ))
             .child(
                 div()
                     .flex()
@@ -5201,18 +5994,11 @@ impl RepositoryView {
                     .flex()
                     .gap_2()
                     .justify_end()
-                    .child(self.button(
-                        "使用凭据",
-                        !self.busy,
-                        |this, _, _| this.use_credentials(),
-                        cx,
-                    ))
+                    .child(self.button("使用凭据", true, |this, _, _| this.use_credentials(), cx))
                     .child(self.button(
                         "取消",
-                        !self.busy,
-                        |this, _, _| {
-                            this.show_next_credential_request();
-                        },
+                        true,
+                        |this, _, _| this.cancel_credential_request(),
                         cx,
                     )),
             )
@@ -5238,12 +6024,26 @@ impl RepositoryView {
             DialogState::ConfirmRevert { oid, summary } => self
                 .render_confirm_revert_dialog(oid, summary, cx)
                 .into_any_element(),
-            DialogState::ConfirmDiscardChange { path, scope } => self
-                .render_confirm_discard_change_dialog(path, scope, cx)
+            DialogState::ConfirmDiscardChange {
+                scope,
+                target,
+                paths,
+            } => self
+                .render_confirm_discard_change_dialog(scope, target, paths, cx)
                 .into_any_element(),
             DialogState::CredentialManager => {
                 self.render_credential_manager_dialog(cx).into_any_element()
             }
+            DialogState::CredentialForm { editing } => self
+                .render_credential_form_dialog(editing, window, cx)
+                .into_any_element(),
+            DialogState::RemoteManager => self.render_remote_manager_dialog(cx).into_any_element(),
+            DialogState::RemoteForm { editing } => self
+                .render_remote_form_dialog(editing, window, cx)
+                .into_any_element(),
+            DialogState::ConfirmDeleteRemote { name } => self
+                .render_confirm_delete_remote_dialog(name, cx)
+                .into_any_element(),
             DialogState::ConfirmDeleteCredential { record_id, label } => self
                 .render_confirm_delete_credential_dialog(record_id, label, cx)
                 .into_any_element(),
@@ -5455,16 +6255,27 @@ impl RepositoryView {
 
     fn render_confirm_discard_change_dialog(
         &self,
-        path: String,
         scope: DiffScope,
+        target: DiscardTarget,
+        paths: Vec<String>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let count = paths.len();
+        let target_label = match target {
+            DiscardTarget::Single => "目标文件".to_string(),
+            DiscardTarget::Selected => format!("选定文件（{count} 个）"),
+            DiscardTarget::All => match scope {
+                DiffScope::Staged => format!("暂存区全部文件（{count} 个）"),
+                DiffScope::Unstaged => format!("修改区全部文件（{count} 个）"),
+            },
+        };
+        let preview = discard_paths_preview(&paths);
         let help = match scope {
             DiffScope::Staged => {
-                "将丢弃该文件全部未提交更改，包括暂存区和工作区。新增文件会被删除，删除文件会被恢复。此操作无法从 Khaslana 内撤销。"
+                "将丢弃这些文件全部未提交更改，包括暂存区和工作区。新增文件会被删除，删除文件会被恢复。此操作无法从 Khaslana 内撤销。"
             }
             DiffScope::Unstaged => {
-                "将仅丢弃该文件尚未暂存的更改，已暂存内容会保留。未跟踪新增文件会被删除。此操作无法从 Khaslana 内撤销。"
+                "将仅丢弃这些文件尚未暂存的更改，已暂存内容会保留。未跟踪新增文件会被删除。此操作无法从 Khaslana 内撤销。"
             }
         };
         self.dialog_panel("确认回滚更改", cx)
@@ -5472,7 +6283,13 @@ impl RepositoryView {
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(COLOR_TEXT))
-                    .child(format!("目标文件：{path}")),
+                    .child(target_label),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(COLOR_TEXT_MUTED))
+                    .child(preview),
             )
             .child(
                 div()
@@ -5490,9 +6307,518 @@ impl RepositoryView {
                         "确认回滚",
                         !self.busy,
                         {
-                            let path = path.clone();
-                            move |this, _, _| this.discard_change(path.clone(), scope.clone())
+                            let paths = paths.clone();
+                            move |this, _, _| {
+                                this.discard_change(paths.clone(), scope.clone(), target.clone())
+                            }
                         },
+                        cx,
+                    )),
+            )
+    }
+
+    fn render_remote_manager_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let remotes = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.remotes.clone())
+            .unwrap_or_default();
+        let rows = if remotes.is_empty() {
+            vec![placeholder_row("暂无远端。可以点击“新增远端”添加。").into_any_element()]
+        } else {
+            remotes
+                .into_iter()
+                .map(|remote| self.remote_manager_row(remote, cx).into_any_element())
+                .collect::<Vec<_>>()
+        };
+
+        div()
+            .id("dialog-远端管理")
+            .w(px(820.0))
+            .max_h(px(620.0))
+            .p_4()
+            .rounded_sm()
+            .border_1()
+            .border_color(rgb(COLOR_BORDER_STRONG))
+            .bg(rgb(COLOR_SURFACE))
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .cursor(CursorStyle::Arrow)
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(rgb(COLOR_TEXT))
+                            .child("远端管理"),
+                    )
+                    .child(self.button(
+                        "新增远端",
+                        self.repo_path.is_some() && !self.busy,
+                        |this, _, _| this.open_remote_form(None),
+                        cx,
+                    )),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(COLOR_TEXT_MUTED))
+                    .child("远端地址会同时作为 fetch 和 push URL；凭据只从已保存凭据中选择。"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_h(px(0.0))
+                    .max_h(px(420.0))
+                    .border_1()
+                    .border_color(rgb(COLOR_BORDER))
+                    .rounded_sm()
+                    .child(self.remote_manager_header())
+                    .child({
+                        let handle = self.scroll_handle("remote-manager-list");
+                        let content = div()
+                            .id("remote-manager-list")
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .gap_0()
+                            .min_w(px(0.0))
+                            .min_h(px(0.0))
+                            .overflow_y_scroll()
+                            .track_scroll(&handle)
+                            .children(rows)
+                            .into_any_element();
+                        scrollable_frame_when(
+                            "remote-manager-list",
+                            ScrollbarMode::Vertical,
+                            content,
+                            handle,
+                            self.snapshot
+                                .as_ref()
+                                .is_some_and(|snapshot| !snapshot.remotes.is_empty()),
+                            cx,
+                        )
+                    }),
+            )
+            .child(div().flex().justify_end().child(self.button(
+                "关闭",
+                !self.busy,
+                |this, _, _| this.close_dialog(),
+                cx,
+            )))
+    }
+
+    fn remote_manager_header(&self) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_2()
+            .border_b_1()
+            .border_color(rgb(COLOR_BORDER))
+            .bg(rgb(COLOR_HEADER_BG))
+            .text_size(px(11.0))
+            .font_weight(gpui::FontWeight::BOLD)
+            .text_color(rgb(COLOR_TEXT_MUTED))
+            .child(div().flex_none().w(px(104.0)).child("名称"))
+            .child(div().flex_1().min_w(px(0.0)).child("地址"))
+            .child(div().flex_none().w(px(180.0)).child("凭据"))
+            .child(div().flex_none().w(px(106.0)).child("操作"))
+    }
+
+    fn remote_manager_row(&self, remote: RemoteInfo, cx: &mut Context<Self>) -> impl IntoElement {
+        let edit_name = remote.name.clone();
+        let delete_name = remote.name.clone();
+        let policy = self
+            .repo_path
+            .as_ref()
+            .map(|repo_path| {
+                self.remote_credential_policy_for_remote(repo_path, &remote.name, &remote.url)
+            })
+            .unwrap_or(RemoteCredentialPolicy::AutoMatch);
+        let credential_label = match policy {
+            RemoteCredentialPolicy::NoCredential => "无凭据".to_string(),
+            RemoteCredentialPolicy::Record(record_id) => self
+                .credential_records
+                .iter()
+                .find(|record| record.id == record_id)
+                .map(credential_record_label)
+                .unwrap_or_else(|| "凭据不存在".to_string()),
+            RemoteCredentialPolicy::AutoMatch => self
+                .matching_credential_for_remote_url(&remote.url)
+                .map(|record| format!("自动：{}", credential_record_label(record)))
+                .unwrap_or_else(|| "自动匹配".to_string()),
+        };
+
+        div()
+            .id(format!("remote-manager-row-{}", remote.name))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_2()
+            .border_b_1()
+            .border_color(rgb(COLOR_BORDER))
+            .text_size(px(12.0))
+            .bg(rgb(COLOR_SURFACE))
+            .hover(|this| this.bg(rgb(COLOR_BLUE_SOFT)))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(104.0))
+                    .text_color(rgb(COLOR_TEXT))
+                    .truncate()
+                    .child(remote.name),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .text_color(rgb(COLOR_TEXT_MUTED))
+                    .truncate()
+                    .child(remote.url),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(180.0))
+                    .text_color(rgb(COLOR_BLUE_DARK))
+                    .truncate()
+                    .child(credential_label),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(106.0))
+                    .flex()
+                    .gap_1()
+                    .child(self.button(
+                        "编辑",
+                        !self.busy,
+                        move |this, _, _| this.open_remote_form(Some(edit_name.clone())),
+                        cx,
+                    ))
+                    .child(self.button(
+                        "删除",
+                        !self.busy,
+                        move |this, _, _| this.open_delete_remote_confirm(delete_name.clone()),
+                        cx,
+                    )),
+            )
+    }
+
+    fn render_remote_form_dialog(
+        &self,
+        editing: Option<String>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let title = if editing.is_some() {
+            "编辑远端"
+        } else {
+            "新增远端"
+        };
+        self.dialog_panel(title, cx)
+            .w(px(560.0))
+            .child(self.input(FieldId::RemoteName, false, window, cx))
+            .child(self.input(FieldId::RemoteUrl, false, window, cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(COLOR_TEXT_MUTED))
+                            .child("绑定凭据"),
+                    )
+                    .child(self.remote_credential_picker(cx)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(self.button(
+                        "取消",
+                        !self.busy,
+                        |this, _, _| {
+                            this.active_dialog = Some(DialogState::RemoteManager);
+                        },
+                        cx,
+                    ))
+                    .child(self.button(
+                        "保存",
+                        !self.busy,
+                        move |this, _, _| this.save_remote(editing.clone()),
+                        cx,
+                    )),
+            )
+    }
+
+    fn remote_credential_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let url = self.remote_url.value.trim().to_string();
+        let mut rows = Vec::new();
+        rows.push(
+            self.remote_credential_option(
+                RemoteCredentialPolicy::AutoMatch,
+                "自动匹配保存凭据".to_string(),
+                true,
+                cx,
+            )
+            .into_any_element(),
+        );
+        rows.push(
+            self.remote_credential_option(
+                RemoteCredentialPolicy::NoCredential,
+                "无凭据".to_string(),
+                true,
+                cx,
+            )
+            .into_any_element(),
+        );
+        rows.extend(
+            self.credential_records
+                .iter()
+                .cloned()
+                .map(|record| {
+                    let compatible = if url.is_empty() {
+                        true
+                    } else {
+                        match record.scope {
+                            CredentialScope::RemoteUrl => {
+                                credential_record_is_compatible_with_url(&record, &url)
+                            }
+                            CredentialScope::Host => {
+                                credential_record_matches_remote_url(&record, &url)
+                            }
+                        }
+                    };
+                    let mut label = credential_record_label(&record);
+                    if record.scope == CredentialScope::Host {
+                        label = format!("{label} ({})", credential_display_target(&record));
+                    }
+                    if !compatible {
+                        label.push_str("（不匹配）");
+                    }
+                    self.remote_credential_option(
+                        RemoteCredentialPolicy::Record(record.id),
+                        label,
+                        compatible,
+                        cx,
+                    )
+                    .into_any_element()
+                })
+                .collect::<Vec<_>>(),
+        );
+
+        div()
+            .flex()
+            .flex_col()
+            .max_h(px(168.0))
+            .border_1()
+            .border_color(rgb(COLOR_BORDER))
+            .rounded_sm()
+            .bg(rgb(COLOR_SURFACE))
+            .children(rows)
+    }
+
+    fn remote_credential_option(
+        &self,
+        policy: RemoteCredentialPolicy,
+        label: String,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let selected = self.remote_credential_policy == policy;
+        let id_label = match &policy {
+            RemoteCredentialPolicy::AutoMatch => "auto",
+            RemoteCredentialPolicy::NoCredential => "none",
+            RemoteCredentialPolicy::Record(record_id) => record_id.as_str(),
+        };
+        div()
+            .id(format!("remote-credential-option-{id_label}"))
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_2()
+            .border_b_1()
+            .border_color(rgb(COLOR_BORDER))
+            .bg(if selected {
+                rgb(COLOR_ROW_SELECTED)
+            } else {
+                rgb(COLOR_SURFACE)
+            })
+            .text_size(px(12.0))
+            .text_color(if enabled {
+                rgb(COLOR_TEXT)
+            } else {
+                rgb(COLOR_TEXT_FAINT)
+            })
+            .cursor_pointer()
+            .when(enabled, |this| {
+                this.hover(|this| this.bg(rgb(COLOR_BLUE_SOFT)))
+            })
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(10.0))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(if selected {
+                        rgb(COLOR_BLUE_DARK)
+                    } else {
+                        rgb(COLOR_BORDER)
+                    })
+                    .bg(if selected {
+                        rgb(COLOR_BLUE)
+                    } else {
+                        rgb(COLOR_SURFACE)
+                    }),
+            )
+            .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
+            .on_click(cx.listener(move |this, _event, _window, cx| {
+                if enabled {
+                    this.remote_credential_policy = policy.clone();
+                    cx.notify();
+                }
+            }))
+    }
+
+    fn render_confirm_delete_remote_dialog(
+        &self,
+        name: String,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        self.dialog_panel("删除远端", cx)
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(COLOR_TEXT))
+                    .child(format!("确认删除远端：{name}")),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(COLOR_TEXT_MUTED))
+                    .child("这只会删除当前仓库的远端配置，不会删除任何已保存凭据。"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(self.button(
+                        "取消",
+                        !self.busy,
+                        |this, _, _| {
+                            this.active_dialog = Some(DialogState::RemoteManager);
+                        },
+                        cx,
+                    ))
+                    .child(self.button(
+                        "确认删除",
+                        !self.busy,
+                        move |this, _, _| this.delete_remote(name.clone()),
+                        cx,
+                    )),
+            )
+    }
+
+    fn render_credential_form_dialog(
+        &self,
+        _editing: Option<String>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        self.dialog_panel("添加凭据", cx)
+            .w(px(560.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(COLOR_TEXT_MUTED))
+                            .child("类型"),
+                    )
+                    .child(self.credential_kind_button("HTTPS", CredentialFormMode::Https, cx))
+                    .child(self.credential_kind_button("SSH", CredentialFormMode::Ssh, cx)),
+            )
+            .child(self.input(FieldId::CredentialRemoteUrl, false, window, cx))
+            .child(self.input(FieldId::CredentialUsername, false, window, cx))
+            .when(
+                self.credential_form_mode == CredentialFormMode::Https,
+                |this| this.child(self.input(FieldId::CredentialSecret, false, window, cx)),
+            )
+            .when(
+                self.credential_form_mode == CredentialFormMode::Ssh,
+                |this| {
+                    this.child(self.toggle_row(
+                        "credential-form-use-ssh-agent",
+                        "使用 SSH agent",
+                        self.credential_use_ssh_agent,
+                        |this, _, _| this.credential_use_ssh_agent = !this.credential_use_ssh_agent,
+                        cx,
+                    ))
+                    .when(!self.credential_use_ssh_agent, |this| {
+                        this.child(self.input(FieldId::CredentialKeyPath, false, window, cx))
+                    })
+                    .child(self.input(
+                        FieldId::CredentialPassphrase,
+                        false,
+                        window,
+                        cx,
+                    ))
+                },
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(COLOR_TEXT_MUTED))
+                            .child("复用范围"),
+                    )
+                    .child(self.credential_scope_button("仅此远端", CredentialScope::RemoteUrl, cx))
+                    .child(self.credential_scope_button("同站点", CredentialScope::Host, cx)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(self.button(
+                        "取消",
+                        !self.busy,
+                        |this, _, _| this.active_dialog = Some(DialogState::CredentialManager),
+                        cx,
+                    ))
+                    .child(self.button(
+                        "保存",
+                        !self.busy,
+                        |this, _, _| this.save_credential_form(),
                         cx,
                     )),
             )
@@ -5542,12 +6868,23 @@ impl RepositoryView {
                             .text_color(rgb(COLOR_TEXT))
                             .child("凭据管理"),
                     )
-                    .child(self.button(
-                        "刷新",
-                        !self.busy,
-                        |this, _, _| this.reload_credential_records("凭据列表已刷新"),
-                        cx,
-                    )),
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(self.button(
+                                "添加凭据",
+                                !self.busy,
+                                |this, _, _| this.open_credential_form(),
+                                cx,
+                            ))
+                            .child(self.button(
+                                "刷新",
+                                !self.busy,
+                                |this, _, _| this.reload_credential_records("凭据列表已刷新"),
+                                cx,
+                            )),
+                    ),
             )
             .child(
                 div()
@@ -6147,6 +7484,81 @@ mod app_tests {
             Some(&DiffEncodingChoice::Big5)
         );
         assert_eq!(DiffEncodingChoice::default(), DiffEncodingChoice::Auto);
+    }
+
+    #[test]
+    fn remote_credential_bindings_round_trip() {
+        let bindings = RemoteCredentialBindings {
+            remotes: vec![
+                RemoteCredentialBinding {
+                    repo_path: "c:/work/a".to_string(),
+                    remote_name: "origin".to_string(),
+                    remote_url: "https://example.com/a.git".to_string(),
+                    policy: RemoteCredentialPolicy::NoCredential,
+                },
+                RemoteCredentialBinding {
+                    repo_path: "c:/work/b".to_string(),
+                    remote_name: "upstream".to_string(),
+                    remote_url: "git@example.com:b.git".to_string(),
+                    policy: RemoteCredentialPolicy::Record("record-1".to_string()),
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&bindings).expect("encode bindings");
+        let decoded: RemoteCredentialBindings =
+            serde_json::from_str(&json).expect("decode bindings");
+
+        assert_eq!(decoded.remotes, bindings.remotes);
+    }
+
+    #[test]
+    fn remote_binding_for_request_defaults_to_auto_match() {
+        let bindings = Arc::new(Mutex::new(RemoteCredentialBindings::default()));
+        let request = CredentialRequest {
+            url: "https://example.com/a.git".into(),
+            username_from_url: None,
+            allowed_types: git2::CredentialType::USER_PASS_PLAINTEXT,
+            repo_path: Some(PathBuf::from("C:/work/a")),
+            remote_name: Some("origin".into()),
+        };
+
+        assert_eq!(
+            remote_binding_for_request(&bindings, &request),
+            RemoteCredentialPolicy::AutoMatch
+        );
+    }
+
+    #[test]
+    fn remote_binding_for_request_matches_repo_remote_and_url() {
+        let bindings = Arc::new(Mutex::new(RemoteCredentialBindings::default()));
+        let request = CredentialRequest {
+            url: "https://example.com/a.git".into(),
+            username_from_url: None,
+            allowed_types: git2::CredentialType::USER_PASS_PLAINTEXT,
+            repo_path: Some(PathBuf::from("C:/work/a")),
+            remote_name: Some("origin".into()),
+        };
+
+        set_remote_binding_for_request(
+            &bindings,
+            &request,
+            RemoteCredentialPolicy::Record("record-1".into()),
+        );
+
+        assert_eq!(
+            remote_binding_for_request(&bindings, &request),
+            RemoteCredentialPolicy::Record("record-1".into())
+        );
+
+        let changed_url = CredentialRequest {
+            url: "https://example.com/renamed.git".into(),
+            ..request
+        };
+        assert_eq!(
+            remote_binding_for_request(&bindings, &changed_url),
+            RemoteCredentialPolicy::AutoMatch
+        );
     }
 
     #[test]
