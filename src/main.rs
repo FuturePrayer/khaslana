@@ -452,6 +452,7 @@ struct RepoTabState {
     pub(crate) branch_sync_status: Option<BranchSyncStatus>,
     pub(crate) branch_sync_loading: bool,
     pub(crate) branch_sync_request_id: u64,
+    pub(crate) sidebar_sections: SidebarSectionState,
     pub(crate) busy: bool,
     operation_kind: OperationKind,
     pub(crate) loading: RepositoryLoading,
@@ -486,6 +487,7 @@ impl RepoTabState {
             branch_sync_status: None,
             branch_sync_loading: false,
             branch_sync_request_id: 0,
+            sidebar_sections: SidebarSectionState::default(),
             busy: false,
             operation_kind: OperationKind::Local,
             loading: RepositoryLoading::default(),
@@ -600,6 +602,58 @@ pub(crate) enum ResizeTarget {
 enum MainMode {
     Worktree,
     History,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SidebarSection {
+    LocalBranches,
+    Remotes,
+    RemoteBranches,
+    Tags,
+    Stashes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SidebarSectionState {
+    local_branches: bool,
+    remotes: bool,
+    remote_branches: bool,
+    tags: bool,
+    stashes: bool,
+}
+
+impl Default for SidebarSectionState {
+    fn default() -> Self {
+        Self {
+            local_branches: true,
+            remotes: true,
+            remote_branches: false,
+            tags: false,
+            stashes: false,
+        }
+    }
+}
+
+impl SidebarSectionState {
+    pub(crate) fn is_expanded(self, section: SidebarSection) -> bool {
+        match section {
+            SidebarSection::LocalBranches => self.local_branches,
+            SidebarSection::Remotes => self.remotes,
+            SidebarSection::RemoteBranches => self.remote_branches,
+            SidebarSection::Tags => self.tags,
+            SidebarSection::Stashes => self.stashes,
+        }
+    }
+
+    fn toggle(&mut self, section: SidebarSection) {
+        match section {
+            SidebarSection::LocalBranches => self.local_branches = !self.local_branches,
+            SidebarSection::Remotes => self.remotes = !self.remotes,
+            SidebarSection::RemoteBranches => self.remote_branches = !self.remote_branches,
+            SidebarSection::Tags => self.tags = !self.tags,
+            SidebarSection::Stashes => self.stashes = !self.stashes,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2584,6 +2638,11 @@ impl RepositoryView {
         self.commit_context_menu = None;
         self.encoding_menu_target = None;
         self.encoding_menu_closed_by_capture = None;
+    }
+
+    pub(crate) fn toggle_sidebar_section(&mut self, section: SidebarSection) {
+        self.close_popups();
+        self.sidebar_sections.toggle(section);
     }
 
     pub(crate) fn close_dialog(&mut self) {
@@ -4742,12 +4801,7 @@ impl RepositoryView {
         let selected = self.main_mode == mode;
         segmented_button(format!("mode-{label}"), selected, true)
             .on_click(cx.listener(move |this, _event, _window, cx| {
-                let was_selected = this.main_mode == mode;
                 this.set_main_mode(mode);
-                if !was_selected {
-                    this.status = format!("已切换到{label}");
-                    this.notify_toast(AppToastKind::Info, this.status.clone(), cx);
-                }
                 cx.notify();
             }))
             .child(label)
@@ -6447,7 +6501,7 @@ impl RepositoryView {
         .then(|| tab.status.clone())
     }
 
-    fn render_feedback_layer(&self) -> impl IntoElement {
+    fn render_feedback_layer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut left_stack = feedback_stack(false);
         let mut right_stack = feedback_stack(true);
 
@@ -6456,7 +6510,7 @@ impl RepositoryView {
             .iter()
             .filter(|feedback| !feedback.kind.is_important())
         {
-            left_stack = left_stack.child(feedback_bubble(feedback));
+            left_stack = left_stack.child(feedback_bubble(feedback, cx));
         }
 
         for feedback in self
@@ -6464,7 +6518,7 @@ impl RepositoryView {
             .iter()
             .filter(|feedback| feedback.kind.is_important())
         {
-            right_stack = right_stack.child(feedback_bubble(feedback));
+            right_stack = right_stack.child(feedback_bubble(feedback, cx));
         }
 
         div()
@@ -7931,7 +7985,7 @@ impl Render for RepositoryView {
             .child(self.render_dialogs(window, cx))
             .child(self.render_credential_context_menu(cx))
             .child(self.render_credentials(window, cx))
-            .child(self.render_feedback_layer())
+            .child(self.render_feedback_layer(cx))
     }
 }
 

@@ -4,6 +4,7 @@ use gpui::{
     App, Context, CursorStyle, Div, IntoElement, Render, Stateful, Window, div, prelude::*, px,
     rgb, rgba,
 };
+use yororen_ui::component::{IconName, icon};
 
 use crate::{RepositoryView, ui::theme};
 
@@ -451,7 +452,10 @@ fn feedback_icon(label: &'static str, bg: u32, text: u32) -> impl IntoElement {
         )
 }
 
-pub(crate) fn feedback_bubble(feedback: &FeedbackMessage) -> impl IntoElement {
+pub(crate) fn feedback_bubble(
+    feedback: &FeedbackMessage,
+    cx: &mut Context<RepositoryView>,
+) -> impl IntoElement {
     let (soft_bg, border, text) = feedback.kind.palette();
     let dot = match feedback.kind {
         AppToastKind::Info => "i",
@@ -459,6 +463,7 @@ pub(crate) fn feedback_bubble(feedback: &FeedbackMessage) -> impl IntoElement {
         AppToastKind::Warning => "!",
         AppToastKind::Error => "×",
     };
+    let feedback_id = feedback.id;
 
     div()
         .id(format!("feedback-{}", feedback.id))
@@ -493,6 +498,25 @@ pub(crate) fn feedback_bubble(feedback: &FeedbackMessage) -> impl IntoElement {
                         .text_color(rgb(theme::TEXT))
                         .child(feedback.message.clone()),
                 ),
+        )
+        .child(
+            div()
+                .id(format!("feedback-close-{}", feedback.id))
+                .flex_none()
+                .size(px(22.0))
+                .rounded_sm()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .text_color(rgb(theme::TEXT_MUTED))
+                .hover(|this| this.bg(rgb(theme::SURFACE_HOVER)))
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    cx.stop_propagation();
+                    this.feedbacks.retain(|feedback| feedback.id != feedback_id);
+                    cx.notify();
+                }))
+                .child(icon(IconName::Close).size(px(12.0)).inherit_color(true)),
         )
 }
 

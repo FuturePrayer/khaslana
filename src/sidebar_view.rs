@@ -5,9 +5,9 @@ use khaslana::{BranchInfo, BranchKind, RemoteInfo, StashInfo, TagInfo};
 
 use crate::{
     BRANCH_MENU_HEIGHT, BRANCH_MENU_WIDTH, BranchContextMenu, NAV_ROW_HEIGHT, RepositoryView,
-    STASH_MENU_HEIGHT, STASH_MENU_WIDTH, StashContextMenu, TAG_MENU_HEIGHT, TAG_MENU_WIDTH,
-    TagContextMenu, clamped_menu_position, context_menu_item, menu_separator, nav_list, nav_row,
-    placeholder_row, section_header_action, ui::theme as ui_theme,
+    STASH_MENU_HEIGHT, STASH_MENU_WIDTH, SidebarSection, StashContextMenu, TAG_MENU_HEIGHT,
+    TAG_MENU_WIDTH, TagContextMenu, clamped_menu_position, context_menu_item, menu_separator,
+    nav_list, nav_row, placeholder_row, ui::theme as ui_theme,
 };
 
 impl RepositoryView {
@@ -64,6 +64,7 @@ impl RepositoryView {
                 self.render_nav_section(
                     "本地分支",
                     "local-branch-list",
+                    SidebarSection::LocalBranches,
                     local_rows,
                     None,
                     3.0,
@@ -83,6 +84,7 @@ impl RepositoryView {
                 self.render_nav_section(
                     "远端",
                     "remote-list",
+                    SidebarSection::Remotes,
                     remote_rows,
                     self.loading.remote().then_some("远端加载中..."),
                     2.0,
@@ -101,6 +103,7 @@ impl RepositoryView {
             .child(self.render_nav_section(
                 "远端分支",
                 "remote-branch-list",
+                SidebarSection::RemoteBranches,
                 remote_branch_rows,
                 self.loading.remote().then_some("远端分支加载中..."),
                 3.0,
@@ -109,13 +112,22 @@ impl RepositoryView {
             ));
 
         if !tag_rows.is_empty() {
-            sidebar = sidebar
-                .child(self.render_nav_section("标签", "tag-list", tag_rows, None, 2.0, None, cx));
+            sidebar = sidebar.child(self.render_nav_section(
+                "标签",
+                "tag-list",
+                SidebarSection::Tags,
+                tag_rows,
+                None,
+                2.0,
+                None,
+                cx,
+            ));
         }
         if !stash_rows.is_empty() {
             sidebar = sidebar.child(self.render_nav_section(
                 "贮藏",
                 "stash-list",
+                SidebarSection::Stashes,
                 stash_rows,
                 None,
                 2.0,
@@ -131,12 +143,15 @@ impl RepositoryView {
         &self,
         title: &'static str,
         id: &'static str,
+        section: SidebarSection,
         rows: Vec<gpui::AnyElement>,
         placeholder: Option<&'static str>,
         weight: f32,
         action: Option<gpui::AnyElement>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let expanded = self.sidebar_sections.is_expanded(section);
+        let header = self.nav_section_header(title, section, expanded, action, cx);
         let rows = if rows.is_empty() {
             placeholder
                 .map(|text| placeholder_row(text).into_any_element())
@@ -148,17 +163,79 @@ impl RepositoryView {
         div()
             .flex()
             .flex_col()
-            .flex_1()
-            .min_h(px(96.0))
+            .when(expanded, |this| this.flex_1().min_h(px(96.0)))
+            .when(!expanded, |this| this.flex_none())
             .border_t_1()
             .border_color(rgb(ui_theme::BORDER))
-            .map(|this| {
+            .when(expanded, |this| {
                 let mut this = this;
                 this.style().flex_grow = Some(weight);
                 this
             })
-            .child(section_header_action(title, action))
-            .child(nav_list(self, id, rows, cx))
+            .child(header)
+            .when(expanded, |this| this.child(nav_list(self, id, rows, cx)))
+    }
+
+    fn nav_section_header(
+        &self,
+        title: &'static str,
+        section: SidebarSection,
+        expanded: bool,
+        action: Option<gpui::AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let toggle_label = if expanded { "∧" } else { "∨" };
+        let toggle = div()
+            .id(format!("sidebar-section-toggle-{title}"))
+            .flex_none()
+            .size(px(24.0))
+            .rounded_sm()
+            .flex()
+            .items_center()
+            .justify_center()
+            .border_1()
+            .border_color(rgb(ui_theme::BORDER))
+            .bg(rgb(ui_theme::SURFACE))
+            .text_size(px(13.0))
+            .text_color(rgb(ui_theme::TEXT_MUTED))
+            .cursor_pointer()
+            .hover(|this| this.bg(rgb(ui_theme::ROW_HOVER)))
+            .on_click(cx.listener(move |this, _event, _window, cx| {
+                this.toggle_sidebar_section(section);
+                cx.notify();
+            }))
+            .child(toggle_label)
+            .into_any_element();
+
+        let actions = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap_1()
+            .when_some(action, |this, action| this.child(action))
+            .child(toggle);
+
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .border_b_1()
+            .border_color(rgb(ui_theme::BORDER))
+            .bg(rgb(ui_theme::HEADER_BG))
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(rgb(ui_theme::TEXT))
+                    .truncate()
+                    .child(title),
+            )
+            .child(actions)
     }
 
     fn remote_row(&self, remote: RemoteInfo, cx: &mut Context<Self>) -> impl IntoElement {
