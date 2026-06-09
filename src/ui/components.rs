@@ -425,6 +425,32 @@ pub(crate) fn feedback_stack(important: bool) -> Div {
         .gap_2()
 }
 
+fn feedback_icon(label: &'static str, bg: u32, text: u32) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(22.0))
+        .rounded_full()
+        .bg(rgb(bg))
+        .text_color(rgb(text))
+        .text_size(px(12.0))
+        .line_height(px(22.0))
+        .text_align(gpui::TextAlign::Center)
+        .font_weight(gpui::FontWeight::BOLD)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .w_full()
+                .h_full()
+                .text_align(gpui::TextAlign::Center)
+                .child(label),
+        )
+}
+
 pub(crate) fn feedback_bubble(feedback: &FeedbackMessage) -> impl IntoElement {
     let (soft_bg, border, text) = feedback.kind.palette();
     let dot = match feedback.kind {
@@ -446,19 +472,7 @@ pub(crate) fn feedback_bubble(feedback: &FeedbackMessage) -> impl IntoElement {
         .shadow_lg()
         .flex()
         .gap_2()
-        .child(
-            div()
-                .flex_none()
-                .size(px(22.0))
-                .rounded_full()
-                .items_center()
-                .justify_center()
-                .bg(rgb(soft_bg))
-                .text_color(rgb(text))
-                .text_size(px(12.0))
-                .font_weight(gpui::FontWeight::BOLD)
-                .child(dot),
-        )
+        .child(feedback_icon(dot, soft_bg, text))
         .child(
             div()
                 .min_w(px(0.0))
