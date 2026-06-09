@@ -10,6 +10,17 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::ui_helpers::{COLOR_TEXT, COLOR_TEXT_FAINT};
 use crate::{FieldId, RepositoryView};
 
+const MULTILINE_LINE_HEIGHT: f32 = 18.0;
+const MULTILINE_MIN_LINES: usize = 4;
+
+#[derive(Clone, Debug)]
+pub(crate) struct TextLineLayout {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) line: ShapedLine,
+    pub(crate) bounds: Bounds<Pixels>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct TextEditState {
     pub(crate) value: String,
@@ -19,6 +30,7 @@ pub(crate) struct TextEditState {
     pub(crate) marked_range: Option<Range<usize>>,
     pub(crate) last_layout: Option<ShapedLine>,
     pub(crate) last_bounds: Option<Bounds<Pixels>>,
+    pub(crate) last_multiline_layout: Vec<TextLineLayout>,
     pub(crate) is_selecting: bool,
 }
 
@@ -32,6 +44,7 @@ impl TextEditState {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            last_multiline_layout: Vec::new(),
             is_selecting: false,
         }
     }
@@ -46,6 +59,7 @@ impl TextEditState {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            last_multiline_layout: Vec::new(),
             is_selecting: false,
         }
     }
@@ -57,6 +71,7 @@ impl TextEditState {
         self.marked_range = None;
         self.last_layout = None;
         self.last_bounds = None;
+        self.last_multiline_layout.clear();
         self.is_selecting = false;
     }
 
@@ -67,6 +82,7 @@ impl TextEditState {
         self.marked_range = None;
         self.last_layout = None;
         self.last_bounds = None;
+        self.last_multiline_layout.clear();
         self.is_selecting = false;
     }
 
@@ -149,11 +165,7 @@ impl TextEditState {
 
     pub(crate) fn insert_text(&mut self, text: &str, multiline: bool) {
         self.delete_selection();
-        let text = if multiline {
-            text.to_string()
-        } else {
-            text.replace(['\r', '\n'], "")
-        };
+        let text = normalize_inserted_text(text, multiline);
         self.value.insert_str(self.caret, &text);
         self.caret += text.len();
         self.selection_anchor = None;
@@ -216,6 +228,53 @@ impl TextEditState {
         self.move_caret_to(next, extend_selection);
     }
 
+    pub(crate) fn move_to_line_start(&mut self, extend_selection: bool) {
+        let start = self
+            .line_layout_for_caret()
+            .map(|line| line.start)
+            .unwrap_or(0);
+        self.move_caret_to(start, extend_selection);
+    }
+
+    pub(crate) fn move_to_line_end(&mut self, extend_selection: bool) {
+        let end = self
+            .line_layout_for_caret()
+            .map(|line| line.end)
+            .unwrap_or(self.value.len());
+        self.move_caret_to(end, extend_selection);
+    }
+
+    pub(crate) fn move_vertical(&mut self, direction: i32, extend_selection: bool) {
+        if self.last_multiline_layout.is_empty() {
+            return;
+        }
+        let Some(current_index) = self.line_index_for_caret() else {
+            return;
+        };
+        let target_index = if direction < 0 {
+            current_index.saturating_sub(1)
+        } else {
+            (current_index + 1).min(self.last_multiline_layout.len().saturating_sub(1))
+        };
+        if target_index == current_index {
+            return;
+        }
+        let current = &self.last_multiline_layout[current_index];
+        let target = &self.last_multiline_layout[target_index];
+        let local_caret = self.caret.saturating_sub(current.start);
+        let x = current
+            .line
+            .x_for_index(local_caret.min(current.end - current.start));
+        let local_target = target.line.closest_index_for_x(x);
+        self.move_caret_to(
+            clamp_to_char_boundary(
+                &self.value,
+                target.start + local_target.min(target.end - target.start),
+            ),
+            extend_selection,
+        );
+    }
+
     fn previous_grapheme_boundary(&self, offset: usize) -> usize {
         self.value
             .grapheme_indices(true)
@@ -265,35 +324,37 @@ impl TextEditState {
         self.offset_to_utf16(range.start)..self.offset_to_utf16(range.end)
     }
 
-    pub(crate) fn replace_text_in_utf16_range(
+    pub(crate) fn replace_text_in_utf16_range_with_mode(
         &mut self,
         range_utf16: Option<Range<usize>>,
         text: &str,
+        multiline: bool,
     ) {
         let range = range_utf16
             .as_ref()
             .map(|range| self.range_from_utf16(range))
             .or_else(|| self.marked_range.clone())
             .unwrap_or_else(|| self.input_range());
-        let text = text.replace(['\r', '\n'], "");
+        let text = normalize_inserted_text(text, multiline);
         self.value.replace_range(range.clone(), &text);
         self.caret = range.start + text.len();
         self.selection_anchor = None;
         self.marked_range = None;
     }
 
-    pub(crate) fn replace_and_mark_text_in_utf16_range(
+    pub(crate) fn replace_and_mark_text_in_utf16_range_with_mode(
         &mut self,
         range_utf16: Option<Range<usize>>,
         text: &str,
         selected_range_utf16: Option<Range<usize>>,
+        multiline: bool,
     ) {
         let range = range_utf16
             .as_ref()
             .map(|range| self.range_from_utf16(range))
             .or_else(|| self.marked_range.clone())
             .unwrap_or_else(|| self.input_range());
-        let text = text.replace(['\r', '\n'], "");
+        let text = normalize_inserted_text(text, multiline);
         let selected_range = selected_range_utf16
             .as_ref()
             .map(|range| {
@@ -324,6 +385,9 @@ impl TextEditState {
     }
 
     pub(crate) fn index_for_mouse_position(&self, position: gpui::Point<Pixels>) -> usize {
+        if !self.last_multiline_layout.is_empty() {
+            return self.multiline_index_for_mouse_position(position);
+        }
         if self.value.is_empty() {
             return 0;
         }
@@ -341,18 +405,103 @@ impl TextEditState {
         self.value_byte_for_display_byte(display_byte)
     }
 
-    pub(crate) fn byte_for_approx_x(&self, x: f32) -> usize {
-        let mut width = 0.0;
-        let mut previous = 0;
-        for (index, ch) in self.value.char_indices() {
-            let char_width = approx_input_char_width(ch);
-            if x < width + char_width / 2.0 {
-                return index;
-            }
-            width += char_width;
-            previous = index + ch.len_utf8();
+    pub(crate) fn bounds_for_utf16_range(
+        &self,
+        range_utf16: &Range<usize>,
+        bounds: Bounds<Pixels>,
+    ) -> Option<Bounds<Pixels>> {
+        if !self.last_multiline_layout.is_empty() {
+            return self.multiline_bounds_for_utf16_range(range_utf16);
         }
-        previous
+        let layout = self.last_layout.as_ref()?;
+        let range = self.range_from_utf16(range_utf16);
+        let display_range = self.display_byte_for_value_byte(range.start)
+            ..self.display_byte_for_value_byte(range.end);
+        Some(Bounds::from_corners(
+            point(
+                bounds.left() + layout.x_for_index(display_range.start),
+                bounds.top(),
+            ),
+            point(
+                bounds.left() + layout.x_for_index(display_range.end),
+                bounds.bottom(),
+            ),
+        ))
+    }
+
+    fn multiline_index_for_mouse_position(&self, position: gpui::Point<Pixels>) -> usize {
+        if self.value.is_empty() {
+            return 0;
+        }
+        let Some(first) = self.last_multiline_layout.first() else {
+            return 0;
+        };
+        if position.y < first.bounds.top() {
+            return 0;
+        }
+        let line = self
+            .last_multiline_layout
+            .iter()
+            .find(|line| position.y <= line.bounds.bottom())
+            .or_else(|| self.last_multiline_layout.last())
+            .unwrap();
+        let local = line
+            .line
+            .closest_index_for_x(position.x - line.bounds.left())
+            .min(line.end - line.start);
+        clamp_to_char_boundary(&self.value, line.start + local)
+    }
+
+    fn multiline_bounds_for_utf16_range(
+        &self,
+        range_utf16: &Range<usize>,
+    ) -> Option<Bounds<Pixels>> {
+        let range = self.range_from_utf16(range_utf16);
+        let start_line = self.line_layout_for_offset(range.start)?;
+        let end_line = self.line_layout_for_offset(range.end)?;
+        if start_line.start == end_line.start {
+            let start = range.start.saturating_sub(start_line.start);
+            let end = range.end.saturating_sub(start_line.start);
+            return Some(Bounds::from_corners(
+                point(
+                    start_line.bounds.left() + start_line.line.x_for_index(start),
+                    start_line.bounds.top(),
+                ),
+                point(
+                    start_line.bounds.left() + start_line.line.x_for_index(end),
+                    start_line.bounds.bottom(),
+                ),
+            ));
+        }
+        Some(Bounds::from_corners(
+            point(
+                start_line.bounds.left()
+                    + start_line
+                        .line
+                        .x_for_index(range.start.saturating_sub(start_line.start)),
+                start_line.bounds.top(),
+            ),
+            point(end_line.bounds.right(), end_line.bounds.bottom()),
+        ))
+    }
+
+    fn line_index_for_caret(&self) -> Option<usize> {
+        self.last_multiline_layout
+            .iter()
+            .position(|line| self.caret >= line.start && self.caret <= line.end)
+            .or_else(|| self.last_multiline_layout.len().checked_sub(1))
+    }
+
+    fn line_layout_for_caret(&self) -> Option<&TextLineLayout> {
+        let index = self.line_index_for_caret()?;
+        self.last_multiline_layout.get(index)
+    }
+
+    fn line_layout_for_offset(&self, offset: usize) -> Option<&TextLineLayout> {
+        self.last_multiline_layout
+            .iter()
+            .find(|line| offset >= line.start && offset <= line.end)
+            .or_else(|| self.last_multiline_layout.last())
     }
 }
 
@@ -416,28 +565,12 @@ fn offset_from_utf16_in_text(text: &str, offset: usize) -> usize {
     utf8_offset
 }
 
-fn approx_input_char_width(ch: char) -> f32 {
-    if ch == '\t' {
-        28.0
-    } else if ch.is_ascii() {
-        7.0
-    } else if ch_width_is_wide(ch) {
-        14.0
+fn normalize_inserted_text(text: &str, multiline: bool) -> String {
+    if multiline {
+        text.replace("\r\n", "\n").replace('\r', "\n")
     } else {
-        8.5
+        text.replace(['\r', '\n'], "")
     }
-}
-
-fn ch_width_is_wide(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x1100..=0x11FF
-            | 0x2E80..=0xA4CF
-            | 0xAC00..=0xD7AF
-            | 0xF900..=0xFAFF
-            | 0xFE10..=0xFE6F
-            | 0xFF00..=0xFFEF
-    )
 }
 
 pub(crate) struct SingleLineInputElement {
@@ -449,6 +582,18 @@ pub(crate) struct SingleLineInputPrepaint {
     line: Option<ShapedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
+}
+
+pub(crate) struct MultiLineInputElement {
+    pub(crate) field_id: FieldId,
+    pub(crate) entity: gpui::Entity<RepositoryView>,
+}
+
+pub(crate) struct MultiLineInputPrepaint {
+    lines: Vec<TextLineLayout>,
+    placeholder: Option<ShapedLine>,
+    cursor: Option<PaintQuad>,
+    selections: Vec<PaintQuad>,
 }
 
 impl IntoElement for SingleLineInputElement {
@@ -623,6 +768,271 @@ impl Element for SingleLineInputElement {
     }
 }
 
+impl IntoElement for MultiLineInputElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for MultiLineInputElement {
+    type RequestLayoutState = ();
+    type PrepaintState = MultiLineInputPrepaint;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let line_count = self
+            .entity
+            .read(cx)
+            .field(self.field_id)
+            .value
+            .is_empty()
+            .then_some(MULTILINE_MIN_LINES)
+            .unwrap_or_else(|| {
+                logical_line_ranges(&self.entity.read(cx).field(self.field_id).value)
+                    .len()
+                    .max(MULTILINE_MIN_LINES)
+            });
+        let mut style = Style::default();
+        style.size.width = relative(1.0).into();
+        style.size.height = px(MULTILINE_LINE_HEIGHT * line_count as f32).into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        let view = self.entity.read(cx);
+        let field = view.field(self.field_id);
+        let style = window.text_style();
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        let line_height = px(MULTILINE_LINE_HEIGHT);
+        let focused = field.focus.is_focused(window);
+
+        if field.value.is_empty() {
+            let run = TextRun {
+                len: field.placeholder.len(),
+                font: style.font(),
+                color: rgba(COLOR_TEXT_FAINT).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let placeholder =
+                window
+                    .text_system()
+                    .shape_line(field.placeholder.clone(), font_size, &[run], None);
+            let cursor = focused.then(|| {
+                fill(
+                    Bounds::new(bounds.origin, size(px(1.5), line_height)),
+                    rgb(COLOR_TEXT),
+                )
+            });
+            return MultiLineInputPrepaint {
+                lines: Vec::new(),
+                placeholder: Some(placeholder),
+                cursor,
+                selections: Vec::new(),
+            };
+        }
+
+        let mut lines = Vec::new();
+        let mut selections = Vec::new();
+        let mut cursor = None;
+        for (line_index, range) in logical_line_ranges(&field.value).into_iter().enumerate() {
+            let text = &field.value[range.clone()];
+            let display_text: SharedString = text.to_string().into();
+            let runs = multiline_text_runs(field, &style, &range, display_text.len());
+            let shaped = window
+                .text_system()
+                .shape_line(display_text, font_size, &runs, None);
+            let top = bounds.top() + px(MULTILINE_LINE_HEIGHT * line_index as f32);
+            let line_bounds = Bounds::new(
+                point(bounds.left(), top),
+                size(bounds.size.width, line_height),
+            );
+
+            if let Some(selection) = field.selected_range()
+                && let Some(overlap) = range_overlap(&selection, &range)
+            {
+                let start = overlap.start.saturating_sub(range.start);
+                let end = overlap.end.saturating_sub(range.start);
+                selections.push(fill(
+                    Bounds::from_corners(
+                        point(
+                            line_bounds.left() + shaped.x_for_index(start),
+                            line_bounds.top(),
+                        ),
+                        point(
+                            line_bounds.left() + shaped.x_for_index(end),
+                            line_bounds.bottom(),
+                        ),
+                    ),
+                    rgba(0x6aa9ff55),
+                ));
+            }
+
+            if focused
+                && field.selected_range().is_none()
+                && field.caret >= range.start
+                && field.caret <= range.end
+            {
+                let local = field.caret.saturating_sub(range.start);
+                cursor = Some(fill(
+                    Bounds::new(
+                        point(
+                            line_bounds.left() + shaped.x_for_index(local),
+                            line_bounds.top(),
+                        ),
+                        size(px(1.5), line_height),
+                    ),
+                    rgb(COLOR_TEXT),
+                ));
+            }
+
+            lines.push(TextLineLayout {
+                start: range.start,
+                end: range.end,
+                line: shaped,
+                bounds: line_bounds,
+            });
+        }
+
+        MultiLineInputPrepaint {
+            lines,
+            placeholder: None,
+            cursor,
+            selections,
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let focus_handle = self.entity.read(cx).field(self.field_id).focus.clone();
+        window.handle_input(
+            &focus_handle,
+            ElementInputHandler::new(bounds, self.entity.clone()),
+            cx,
+        );
+        for selection in prepaint.selections.drain(..) {
+            window.paint_quad(selection);
+        }
+        if let Some(placeholder) = prepaint.placeholder.take() {
+            let _ = placeholder.paint(bounds.origin, window.line_height(), window, cx);
+        }
+        for line in &prepaint.lines {
+            let _ = line
+                .line
+                .paint(line.bounds.origin, window.line_height(), window, cx);
+        }
+        if let Some(cursor) = prepaint.cursor.take() {
+            window.paint_quad(cursor);
+        }
+        self.entity.update(cx, |view, _cx| {
+            let field = view.field_mut(self.field_id);
+            field.last_layout = None;
+            field.last_bounds = Some(bounds);
+            field.last_multiline_layout = prepaint.lines.clone();
+        });
+    }
+}
+
+fn logical_line_ranges(value: &str) -> Vec<Range<usize>> {
+    if value.is_empty() {
+        return vec![0..0];
+    }
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    for (index, ch) in value.char_indices() {
+        if ch == '\n' {
+            ranges.push(start..index);
+            start = index + ch.len_utf8();
+        }
+    }
+    ranges.push(start..value.len());
+    ranges
+}
+
+fn range_overlap(a: &Range<usize>, b: &Range<usize>) -> Option<Range<usize>> {
+    let start = a.start.max(b.start);
+    let end = a.end.min(b.end);
+    (start < end).then_some(start..end)
+}
+
+fn multiline_text_runs(
+    field: &TextEditState,
+    style: &gpui::TextStyle,
+    line_range: &Range<usize>,
+    line_len: usize,
+) -> Vec<TextRun> {
+    let base_run = TextRun {
+        len: line_len,
+        font: style.font(),
+        color: style.color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let Some(marked_range) = field.marked_range.as_ref() else {
+        return vec![base_run];
+    };
+    let Some(overlap) = range_overlap(marked_range, line_range) else {
+        return vec![base_run];
+    };
+    let marked_start = overlap.start.saturating_sub(line_range.start);
+    let marked_end = overlap.end.saturating_sub(line_range.start);
+    vec![
+        TextRun {
+            len: marked_start,
+            ..base_run.clone()
+        },
+        TextRun {
+            len: marked_end.saturating_sub(marked_start),
+            underline: Some(gpui::UnderlineStyle {
+                color: Some(base_run.color),
+                thickness: px(1.0),
+                wavy: false,
+            }),
+            ..base_run.clone()
+        },
+        TextRun {
+            len: line_len.saturating_sub(marked_end),
+            ..base_run
+        },
+    ]
+    .into_iter()
+    .filter(|run| run.len > 0)
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::TextEditState;
@@ -706,16 +1116,6 @@ mod tests {
     }
 
     #[test]
-    fn text_field_click_position_uses_wide_character_widths() {
-        let field = TextEditState::for_test("a你b", false);
-
-        assert_eq!(field.byte_for_approx_x(0.0), 0);
-        assert_eq!(field.byte_for_approx_x(8.0), 1);
-        assert_eq!(field.byte_for_approx_x(18.0), "a你".len());
-        assert_eq!(field.byte_for_approx_x(80.0), "a你b".len());
-    }
-
-    #[test]
     fn text_field_utf16_ranges_round_trip() {
         let field = TextEditState::for_test("a你😀b", false);
         let range = "a你".len().."a你😀".len();
@@ -743,9 +1143,19 @@ mod tests {
         let mut field = TextEditState::for_test("ab", false);
         field.move_caret_to(1, false);
 
-        field.replace_text_in_utf16_range(None, "x\ny\r\nz");
+        field.replace_text_in_utf16_range_with_mode(None, "x\ny\r\nz", false);
         assert_eq!(field.value, "axyzb");
         assert_eq!(field.caret, 4);
+    }
+
+    #[test]
+    fn text_field_platform_replacement_can_keep_multiline_text() {
+        let mut field = TextEditState::for_test("ab", false);
+        field.move_caret_to(1, false);
+
+        field.replace_text_in_utf16_range_with_mode(None, "x\ny\r\nz", true);
+        assert_eq!(field.value, "ax\ny\nzb");
+        assert_eq!(field.caret, "ax\ny\nz".len());
     }
 
     #[test]
@@ -753,7 +1163,7 @@ mod tests {
         let mut field = TextEditState::for_test("ab", false);
         field.move_caret_to(1, false);
 
-        field.replace_and_mark_text_in_utf16_range(None, "你", Some(1..1));
+        field.replace_and_mark_text_in_utf16_range_with_mode(None, "你", Some(1..1), false);
         assert_eq!(field.value, "a你b");
         assert_eq!(field.marked_range, Some(1.."a你".len()));
         assert_eq!(field.caret, "a你".len());

@@ -812,6 +812,22 @@ impl GitService {
         self.snapshot_after_operation(repo)
     }
 
+    pub fn commit_and_push(
+        &self,
+        repo: &mut Repository,
+        message: &CommitMessage,
+        remote: &RemoteName,
+    ) -> Result<std::result::Result<RepositorySnapshot, (RepositorySnapshot, GitError)>> {
+        self.commit(repo, message)?;
+        match self.push(repo, remote) {
+            Ok(snapshot) => Ok(Ok(snapshot)),
+            Err(err) => {
+                let snapshot = self.snapshot_after_operation(repo)?;
+                Ok(Err((snapshot, err)))
+            }
+        }
+    }
+
     pub fn apply_stash(&self, repo: &mut Repository, index: usize) -> Result<RepositorySnapshot> {
         self.progress.emit(OperationEvent::Started(format!(
             "正在应用贮藏 stash@{{{index}}}"
@@ -2456,6 +2472,105 @@ mod tests {
             .clone_repo(&path_url(remote_dir.path()), &RepoPath::new(&other_path))
             .unwrap();
         assert!(other_path.join("clone.txt").exists());
+    }
+
+    #[test]
+    fn commit_and_push_pushes_new_commit() {
+        let remote_dir = TempDir::new().unwrap();
+        let mut bare_opts = RepositoryInitOptions::new();
+        bare_opts.bare(true).initial_head("main");
+        Repository::init_opts(remote_dir.path(), &bare_opts).unwrap();
+
+        let (seed_dir, mut seed_repo, service) = init_repo();
+        write_file(seed_dir.path(), "README.md", "seed\n");
+        commit_all(&seed_repo, "seed");
+        seed_repo
+            .remote("origin", &path_url(remote_dir.path()))
+            .unwrap();
+        service
+            .push(&mut seed_repo, &RemoteName::new("origin"))
+            .unwrap();
+
+        write_file(seed_dir.path(), "next.txt", "next\n");
+        service
+            .stage_path(&mut seed_repo, Path::new("next.txt"))
+            .unwrap();
+        let snapshot = service
+            .commit_and_push(
+                &mut seed_repo,
+                &CommitMessage::new("next"),
+                &RemoteName::new("origin"),
+            )
+            .unwrap()
+            .unwrap();
+
+        assert!(snapshot.changes.is_empty());
+        let status = service
+            .branch_sync_status(&seed_repo, &RemoteName::new("origin"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.ahead, 0);
+        assert_eq!(status.behind, 0);
+
+        let other_dir = TempDir::new().unwrap();
+        let other_path = other_dir.path().join("other");
+        service
+            .clone_repo(&path_url(remote_dir.path()), &RepoPath::new(&other_path))
+            .unwrap();
+        assert!(other_path.join("next.txt").exists());
+    }
+
+    #[test]
+    fn commit_and_push_keeps_local_commit_when_push_fails() {
+        let remote_dir = TempDir::new().unwrap();
+        let mut bare_opts = RepositoryInitOptions::new();
+        bare_opts.bare(true).initial_head("main");
+        Repository::init_opts(remote_dir.path(), &bare_opts).unwrap();
+
+        let (seed_dir, mut seed_repo, service) = init_repo();
+        write_file(seed_dir.path(), "README.md", "seed\n");
+        commit_all(&seed_repo, "seed");
+        seed_repo
+            .remote("origin", &path_url(remote_dir.path()))
+            .unwrap();
+        service
+            .push(&mut seed_repo, &RemoteName::new("origin"))
+            .unwrap();
+        fs::remove_dir_all(remote_dir.path()).unwrap();
+
+        write_file(seed_dir.path(), "local.txt", "local\n");
+        service
+            .stage_path(&mut seed_repo, Path::new("local.txt"))
+            .unwrap();
+        let result = service
+            .commit_and_push(
+                &mut seed_repo,
+                &CommitMessage::new("local only"),
+                &RemoteName::new("origin"),
+            )
+            .unwrap();
+
+        let Err((snapshot, err)) = result else {
+            panic!("push should fail");
+        };
+        assert!(err.to_string().contains("Git 错误"));
+        assert!(snapshot.changes.is_empty());
+        assert_eq!(
+            seed_repo
+                .head()
+                .unwrap()
+                .peel_to_commit()
+                .unwrap()
+                .summary()
+                .unwrap(),
+            Some("local only")
+        );
+        let status = service
+            .branch_sync_status(&seed_repo, &RemoteName::new("origin"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.ahead, 1);
+        assert_eq!(status.behind, 0);
     }
 
     #[test]
