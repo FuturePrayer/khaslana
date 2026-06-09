@@ -2587,6 +2587,7 @@ mod tests {
                 Ok(Some(crate::credentials::GitCredential::UserPass {
                     username: request.username_from_url.unwrap_or_else(|| "git".into()),
                     secret: "token".into(),
+                    display_name: None,
                     save_to_keyring: false,
                     scope: crate::credentials::CredentialScope::RemoteUrl,
                 }))

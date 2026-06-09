@@ -45,6 +45,8 @@ pub enum RemoteCredentialPolicy {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CredentialRecord {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     pub scope: CredentialScope,
     pub kind: StoredCredentialKind,
     pub host: String,
@@ -67,6 +69,7 @@ pub enum GitCredential {
     UserPass {
         username: String,
         secret: String,
+        display_name: Option<String>,
         save_to_keyring: bool,
         scope: CredentialScope,
     },
@@ -74,6 +77,7 @@ pub enum GitCredential {
         username: String,
         private_key_path: Option<String>,
         passphrase: Option<String>,
+        display_name: Option<String>,
         save_to_keyring: bool,
         scope: CredentialScope,
     },
@@ -122,6 +126,13 @@ impl GitCredential {
         }
     }
 
+    pub fn display_name(&self) -> Option<&str> {
+        match self {
+            GitCredential::UserPass { display_name, .. }
+            | GitCredential::SshPassphrase { display_name, .. } => display_name.as_deref(),
+        }
+    }
+
     fn secret_for_keyring(&self) -> String {
         match self {
             GitCredential::UserPass { secret, .. } => secret.clone(),
@@ -136,6 +147,7 @@ impl GitCredential {
             StoredCredentialKind::HttpsUserPass => Some(Self::UserPass {
                 username: record.username.clone(),
                 secret,
+                display_name: record.display_name.clone(),
                 save_to_keyring: true,
                 scope: record.scope,
             }),
@@ -143,6 +155,7 @@ impl GitCredential {
                 username: record.username.clone(),
                 private_key_path: record.key_path.clone(),
                 passphrase: (!secret.is_empty()).then_some(secret),
+                display_name: record.display_name.clone(),
                 save_to_keyring: true,
                 scope: record.scope,
             }),
@@ -159,6 +172,7 @@ impl GitCredential {
             return Some(Self::UserPass {
                 username,
                 secret: secret.to_string(),
+                display_name: None,
                 save_to_keyring: true,
                 scope,
             });
@@ -178,6 +192,7 @@ impl GitCredential {
                 username,
                 private_key_path: key_path,
                 passphrase,
+                display_name: None,
                 save_to_keyring: true,
                 scope,
             });
@@ -296,6 +311,7 @@ impl CredentialStore for MemoryCredentialStore {
         let metadata = remote_metadata(&request.url)
             .ok_or_else(|| GitError::Credential("无法解析远端地址，不能保存凭据".to_string()))?;
         let now = next_record_timestamp(&index);
+        let display_name = credential.display_name().and_then(normalize_display_name);
         let record = if let Some(existing) = index.iter_mut().find(|record| {
             record.scope == credential.scope()
                 && record.kind == credential.kind()
@@ -306,10 +322,14 @@ impl CredentialStore for MemoryCredentialStore {
         }) {
             existing.updated_at = now;
             existing.last_used = Some(now);
+            if display_name.is_some() {
+                existing.display_name = display_name.clone();
+            }
             existing.clone()
         } else {
             let record = CredentialRecord {
                 id: new_record_id(),
+                display_name: display_name.clone(),
                 scope: credential.scope(),
                 kind: credential.kind(),
                 host: metadata.host_key,
@@ -590,6 +610,7 @@ impl CredentialStore for KeyringCredentialStore {
             .ok_or_else(|| GitError::Credential("无法解析远端地址，不能保存凭据".to_string()))?;
         let mut index = self.load_index()?;
         let now = now_seconds();
+        let display_name = credential.display_name().and_then(normalize_display_name);
         let record = if let Some(existing) = index.records.iter_mut().find(|record| {
             record.scope == credential.scope()
                 && record.kind == credential.kind()
@@ -600,10 +621,14 @@ impl CredentialStore for KeyringCredentialStore {
         }) {
             existing.updated_at = now;
             existing.last_used = Some(now);
+            if display_name.is_some() {
+                existing.display_name = display_name.clone();
+            }
             existing.clone()
         } else {
             let record = CredentialRecord {
                 id: new_record_id(),
+                display_name: display_name.clone(),
                 scope: credential.scope(),
                 kind: credential.kind(),
                 host: metadata.host_key,
@@ -915,6 +940,13 @@ fn sort_records(records: &mut [CredentialRecord]) {
 }
 
 pub fn credential_record_label(record: &CredentialRecord) -> String {
+    if let Some(name) = record
+        .display_name
+        .as_deref()
+        .and_then(normalize_display_name)
+    {
+        return name;
+    }
     let scope = match record.scope {
         CredentialScope::RemoteUrl => "仅此远端",
         CredentialScope::Host => "同站点",
@@ -1074,6 +1106,11 @@ fn new_record_id() -> String {
     format!("{nanos:x}")
 }
 
+fn normalize_display_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 fn set_credential_save_scope(
     credential: &mut GitCredential,
     save_to_keyring: bool,
@@ -1121,6 +1158,7 @@ mod tests {
         GitCredential::UserPass {
             username: "git".to_string(),
             secret: secret.to_string(),
+            display_name: None,
             save_to_keyring: true,
             scope,
         }
@@ -1131,8 +1169,25 @@ mod tests {
             username: "git".to_string(),
             private_key_path: Some(key_path.to_string()),
             passphrase: Some("phrase".to_string()),
+            display_name: None,
             save_to_keyring: true,
             scope,
+        }
+    }
+
+    fn credential_record(display_name: Option<String>) -> CredentialRecord {
+        CredentialRecord {
+            id: "id".to_string(),
+            display_name,
+            scope: CredentialScope::RemoteUrl,
+            kind: StoredCredentialKind::HttpsUserPass,
+            host: "https://example.com".to_string(),
+            remote_url: "https://example.com/team/repo.git".to_string(),
+            username: "git".to_string(),
+            key_path: None,
+            created_at: 1,
+            updated_at: 1,
+            last_used: Some(1),
         }
     }
 
@@ -1263,6 +1318,7 @@ mod tests {
     fn credential_record_url_compatibility_matches_protocol_family() {
         let https = CredentialRecord {
             id: "https".to_string(),
+            display_name: None,
             scope: CredentialScope::RemoteUrl,
             kind: StoredCredentialKind::HttpsUserPass,
             host: "https://example.com".to_string(),
@@ -1275,6 +1331,7 @@ mod tests {
         };
         let ssh = CredentialRecord {
             id: "ssh".to_string(),
+            display_name: None,
             scope: CredentialScope::Host,
             kind: StoredCredentialKind::SshKey,
             host: "ssh://example.com".to_string(),
@@ -1355,25 +1412,112 @@ mod tests {
 
     #[test]
     fn credential_index_does_not_serialize_secrets() {
-        let record = CredentialRecord {
-            id: "id".to_string(),
-            scope: CredentialScope::RemoteUrl,
-            kind: StoredCredentialKind::HttpsUserPass,
-            host: "https://example.com".to_string(),
-            remote_url: "https://example.com/team/repo.git".to_string(),
-            username: "git".to_string(),
-            key_path: None,
-            created_at: 1,
-            updated_at: 1,
-            last_used: Some(1),
-        };
+        let record = credential_record(Some("Example PAT".to_string()));
         let index = CredentialIndex {
             records: vec![record],
         };
         let json = serde_json::to_string(&index).unwrap();
+        assert!(json.contains("Example PAT"));
         assert!(!json.contains("password"));
         assert!(!json.contains("token"));
         assert!(!json.contains("secret"));
+    }
+
+    #[test]
+    fn credential_record_json_without_display_name_is_compatible() {
+        let json = r#"{
+            "id":"id",
+            "scope":"RemoteUrl",
+            "kind":"HttpsUserPass",
+            "host":"https://example.com",
+            "remote_url":"https://example.com/team/repo.git",
+            "username":"git",
+            "key_path":null,
+            "created_at":1,
+            "updated_at":1,
+            "last_used":1
+        }"#;
+
+        let record: CredentialRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(record.display_name, None);
+        assert_eq!(credential_record_label(&record), "HTTPS 仅此远端 git");
+    }
+
+    #[test]
+    fn display_name_is_saved_and_used_as_record_label() {
+        let store = MemoryCredentialStore::new();
+        let req = request(
+            "https://example.com/team/repo.git",
+            CredentialType::USER_PASS_PLAINTEXT,
+        );
+        let credential = GitCredential::UserPass {
+            username: "git".to_string(),
+            secret: "secret".to_string(),
+            display_name: Some("Example PAT".to_string()),
+            save_to_keyring: true,
+            scope: CredentialScope::RemoteUrl,
+        };
+
+        let record = store.save_record(&req, &credential).unwrap();
+
+        assert_eq!(record.display_name.as_deref(), Some("Example PAT"));
+        assert_eq!(credential_record_label(&record), "Example PAT");
+        let json = serde_json::to_string(&CredentialIndex {
+            records: vec![record],
+        })
+        .unwrap();
+        assert!(json.contains("Example PAT"));
+        assert!(!json.contains("secret"));
+    }
+
+    #[test]
+    fn blank_display_name_falls_back_to_generated_label() {
+        let store = MemoryCredentialStore::new();
+        let req = request(
+            "https://example.com/team/repo.git",
+            CredentialType::USER_PASS_PLAINTEXT,
+        );
+        let credential = GitCredential::UserPass {
+            username: "git".to_string(),
+            secret: "secret".to_string(),
+            display_name: Some("   ".to_string()),
+            save_to_keyring: true,
+            scope: CredentialScope::RemoteUrl,
+        };
+
+        let record = store.save_record(&req, &credential).unwrap();
+
+        assert_eq!(record.display_name, None);
+        assert_eq!(credential_record_label(&record), "HTTPS 仅此远端 git");
+    }
+
+    #[test]
+    fn saving_same_record_with_name_updates_display_name() {
+        let store = MemoryCredentialStore::new();
+        let req = request(
+            "https://example.com/team/repo.git",
+            CredentialType::USER_PASS_PLAINTEXT,
+        );
+        let first = GitCredential::UserPass {
+            username: "git".to_string(),
+            secret: "old".to_string(),
+            display_name: Some("Old name".to_string()),
+            save_to_keyring: true,
+            scope: CredentialScope::RemoteUrl,
+        };
+        let second = GitCredential::UserPass {
+            username: "git".to_string(),
+            secret: "new".to_string(),
+            display_name: Some("New name".to_string()),
+            save_to_keyring: true,
+            scope: CredentialScope::RemoteUrl,
+        };
+
+        let first = store.save_record(&req, &first).unwrap();
+        let second = store.save_record(&req, &second).unwrap();
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(second.display_name.as_deref(), Some("New name"));
     }
 
     #[test]
