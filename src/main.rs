@@ -1,5 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod conflicts;
 mod history_view;
 mod sidebar_view;
 mod ui_helpers;
@@ -1960,6 +1961,11 @@ impl RepositoryView {
                             .or_else(|| this.repo_path.clone());
                         this.sync_selected_remote(&snapshot);
                         this.change_indexes = ChangeListIndexes::rebuild(&snapshot.changes);
+                        if !snapshot.conflicts.is_empty() {
+                            this.diff = None;
+                            this.diff_headers_expanded = false;
+                            this.reset_uniform_scroll("diff-scroll");
+                        }
                         this.snapshot = Some(snapshot);
                         this.prune_change_selection();
                         this.clear_history();
@@ -3248,14 +3254,34 @@ impl RepositoryView {
             return;
         };
         let service = self.service_for_tab(tab_id);
+        let snapshot_service = service.clone();
         self.spawn_operation_for_tab(Some(tab_id), label, move || {
             let mut repo = Repository::open(path)?;
-            f(service, &mut repo).map(|snapshot| UiEvent::OperationFinished {
-                tab_id: Some(tab_id),
-                message: label.to_string(),
-                snapshot: Some(snapshot),
-                diff: None,
-            })
+            match f(service, &mut repo) {
+                Ok(snapshot) => Ok(UiEvent::OperationFinished {
+                    tab_id: Some(tab_id),
+                    message: label.to_string(),
+                    snapshot: Some(snapshot),
+                    diff: None,
+                }),
+                Err(err) => {
+                    let snapshot = snapshot_service.snapshot_after_operation(&mut repo).ok();
+                    if let Some(snapshot) = snapshot
+                        && !snapshot.conflicts.is_empty()
+                    {
+                        return Ok(UiEvent::OperationFinished {
+                            tab_id: Some(tab_id),
+                            message: conflicts::conflict_status_message(
+                                label,
+                                snapshot.conflicts.len(),
+                            ),
+                            snapshot: Some(snapshot),
+                            diff: None,
+                        });
+                    }
+                    Err(err)
+                }
+            }
         });
     }
 
@@ -4265,25 +4291,36 @@ impl RepositoryView {
             return;
         };
         let encoding = self.diff_encoding_choice_for_path(&repo_path);
+        let is_conflicted_path = self
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.conflicts.iter().any(|conflict| conflict == &path));
         let service = self.service_for_tab(tab_id);
         self.spawn_operation_for_tab(Some(tab_id), "正在加载差异", move || {
             let started = Instant::now();
             let repo = Repository::open(repo_path)?;
-            service
+            let diff = service
                 .diff_for_path(&repo, Path::new(&path), scope, encoding)
-                .map(|diff| {
-                    perf_log(
-                        "worktree.diff",
-                        started,
-                        format!("tab={} lines={}", tab_id.0, diff.lines.len()),
-                    );
-                    UiEvent::OperationFinished {
-                        tab_id: Some(tab_id),
-                        message: "差异已加载".to_string(),
-                        snapshot: None,
-                        diff: Some(diff),
+                .map_err(|err| {
+                    if is_conflicted_path {
+                        khaslana::GitError::Message(
+                            "该文件存在冲突，请选择版本或手动编辑后标记解决".into(),
+                        )
+                    } else {
+                        err
                     }
-                })
+                })?;
+            perf_log(
+                "worktree.diff",
+                started,
+                format!("tab={} lines={}", tab_id.0, diff.lines.len()),
+            );
+            Ok(UiEvent::OperationFinished {
+                tab_id: Some(tab_id),
+                message: "差异已加载".to_string(),
+                snapshot: None,
+                diff: Some(diff),
+            })
         });
     }
 
@@ -5490,6 +5527,7 @@ impl RepositoryView {
             .min_w(px(self.changes_width))
             .h_full()
             .bg(rgb(COLOR_PANEL_BG))
+            .child(self.render_conflict_section(cx))
             .child(self.render_change_section(
                 "暂存区",
                 "staged-change-list",
@@ -6416,6 +6454,16 @@ impl RepositoryView {
                     .text_color(rgb(COLOR_TEXT_MUTED))
                     .child(format!("将当前分支重置到该提交。{mode_label}：{mode_help}")),
             )
+            .when(mode == ResetMode::Hard, |this| {
+                this.child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(rgb(0xa03a3a))
+                        .child(
+                            "强制重置会移动当前分支，目标提交之后的已提交代码会从分支历史中移除。确认前请确保目标提交正确。",
+                        ),
+                )
+            })
             .child(
                 div()
                     .flex()

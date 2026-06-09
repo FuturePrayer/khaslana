@@ -21,6 +21,8 @@ use crate::types::{
     RepositorySnapshot, ResetMode, Result, StashInfo, TagInfo, TagName, WorktreeChange,
 };
 
+mod conflicts;
+
 const DIFF_CONTEXT_LINES: u32 = 3;
 
 pub trait ProgressEmitter: Send + Sync {
@@ -1583,13 +1585,19 @@ fn path_to_git(path: &Path) -> String {
         .join("/")
 }
 
-fn remove_worktree_path(repo: &Repository, path: &Path) -> Result<()> {
+fn ensure_worktree_relative_path(path: &Path, action: &str) -> Result<()> {
     if path
         .components()
-        .any(|component| !matches!(component, Component::Normal(_)))
+        .all(|component| matches!(component, Component::Normal(_)))
     {
-        return Err(GitError::Message("文件路径无效，不能回滚更改".into()));
+        return Ok(());
     }
+
+    Err(GitError::Message(format!("文件路径无效，{action}")))
+}
+
+fn remove_worktree_path(repo: &Repository, path: &Path) -> Result<()> {
+    ensure_worktree_relative_path(path, "不能回滚更改")?;
 
     let workdir = repo
         .workdir()
