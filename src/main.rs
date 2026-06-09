@@ -25,7 +25,8 @@ use gpui::{
     prelude::*, px, rgb, rgba, size, uniform_list,
 };
 use khaslana::{
-    BranchKind, BranchName, CommitFileChange, CommitInfo, CommitMessage, CredentialProvider,
+    BranchKind, BranchName, CommitFileChange, CommitInfo, CommitMessage, MemoryCredentialStore,
+    CredentialProvider,
     CredentialRecord, CredentialRequest, CredentialScope, CredentialStore, DiffEncodingChoice,
     DiffLineKind, DiffScope, FileDiff, GitCredential, GitService, HistoryScope,
     KeyringCredentialStore, OperationEvent, ProgressEmitter, RemoteCredentialPolicy, RemoteInfo,
