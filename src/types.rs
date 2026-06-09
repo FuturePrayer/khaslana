@@ -3,6 +3,10 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod conflicts;
+
+pub use conflicts::ConflictResolutionSide;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RepoPath(pub PathBuf);
 
@@ -123,12 +127,6 @@ pub struct WorktreeChange {
 pub enum DiffScope {
     Staged,
     Unstaged,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConflictResolutionSide {
-    Ours,
-    Theirs,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
