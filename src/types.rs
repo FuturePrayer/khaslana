@@ -126,6 +126,12 @@ pub enum DiffScope {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConflictResolutionSide {
+    Ours,
+    Theirs,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResetMode {
     Soft,
     Mixed,

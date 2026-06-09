@@ -24,9 +24,9 @@ use gpui::{
     prelude::*, px, rgb, rgba, size, uniform_list,
 };
 use khaslana::{
-    BranchKind, BranchName, CommitFileChange, CommitInfo, CommitMessage, CredentialProvider,
-    CredentialRecord, CredentialRequest, CredentialScope, CredentialStore, DiffEncodingChoice,
-    DiffLineKind, DiffScope, FileDiff, GitCredential, GitService, HistoryScope,
+    BranchKind, BranchName, CommitFileChange, CommitInfo, CommitMessage, ConflictResolutionSide,
+    CredentialProvider, CredentialRecord, CredentialRequest, CredentialScope, CredentialStore,
+    DiffEncodingChoice, DiffLineKind, DiffScope, FileDiff, GitCredential, GitService, HistoryScope,
     KeyringCredentialStore, OperationEvent, ProgressEmitter, RemoteCredentialPolicy, RemoteInfo,
     RemoteName, RepoPath, RepositorySnapshot, ResetMode, TagName, credential_display_target,
     credential_key_filename, credential_kind_label, credential_record_is_compatible_with_url,
@@ -3363,6 +3363,28 @@ impl RepositoryView {
         });
     }
 
+    fn resolve_conflict_with_side(&mut self, path: String, side: ConflictResolutionSide) {
+        self.diff = None;
+        self.diff_headers_expanded = false;
+        self.reset_uniform_scroll("diff-scroll");
+        let label = match side {
+            ConflictResolutionSide::Ours => "已使用当前版本解决冲突",
+            ConflictResolutionSide::Theirs => "已使用传入版本解决冲突",
+        };
+        self.with_repo(label, move |service, repo| {
+            service.resolve_conflict_with_side(repo, Path::new(&path), side)
+        });
+    }
+
+    fn mark_conflict_resolved(&mut self, path: String) {
+        self.diff = None;
+        self.diff_headers_expanded = false;
+        self.reset_uniform_scroll("diff-scroll");
+        self.with_repo("冲突已标记为解决", move |service, repo| {
+            service.mark_conflict_resolved(repo, Path::new(&path))
+        });
+    }
+
     fn discard_change(&mut self, paths: Vec<String>, scope: DiffScope, target: DiscardTarget) {
         let message = match scope {
             DiffScope::Staged => match target {
@@ -4169,25 +4191,36 @@ impl RepositoryView {
             return;
         };
         let encoding = self.diff_encoding_choice_for_path(&repo_path);
+        let is_conflicted_path = self
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.conflicts.iter().any(|conflict| conflict == &path));
         let service = self.service_for_tab(tab_id);
         self.spawn_operation_for_tab(Some(tab_id), "正在加载差异", move || {
             let started = Instant::now();
             let repo = Repository::open(repo_path)?;
-            service
+            let diff = service
                 .diff_for_path(&repo, Path::new(&path), scope, encoding)
-                .map(|diff| {
-                    perf_log(
-                        "worktree.diff",
-                        started,
-                        format!("tab={} lines={}", tab_id.0, diff.lines.len()),
-                    );
-                    UiEvent::OperationFinished {
-                        tab_id: Some(tab_id),
-                        message: "差异已加载".to_string(),
-                        snapshot: None,
-                        diff: Some(diff),
+                .map_err(|err| {
+                    if is_conflicted_path {
+                        khaslana::GitError::Message(
+                            "该文件存在冲突，请选择版本或手动编辑后标记解决".into(),
+                        )
+                    } else {
+                        err
                     }
-                })
+                })?;
+            perf_log(
+                "worktree.diff",
+                started,
+                format!("tab={} lines={}", tab_id.0, diff.lines.len()),
+            );
+            Ok(UiEvent::OperationFinished {
+                tab_id: Some(tab_id),
+                message: "差异已加载".to_string(),
+                snapshot: None,
+                diff: Some(diff),
+            })
         });
     }
 
@@ -5248,6 +5281,13 @@ impl RepositoryView {
     }
 
     fn render_changes(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let conflicts = conflict_paths(self.snapshot.as_ref());
+        let conflict_rows = conflicts
+            .iter()
+            .cloned()
+            .map(|path| self.conflict_row(path, cx).into_any_element())
+            .collect::<Vec<_>>();
+        let has_conflicts = !conflict_rows.is_empty();
         let (staged_rows, unstaged_rows) = if let Some(snapshot) = self.snapshot.as_ref() {
             let staged_rows = self
                 .change_indexes
@@ -5288,6 +5328,20 @@ impl RepositoryView {
             .min_w(px(self.changes_width))
             .h_full()
             .bg(rgb(COLOR_PANEL_BG))
+            .when(has_conflicts, |this| {
+                this.child(self.render_conflict_summary(conflicts.len()))
+                    .child(self.render_change_section(
+                        "冲突",
+                        "conflict-list",
+                        "",
+                        false,
+                        conflict_rows,
+                        true,
+                        Vec::new(),
+                        cx,
+                    ))
+                    .child(div().flex_none().h(px(1.0)).bg(rgb(COLOR_BORDER)))
+            })
             .child(self.render_change_section(
                 "暂存区",
                 "staged-change-list",
@@ -5339,6 +5393,108 @@ impl RepositoryView {
                     ],
                 cx,
             ))
+    }
+
+    fn render_conflict_summary(&self, count: usize) -> impl IntoElement {
+        div()
+            .flex_none()
+            .px_3()
+            .py_2()
+            .border_b_1()
+            .border_color(rgb(COLOR_BORDER))
+            .bg(rgb(0xfffbeb))
+            .text_size(px(12.0))
+            .text_color(rgb(0x92400e))
+            .child(format!("存在 {count} 个冲突文件"))
+    }
+
+    fn conflict_row(&self, path: String, cx: &mut Context<Self>) -> impl IntoElement {
+        let path_for_load = path.clone();
+        let path_for_ours = path.clone();
+        let path_for_theirs = path.clone();
+        let path_for_mark = path.clone();
+
+        div()
+            .id(format!("conflict-{path}"))
+            .flex()
+            .flex_none()
+            .flex_col()
+            .gap_1()
+            .px_2()
+            .py_2()
+            .rounded_sm()
+            .border_1()
+            .border_color(rgb(0xf59e0b))
+            .bg(rgb(0xfffbeb))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .min_w(px(0.0))
+                    .cursor_pointer()
+                    .hover(|this| this.bg(rgb(0xfef3c7)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+                            this.load_diff(path_for_load.clone(), DiffScope::Unstaged);
+                            this.change_context_menu = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(24.0))
+                            .text_size(px(11.0))
+                            .font_family("monospace")
+                            .text_color(rgb(0xb45309))
+                            .child("!"),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .text_size(px(12.0))
+                            .text_color(rgb(COLOR_TEXT))
+                            .truncate()
+                            .child(path),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_1()
+                    .child(self.button(
+                        "当前版本",
+                        !self.busy,
+                        move |this, _, _| {
+                            this.resolve_conflict_with_side(
+                                path_for_ours.clone(),
+                                ConflictResolutionSide::Ours,
+                            )
+                        },
+                        cx,
+                    ))
+                    .child(self.button(
+                        "传入版本",
+                        !self.busy,
+                        move |this, _, _| {
+                            this.resolve_conflict_with_side(
+                                path_for_theirs.clone(),
+                                ConflictResolutionSide::Theirs,
+                            )
+                        },
+                        cx,
+                    ))
+                    .child(self.button(
+                        "标记解决",
+                        !self.busy,
+                        move |this, _, _| this.mark_conflict_resolved(path_for_mark.clone()),
+                        cx,
+                    )),
+            )
     }
 
     fn render_change_section(
@@ -7421,6 +7577,12 @@ fn point_in_menu(x: f32, y: f32, menu_x: f32, menu_y: f32, width: f32, height: f
     x >= menu_x && x <= menu_x + width && y >= menu_y && y <= menu_y + height
 }
 
+fn conflict_paths(snapshot: Option<&RepositorySnapshot>) -> Vec<String> {
+    snapshot
+        .map(|snapshot| snapshot.conflicts.clone())
+        .unwrap_or_default()
+}
+
 fn dedupe_repo_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut seen = BTreeSet::new();
     paths
@@ -7559,6 +7721,18 @@ mod app_tests {
             remote_binding_for_request(&bindings, &changed_url),
             RemoteCredentialPolicy::AutoMatch
         );
+    }
+
+    #[test]
+    fn conflict_paths_follow_snapshot_conflict_order() {
+        let mut snapshot = RepositorySnapshot::default();
+        snapshot.conflicts = vec!["a.txt".to_string(), "dir/b.txt".to_string()];
+
+        assert_eq!(
+            conflict_paths(Some(&snapshot)),
+            vec!["a.txt".to_string(), "dir/b.txt".to_string()]
+        );
+        assert!(conflict_paths(None).is_empty());
     }
 
     #[test]
