@@ -554,6 +554,25 @@ fn format_badge_count(count: usize) -> String {
     }
 }
 
+fn button_badge(count: usize) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .min_w(px(16.0))
+        .h(px(16.0))
+        .px_1()
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(theme::BADGE_BORDER))
+        .bg(rgb(theme::BADGE_BG))
+        .text_color(rgb(theme::SURFACE))
+        .text_size(px(10.0))
+        .line_height(px(14.0))
+        .child(format_badge_count(count))
+}
+
 impl RepositoryView {
     pub(crate) fn notify_toast(
         &mut self,
@@ -727,27 +746,16 @@ impl RepositoryView {
                     cx.notify();
                 }
             }))
-            .child(label)
-            .when_some(badge.filter(|count| *count > 0), |this, count| {
-                this.child(
-                    div()
-                        .absolute()
-                        .top(px(-7.0))
-                        .right(px(-7.0))
-                        .min_w(px(16.0))
-                        .h(px(16.0))
-                        .px_1()
-                        .items_center()
-                        .justify_center()
-                        .rounded_full()
-                        .border_1()
-                        .border_color(rgb(theme::BADGE_BORDER))
-                        .bg(rgb(theme::BADGE_BG))
-                        .text_color(rgb(theme::SURFACE))
-                        .text_size(px(10.0))
-                        .line_height(px(14.0))
-                        .child(format_badge_count(count)),
-                )
-            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap_1()
+                    .child(label)
+                    .when_some(badge.filter(|count| *count > 0), |this, count| {
+                        this.child(button_badge(count))
+                    }),
+            )
     }
 }
