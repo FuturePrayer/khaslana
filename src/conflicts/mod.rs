@@ -3,7 +3,7 @@ use std::path::Path;
 use gpui::{Context, IntoElement, MouseButton, MouseDownEvent, div, prelude::*, px, rgb};
 use khaslana::{ConflictResolutionSide, DiffScope, RepositorySnapshot};
 
-use crate::{COLOR_BORDER, COLOR_TEXT, RepositoryView};
+use crate::{RepositoryView, ui::theme as ui_theme};
 
 pub(crate) fn conflict_status_message(label: &str, count: usize) -> String {
     let operation = label.strip_suffix("完成").unwrap_or("操作");
@@ -38,7 +38,7 @@ impl RepositoryView {
                     Vec::new(),
                     cx,
                 ))
-                .child(div().flex_none().h(px(1.0)).bg(rgb(COLOR_BORDER)))
+                .child(div().flex_none().h(px(1.0)).bg(rgb(ui_theme::BORDER)))
         })
     }
 
@@ -70,10 +70,10 @@ impl RepositoryView {
             .px_3()
             .py_2()
             .border_b_1()
-            .border_color(rgb(COLOR_BORDER))
-            .bg(rgb(0xfffbeb))
+            .border_color(rgb(ui_theme::BORDER))
+            .bg(rgb(ui_theme::WARNING_SOFT))
             .text_size(px(12.0))
-            .text_color(rgb(0x92400e))
+            .text_color(rgb(ui_theme::WARNING_TEXT))
             .child(format!("存在 {count} 个冲突文件"))
     }
 
@@ -93,8 +93,8 @@ impl RepositoryView {
             .py_2()
             .rounded_sm()
             .border_1()
-            .border_color(rgb(0xf59e0b))
-            .bg(rgb(0xfffbeb))
+            .border_color(rgb(ui_theme::WARNING))
+            .bg(rgb(ui_theme::WARNING_SOFT))
             .child(
                 div()
                     .flex()
@@ -102,7 +102,7 @@ impl RepositoryView {
                     .gap_1()
                     .min_w(px(0.0))
                     .cursor_pointer()
-                    .hover(|this| this.bg(rgb(0xfef3c7)))
+                    .hover(|this| this.bg(rgb(ui_theme::WARNING_HOVER)))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
@@ -117,7 +117,7 @@ impl RepositoryView {
                             .w(px(24.0))
                             .text_size(px(11.0))
                             .font_family("monospace")
-                            .text_color(rgb(0xb45309))
+                            .text_color(rgb(ui_theme::WARNING_ACCENT_TEXT))
                             .child("!"),
                     )
                     .child(
@@ -125,7 +125,7 @@ impl RepositoryView {
                             .flex_1()
                             .min_w(px(0.0))
                             .text_size(px(12.0))
-                            .text_color(rgb(COLOR_TEXT))
+                            .text_color(rgb(ui_theme::TEXT))
                             .truncate()
                             .child(path),
                     ),

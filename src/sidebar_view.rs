@@ -4,15 +4,11 @@ use gpui::{
 use khaslana::{BranchInfo, BranchKind, RemoteInfo, StashInfo, TagInfo};
 
 use crate::{
-    BRANCH_MENU_HEIGHT, BRANCH_MENU_WIDTH, BranchContextMenu, COLOR_BLUE, COLOR_BLUE_DARK,
-    COLOR_BLUE_SOFT, COLOR_BORDER, COLOR_BORDER_STRONG, COLOR_PANEL_BG, COLOR_ROW_SELECTED,
-    COLOR_SURFACE, COLOR_TEXT, COLOR_TEXT_MUTED, NAV_ROW_HEIGHT, RepositoryView, STASH_MENU_HEIGHT,
-    STASH_MENU_WIDTH, StashContextMenu, TAG_MENU_HEIGHT, TAG_MENU_WIDTH, TagContextMenu,
-    clamped_menu_position, context_menu_item, menu_separator, nav_list, nav_row, placeholder_row,
-    section_header_action,
+    BRANCH_MENU_HEIGHT, BRANCH_MENU_WIDTH, BranchContextMenu, NAV_ROW_HEIGHT, RepositoryView,
+    STASH_MENU_HEIGHT, STASH_MENU_WIDTH, StashContextMenu, TAG_MENU_HEIGHT, TAG_MENU_WIDTH,
+    TagContextMenu, clamped_menu_position, context_menu_item, menu_separator, nav_list, nav_row,
+    placeholder_row, section_header_action, ui::theme as ui_theme,
 };
-
-const COLOR_ROW_SELECTED_BORDER: u32 = 0x9bbcff;
 
 impl RepositoryView {
     pub(crate) fn render_sidebar(
@@ -62,8 +58,8 @@ impl RepositoryView {
             .min_w(px(self.sidebar_width))
             .h_full()
             .border_r_1()
-            .border_color(rgb(COLOR_BORDER))
-            .bg(rgb(COLOR_PANEL_BG))
+            .border_color(rgb(ui_theme::BORDER))
+            .bg(rgb(ui_theme::PANEL_BG))
             .child(
                 self.render_nav_section(
                     "本地分支",
@@ -155,7 +151,7 @@ impl RepositoryView {
             .flex_1()
             .min_h(px(96.0))
             .border_t_1()
-            .border_color(rgb(COLOR_BORDER))
+            .border_color(rgb(ui_theme::BORDER))
             .map(|this| {
                 let mut this = this;
                 this.style().flex_grow = Some(weight);
@@ -172,9 +168,9 @@ impl RepositoryView {
         nav_row(format!("remote-{}", remote.name), false, selected)
             .hover(move |this| {
                 if selected {
-                    this.bg(rgb(COLOR_BLUE_SOFT))
+                    this.bg(rgb(ui_theme::ACCENT_SOFT))
                 } else {
-                    this.bg(rgb(0xf5f8ff))
+                    this.bg(rgb(ui_theme::ROW_HOVER))
                 }
             })
             .child(
@@ -184,9 +180,9 @@ impl RepositoryView {
                     .h(px(18.0))
                     .rounded_sm()
                     .bg(if selected {
-                        rgb(COLOR_BLUE)
+                        rgb(ui_theme::ACCENT)
                     } else {
-                        rgb(COLOR_BORDER)
+                        rgb(ui_theme::BORDER)
                     }),
             )
             .child(
@@ -195,9 +191,9 @@ impl RepositoryView {
                     .min_w(px(0.0))
                     .text_size(px(12.0))
                     .text_color(if selected {
-                        rgb(COLOR_BLUE_DARK)
+                        rgb(ui_theme::ACCENT_STRONG)
                     } else {
-                        rgb(COLOR_TEXT)
+                        rgb(ui_theme::TEXT)
                     })
                     .truncate()
                     .child(remote.name),
@@ -224,7 +220,7 @@ impl RepositoryView {
                     .flex_1()
                     .min_w(px(0.0))
                     .text_size(px(12.0))
-                    .text_color(rgb(COLOR_TEXT_MUTED))
+                    .text_color(rgb(ui_theme::TEXT_MUTED))
                     .truncate()
                     .child(name),
             )
@@ -259,7 +255,7 @@ impl RepositoryView {
                     .flex_1()
                     .min_w(px(0.0))
                     .text_size(px(12.0))
-                    .text_color(rgb(COLOR_TEXT_MUTED))
+                    .text_color(rgb(ui_theme::TEXT_MUTED))
                     .truncate()
                     .child(label),
             )
@@ -297,25 +293,25 @@ impl RepositoryView {
             BranchKind::Remote => format!("  {}", branch.name),
         };
         let row_bg = if is_current {
-            COLOR_BLUE_SOFT
+            ui_theme::ACCENT_SOFT
         } else if selected {
-            COLOR_ROW_SELECTED
+            ui_theme::ROW_SELECTED
         } else {
-            COLOR_SURFACE
+            ui_theme::SURFACE
         };
         let row_border = if is_current {
-            COLOR_BORDER_STRONG
+            ui_theme::BORDER_STRONG
         } else if selected {
-            COLOR_ROW_SELECTED_BORDER
+            ui_theme::ROW_SELECTED_BORDER
         } else {
-            COLOR_BORDER
+            ui_theme::BORDER
         };
         let marker_bg = if is_current {
-            COLOR_BLUE
+            ui_theme::ACCENT
         } else if selected {
-            COLOR_ROW_SELECTED_BORDER
+            ui_theme::ROW_SELECTED_BORDER
         } else {
-            COLOR_SURFACE
+            ui_theme::SURFACE
         };
 
         div()
@@ -334,9 +330,9 @@ impl RepositoryView {
             .border_color(rgb(row_border))
             .hover(move |this| {
                 if is_current {
-                    this.bg(rgb(COLOR_BLUE_SOFT))
+                    this.bg(rgb(ui_theme::ACCENT_SOFT))
                 } else {
-                    this.bg(rgb(0xf5f8ff))
+                    this.bg(rgb(ui_theme::ROW_HOVER))
                 }
             })
             .child(
@@ -353,11 +349,11 @@ impl RepositoryView {
                     .min_w(px(0.0))
                     .text_size(px(12.0))
                     .text_color(if is_current {
-                        rgb(COLOR_BLUE_DARK)
+                        rgb(ui_theme::ACCENT_STRONG)
                     } else if is_local {
-                        rgb(COLOR_TEXT)
+                        rgb(ui_theme::TEXT)
                     } else {
-                        rgb(COLOR_TEXT_MUTED)
+                        rgb(ui_theme::TEXT_MUTED)
                     })
                     .truncate()
                     .child(label),
@@ -418,8 +414,8 @@ impl RepositoryView {
             .py_1()
             .rounded_sm()
             .border_1()
-            .border_color(rgb(COLOR_BORDER_STRONG))
-            .bg(rgb(COLOR_SURFACE))
+            .border_color(rgb(ui_theme::BORDER_STRONG))
+            .bg(rgb(ui_theme::SURFACE))
             .shadow_lg()
             .flex()
             .flex_col()

@@ -1087,6 +1087,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link 0.2.1",
 ]
@@ -2751,7 +2752,7 @@ dependencies = [
  "smallvec",
  "smol",
  "spin 0.10.0",
- "stacksafe",
+ "stacksafe 0.1.4",
  "strum 0.27.2",
  "taffy",
  "thiserror 2.0.18",
@@ -3634,6 +3635,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-segmentation",
+ "yororen_ui",
 ]
 
 [[package]]
@@ -6309,7 +6311,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d9c1172965d317e87ddb6d364a040d958b40a1db82b6ef97da26253a8b3d090"
 dependencies = [
  "stacker",
- "stacksafe-macro",
+ "stacksafe-macro 0.1.4",
+]
+
+[[package]]
+name = "stacksafe"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b738765988c43975135c78ade8b0ee940566ab87d7e324897662b7460c44ab83"
+dependencies = [
+ "stacker",
+ "stacksafe-macro 1.0.2",
 ]
 
 [[package]]
@@ -6319,6 +6331,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "172175341049678163e979d9107ca3508046d4d2a7c6682bee46ac541b17db69"
 dependencies = [
  "proc-macro-error2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "stacksafe-macro"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e30778b21fdee0c7dbfcf5cfc2d9e2a0dbc135faf7093c245bf19f088f9fa10"
+dependencies = [
+ "proc-macro2",
  "quote",
  "syn 2.0.117",
 ]
@@ -8958,6 +8981,23 @@ dependencies = [
  "quote",
  "syn 2.0.117",
  "synstructure",
+]
+
+[[package]]
+name = "yororen_ui"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae424c3b1d288a90eb805b177dd5ab8849e03dbca8302e1d94ad7d1a55e08136"
+dependencies = [
+ "chrono",
+ "gpui-ce",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "stacksafe 1.0.2",
+ "unicode-segmentation",
+ "uuid",
 ]
 
 [[package]]
