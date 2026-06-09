@@ -71,16 +71,6 @@ struct ScrollbarGeometry {
     max_offset: f32,
 }
 
-pub(crate) fn scrollable_frame(
-    scroll_id: &'static str,
-    mode: ScrollbarMode,
-    content: gpui::AnyElement,
-    handle: ScrollHandle,
-    _cx: &mut Context<RepositoryView>,
-) -> impl IntoElement {
-    scrollable_frame_base(scroll_id, mode, content, handle, true, true, _cx)
-}
-
 pub(crate) fn scrollable_frame_when(
     scroll_id: &'static str,
     mode: ScrollbarMode,

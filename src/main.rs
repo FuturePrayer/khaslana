@@ -52,6 +52,8 @@ pub(crate) const BRANCH_MENU_WIDTH: f32 = 190.0;
 pub(crate) const BRANCH_MENU_HEIGHT: f32 = 230.0;
 const CHANGE_MENU_WIDTH: f32 = 210.0;
 const CHANGE_MENU_HEIGHT: f32 = 255.0;
+const CREDENTIAL_MENU_WIDTH: f32 = 180.0;
+const CREDENTIAL_MENU_HEIGHT: f32 = 150.0;
 pub(crate) const TAG_MENU_WIDTH: f32 = 170.0;
 pub(crate) const TAG_MENU_HEIGHT: f32 = 80.0;
 pub(crate) const STASH_MENU_WIDTH: f32 = 170.0;
@@ -77,6 +79,7 @@ enum FieldId {
     CredentialKeyPath,
     CredentialPassphrase,
     CredentialRemoteUrl,
+    CredentialDisplayName,
 }
 
 #[derive(Clone, Debug)]
@@ -378,6 +381,9 @@ pub(crate) enum DialogState {
         paths: Vec<String>,
     },
     CredentialManager,
+    CredentialDetails {
+        record_id: String,
+    },
     CredentialForm {
         editing: Option<String>,
     },
@@ -425,6 +431,13 @@ pub(crate) struct CommitContextMenu {
     pub(crate) parent_count: usize,
     pub(crate) x: f32,
     pub(crate) y: f32,
+}
+
+#[derive(Clone, Debug)]
+struct CredentialContextMenu {
+    record_id: String,
+    x: f32,
+    y: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1181,6 +1194,11 @@ fn perf_log(stage: &'static str, started: Instant, details: impl AsRef<str>) {
     }
 }
 
+fn optional_display_name(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
 pub(crate) struct RepositoryView {
     tx: Sender<UiEvent>,
     rx: Receiver<UiEvent>,
@@ -1211,6 +1229,7 @@ pub(crate) struct RepositoryView {
     pub(crate) active_dialog: Option<DialogState>,
     pub(crate) branch_context_menu: Option<BranchContextMenu>,
     change_context_menu: Option<ChangeContextMenu>,
+    credential_context_menu: Option<CredentialContextMenu>,
     pub(crate) tag_context_menu: Option<TagContextMenu>,
     pub(crate) stash_context_menu: Option<StashContextMenu>,
     pub(crate) commit_context_menu: Option<CommitContextMenu>,
@@ -1230,6 +1249,7 @@ pub(crate) struct RepositoryView {
     credential_key_path: TextFieldState,
     credential_passphrase: TextFieldState,
     credential_remote_url: TextFieldState,
+    credential_display_name: TextFieldState,
     remote_name: TextFieldState,
     remote_url: TextFieldState,
     remote_credential_policy: RemoteCredentialPolicy,
@@ -1273,6 +1293,7 @@ impl RepositoryView {
             active_dialog: None,
             branch_context_menu: None,
             change_context_menu: None,
+            credential_context_menu: None,
             tag_context_menu: None,
             stash_context_menu: None,
             commit_context_menu: None,
@@ -1292,6 +1313,7 @@ impl RepositoryView {
             credential_key_path: TextFieldState::new(cx, "SSH 私钥路径"),
             credential_passphrase: TextFieldState::new(cx, "SSH 密码短语").secret(),
             credential_remote_url: TextFieldState::new(cx, "适用远端 URL"),
+            credential_display_name: TextFieldState::new(cx, "凭据名称（可选）"),
             remote_name: TextFieldState::new(cx, "远端名称"),
             remote_url: TextFieldState::new(cx, "远端地址"),
             remote_credential_policy: RemoteCredentialPolicy::AutoMatch,
@@ -1781,6 +1803,7 @@ impl RepositoryView {
         self.credential_secret.clear();
         self.credential_key_path.clear();
         self.credential_passphrase.clear();
+        self.credential_display_name.clear();
         self.credential_remote_url.set_value(request.url);
     }
 
@@ -2256,6 +2279,7 @@ impl RepositoryView {
                         | FieldId::CredentialUsername
                         | FieldId::CredentialKeyPath
                         | FieldId::CredentialRemoteUrl
+                        | FieldId::CredentialDisplayName
                 ) {
                     if matches!(self.active_dialog, Some(DialogState::CredentialForm { .. })) {
                         self.save_credential_form();
@@ -2315,6 +2339,10 @@ impl RepositoryView {
             (FieldId::CredentialKeyPath, &self.credential_key_path),
             (FieldId::CredentialPassphrase, &self.credential_passphrase),
             (FieldId::CredentialRemoteUrl, &self.credential_remote_url),
+            (
+                FieldId::CredentialDisplayName,
+                &self.credential_display_name,
+            ),
         ]
         .into_iter()
         .find_map(|(id, field)| field.focus.is_focused(window).then_some(id))
@@ -2334,6 +2362,7 @@ impl RepositoryView {
             FieldId::CredentialKeyPath => &self.credential_key_path,
             FieldId::CredentialPassphrase => &self.credential_passphrase,
             FieldId::CredentialRemoteUrl => &self.credential_remote_url,
+            FieldId::CredentialDisplayName => &self.credential_display_name,
         }
     }
 
@@ -2351,6 +2380,7 @@ impl RepositoryView {
             FieldId::CredentialKeyPath => &mut self.credential_key_path,
             FieldId::CredentialPassphrase => &mut self.credential_passphrase,
             FieldId::CredentialRemoteUrl => &mut self.credential_remote_url,
+            FieldId::CredentialDisplayName => &mut self.credential_display_name,
         }
     }
 
@@ -2397,6 +2427,7 @@ impl RepositoryView {
         self.active_dialog = None;
         self.branch_context_menu = None;
         self.change_context_menu = None;
+        self.credential_context_menu = None;
         self.tag_context_menu = None;
         self.stash_context_menu = None;
         self.commit_context_menu = None;
@@ -2406,6 +2437,14 @@ impl RepositoryView {
 
     fn close_dialog(&mut self) {
         self.active_dialog = None;
+        self.credential_context_menu = None;
+    }
+
+    fn close_credential_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.credential_context_menu.is_some() {
+            self.credential_context_menu = None;
+            cx.notify();
+        }
     }
 
     fn open_credential_manager(&mut self) {
@@ -2415,6 +2454,7 @@ impl RepositoryView {
     }
 
     fn open_credential_form(&mut self) {
+        self.credential_context_menu = None;
         self.credential_form_mode = CredentialFormMode::Https;
         self.credential_scope = CredentialScope::RemoteUrl;
         self.credential_use_ssh_agent = false;
@@ -2423,6 +2463,7 @@ impl RepositoryView {
         self.credential_secret.clear();
         self.credential_key_path.clear();
         self.credential_passphrase.clear();
+        self.credential_display_name.clear();
         self.active_dialog = Some(DialogState::CredentialForm { editing: None });
         self.last_error = None;
     }
@@ -2451,6 +2492,7 @@ impl RepositoryView {
             .trim()
             .to_string()
             .if_empty_then(|| "git".into());
+        let display_name = optional_display_name(&self.credential_display_name.value);
         let credential = match self.credential_form_mode {
             CredentialFormMode::Https => {
                 if self.credential_secret.value.is_empty() {
@@ -2460,6 +2502,7 @@ impl RepositoryView {
                 GitCredential::UserPass {
                     username,
                     secret: self.credential_secret.value.clone(),
+                    display_name,
                     save_to_keyring: true,
                     scope: self.credential_scope,
                 }
@@ -2475,6 +2518,7 @@ impl RepositoryView {
                     private_key_path: (!self.credential_use_ssh_agent).then_some(key_path),
                     passphrase: (!self.credential_passphrase.value.is_empty())
                         .then(|| self.credential_passphrase.value.clone()),
+                    display_name,
                     save_to_keyring: true,
                     scope: self.credential_scope,
                 }
@@ -2674,6 +2718,7 @@ impl RepositoryView {
     }
 
     fn reload_credential_records(&mut self, message: &'static str) {
+        self.credential_context_menu = None;
         match self.credential_store.list_records() {
             Ok(records) => {
                 self.credential_records = records;
@@ -2688,13 +2733,55 @@ impl RepositoryView {
 
     fn open_delete_credential_confirm(&mut self, record_id: String, label: String) {
         self.active_dialog = Some(DialogState::ConfirmDeleteCredential { record_id, label });
+        self.credential_context_menu = None;
         self.last_error = None;
+    }
+
+    fn open_credential_details(&mut self, record_id: String) {
+        self.credential_context_menu = None;
+        self.active_dialog = Some(DialogState::CredentialDetails { record_id });
+        self.last_error = None;
+    }
+
+    fn open_credential_context_menu(
+        &mut self,
+        record_id: String,
+        event: &MouseDownEvent,
+        window: &Window,
+    ) {
+        self.branch_context_menu = None;
+        self.change_context_menu = None;
+        self.tag_context_menu = None;
+        self.stash_context_menu = None;
+        self.commit_context_menu = None;
+        self.encoding_menu_target = None;
+        let (x, y) =
+            clamped_menu_position(event, window, CREDENTIAL_MENU_WIDTH, CREDENTIAL_MENU_HEIGHT);
+        self.credential_context_menu = Some(CredentialContextMenu { record_id, x, y });
+    }
+
+    fn copy_credential_text(
+        &mut self,
+        text: Option<String>,
+        label: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(text) = text.filter(|text| !text.is_empty()) else {
+            self.last_error = Some(format!("{label}为空，无法复制"));
+            self.credential_context_menu = None;
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.status = format!("已复制{label}");
+        self.last_error = None;
+        self.credential_context_menu = None;
     }
 
     fn delete_credential_record(&mut self, record_id: String) {
         match self.credential_store.delete_record(&record_id) {
             Ok(()) => {
                 self.active_dialog = Some(DialogState::CredentialManager);
+                self.credential_context_menu = None;
                 self.reload_credential_records("凭据已删除");
             }
             Err(err) => {
@@ -3686,6 +3773,15 @@ impl RepositoryView {
             point_in_menu(x, y, menu.x, menu.y, BRANCH_MENU_WIDTH, BRANCH_MENU_HEIGHT)
         }) || self.change_context_menu.as_ref().is_some_and(|menu| {
             point_in_menu(x, y, menu.x, menu.y, CHANGE_MENU_WIDTH, CHANGE_MENU_HEIGHT)
+        }) || self.credential_context_menu.as_ref().is_some_and(|menu| {
+            point_in_menu(
+                x,
+                y,
+                menu.x,
+                menu.y,
+                CREDENTIAL_MENU_WIDTH,
+                CREDENTIAL_MENU_HEIGHT,
+            )
         }) || self.tag_context_menu.as_ref().is_some_and(|menu| {
             point_in_menu(x, y, menu.x, menu.y, TAG_MENU_WIDTH, TAG_MENU_HEIGHT)
         }) || self.stash_context_menu.as_ref().is_some_and(|menu| {
@@ -4211,6 +4307,10 @@ impl RepositoryView {
         let secret = self.credential_secret.value.clone();
         let key_path = self.credential_key_path.value.trim().to_string();
         let passphrase = self.credential_passphrase.value.clone();
+        let display_name = self
+            .save_credential
+            .then(|| optional_display_name(&self.credential_display_name.value))
+            .flatten();
 
         let credential = if self.credential_form_mode == CredentialFormMode::Ssh {
             GitCredential::SshPassphrase {
@@ -4218,6 +4318,7 @@ impl RepositoryView {
                 private_key_path: (!self.credential_use_ssh_agent && !key_path.is_empty())
                     .then_some(key_path),
                 passphrase: (!passphrase.is_empty()).then_some(passphrase),
+                display_name,
                 save_to_keyring: self.save_credential,
                 scope: self.credential_scope,
             }
@@ -4225,6 +4326,7 @@ impl RepositoryView {
             GitCredential::UserPass {
                 username,
                 secret,
+                display_name,
                 save_to_keyring: self.save_credential,
                 scope: self.credential_scope,
             }
@@ -4396,10 +4498,10 @@ impl RepositoryView {
         &self,
         label: &'static str,
         scope: CredentialScope,
+        enabled: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let selected = self.credential_scope == scope;
-        let enabled = self.save_credential;
         div()
             .id(format!("credential-scope-{label}"))
             .flex_none()
@@ -4420,10 +4522,12 @@ impl RepositoryView {
             .text_size(px(12.0))
             .text_color(if selected {
                 rgb(COLOR_BLUE_DARK)
-            } else {
+            } else if enabled {
                 rgb(COLOR_TEXT_MUTED)
+            } else {
+                rgb(COLOR_TEXT_FAINT)
             })
-            .cursor_pointer()
+            .when(enabled, |this| this.cursor_pointer())
             .when(enabled, |this| {
                 this.hover(|this| this.bg(rgb(COLOR_BLUE_SOFT)))
             })
@@ -4899,9 +5003,16 @@ impl RepositoryView {
             .flex()
             .flex_col()
             .text_size(px(12.0))
-            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                cx.stop_propagation();
-            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _event, _window, cx| {
+                    if this.credential_context_menu.is_some() {
+                        this.credential_context_menu = None;
+                        cx.notify();
+                    }
+                    cx.stop_propagation();
+                }),
+            )
             .on_mouse_down(MouseButton::Right, |_event, _window, cx| {
                 cx.stop_propagation();
             });
@@ -5056,9 +5167,16 @@ impl RepositoryView {
             .flex()
             .flex_col()
             .text_size(px(12.0))
-            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                cx.stop_propagation();
-            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _event, _window, cx| {
+                    if this.credential_context_menu.is_some() {
+                        this.credential_context_menu = None;
+                        cx.notify();
+                    }
+                    cx.stop_propagation();
+                }),
+            )
             .on_mouse_down(MouseButton::Right, |_event, _window, cx| {
                 cx.stop_propagation();
             })
@@ -5136,6 +5254,90 @@ impl RepositoryView {
             ))
             .child(self.commit_copy_sha_menu_item(menu.oid.clone(), cx))
             .into_any_element()
+    }
+
+    fn render_credential_context_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(menu) = self.credential_context_menu.clone() else {
+            return div().into_any_element();
+        };
+        let Some(record) = self
+            .credential_records
+            .iter()
+            .find(|record| record.id == menu.record_id)
+            .cloned()
+        else {
+            return div().into_any_element();
+        };
+
+        let name = Some(credential_record_label(&record));
+        let target = Some(credential_display_target(&record));
+        let username = Some(record.username.clone());
+        let key_path = record.key_path.clone();
+
+        div()
+            .absolute()
+            .left(px(menu.x))
+            .top(px(menu.y))
+            .w(px(CREDENTIAL_MENU_WIDTH))
+            .py_1()
+            .rounded_sm()
+            .border_1()
+            .border_color(rgb(COLOR_BORDER_STRONG))
+            .bg(rgb(COLOR_SURFACE))
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .text_size(px(12.0))
+            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .on_mouse_down(MouseButton::Right, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .child(self.credential_copy_menu_item("复制名称", name, "凭据名称", cx))
+            .child(self.credential_copy_menu_item("复制站点/远端", target, "站点/远端", cx))
+            .child(self.credential_copy_menu_item("复制用户名", username, "用户名", cx))
+            .child(self.credential_copy_menu_item(
+                "复制 SSH Key 路径",
+                key_path,
+                "SSH Key 路径",
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn credential_copy_menu_item(
+        &self,
+        label: &'static str,
+        text: Option<String>,
+        status_label: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let enabled = text
+            .as_ref()
+            .is_some_and(|text| !text.is_empty() && text != "-");
+        div()
+            .id(format!("credential-context-menu-{label}"))
+            .px_3()
+            .py_1()
+            .text_color(if enabled {
+                rgb(COLOR_TEXT)
+            } else {
+                rgb(COLOR_TEXT_FAINT)
+            })
+            .bg(rgb(COLOR_SURFACE))
+            .when(enabled, |this| {
+                this.cursor_pointer()
+                    .hover(|this| this.bg(rgb(COLOR_BLUE_SOFT)))
+            })
+            .on_click(cx.listener(move |this, _event, _window, cx| {
+                cx.stop_propagation();
+                if enabled {
+                    this.copy_credential_text(text.clone(), status_label, cx);
+                    cx.notify();
+                }
+            }))
+            .child(label)
     }
 
     fn commit_copy_sha_menu_item(&self, oid: String, cx: &mut Context<Self>) -> impl IntoElement {
@@ -5974,6 +6176,9 @@ impl RepositoryView {
                 |this, _, _| this.save_credential = !this.save_credential,
                 cx,
             ))
+            .when(self.save_credential, |this| {
+                this.child(self.input(FieldId::CredentialDisplayName, true, window, cx))
+            })
             .child(
                 div()
                     .flex()
@@ -5986,8 +6191,18 @@ impl RepositoryView {
                             .text_color(rgb(COLOR_TEXT_MUTED))
                             .child("复用范围"),
                     )
-                    .child(self.credential_scope_button("仅此远端", CredentialScope::RemoteUrl, cx))
-                    .child(self.credential_scope_button("同站点", CredentialScope::Host, cx)),
+                    .child(self.credential_scope_button(
+                        "仅此远端",
+                        CredentialScope::RemoteUrl,
+                        self.save_credential,
+                        cx,
+                    ))
+                    .child(self.credential_scope_button(
+                        "同站点",
+                        CredentialScope::Host,
+                        self.save_credential,
+                        cx,
+                    )),
             )
             .child(
                 div()
@@ -6034,6 +6249,9 @@ impl RepositoryView {
             DialogState::CredentialManager => {
                 self.render_credential_manager_dialog(cx).into_any_element()
             }
+            DialogState::CredentialDetails { record_id } => self
+                .render_credential_details_dialog(record_id, cx)
+                .into_any_element(),
             DialogState::CredentialForm { editing } => self
                 .render_credential_form_dialog(editing, window, cx)
                 .into_any_element(),
@@ -6064,8 +6282,8 @@ impl RepositoryView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event, _window, cx| {
-                    this.close_dialog();
-                    cx.notify();
+                    this.close_credential_context_menu(cx);
+                    cx.stop_propagation();
                 }),
             )
             .child(content)
@@ -6347,6 +6565,15 @@ impl RepositoryView {
             .gap_3()
             .cursor(CursorStyle::Arrow)
             .occlude()
+            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                if this.mouse_down_inside_context_menu(event) {
+                    return;
+                }
+                if this.credential_context_menu.is_some() {
+                    this.credential_context_menu = None;
+                    cx.notify();
+                }
+            }))
             .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                 cx.stop_propagation();
             })
@@ -6763,6 +6990,7 @@ impl RepositoryView {
                     .child(self.credential_kind_button("HTTPS", CredentialFormMode::Https, cx))
                     .child(self.credential_kind_button("SSH", CredentialFormMode::Ssh, cx)),
             )
+            .child(self.input(FieldId::CredentialDisplayName, false, window, cx))
             .child(self.input(FieldId::CredentialRemoteUrl, false, window, cx))
             .child(self.input(FieldId::CredentialUsername, false, window, cx))
             .when(
@@ -6801,8 +7029,13 @@ impl RepositoryView {
                             .text_color(rgb(COLOR_TEXT_MUTED))
                             .child("复用范围"),
                     )
-                    .child(self.credential_scope_button("仅此远端", CredentialScope::RemoteUrl, cx))
-                    .child(self.credential_scope_button("同站点", CredentialScope::Host, cx)),
+                    .child(self.credential_scope_button(
+                        "仅此远端",
+                        CredentialScope::RemoteUrl,
+                        true,
+                        cx,
+                    ))
+                    .child(self.credential_scope_button("同站点", CredentialScope::Host, true, cx)),
             )
             .child(
                 div()
@@ -6840,7 +7073,7 @@ impl RepositoryView {
 
         div()
             .id("dialog-凭据管理")
-            .w(px(780.0))
+            .w(px(860.0))
             .max_h(px(620.0))
             .p_4()
             .rounded_sm()
@@ -6853,9 +7086,13 @@ impl RepositoryView {
             .gap_3()
             .cursor(CursorStyle::Arrow)
             .occlude()
-            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                cx.stop_propagation();
-            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _event, _window, cx| {
+                    this.close_credential_context_menu(cx);
+                    cx.stop_propagation();
+                }),
+            )
             .child(
                 div()
                     .flex()
@@ -6903,6 +7140,12 @@ impl RepositoryView {
                     .border_1()
                     .border_color(rgb(COLOR_BORDER))
                     .rounded_sm()
+                    .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                        cx.stop_propagation();
+                    })
+                    .on_mouse_down(MouseButton::Right, |_event, _window, cx| {
+                        cx.stop_propagation();
+                    })
                     .child(self.credential_manager_header())
                     .child({
                         let handle = self.scroll_handle("credential-record-list");
@@ -6918,11 +7161,12 @@ impl RepositoryView {
                             .track_scroll(&handle)
                             .children(rows)
                             .into_any_element();
-                        scrollable_frame(
+                        scrollable_frame_when(
                             "credential-record-list",
                             ScrollbarMode::Vertical,
                             content,
                             handle,
+                            !self.credential_records.is_empty(),
                             cx,
                         )
                     }),
@@ -6933,6 +7177,109 @@ impl RepositoryView {
                 |this, _, _| this.close_dialog(),
                 cx,
             )))
+    }
+
+    fn render_credential_details_dialog(
+        &self,
+        record_id: String,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let Some(record) = self
+            .credential_records
+            .iter()
+            .find(|record| record.id == record_id)
+            .cloned()
+        else {
+            return self
+                .dialog_panel("凭据详情", cx)
+                .w(px(560.0))
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(rgb(COLOR_TEXT_MUTED))
+                        .child("凭据记录不存在，可能已经被删除。"),
+                )
+                .child(div().flex().justify_end().child(self.button(
+                    "关闭",
+                    !self.busy,
+                    |this, _, _| this.active_dialog = Some(DialogState::CredentialManager),
+                    cx,
+                )));
+        };
+
+        let display_name = record
+            .display_name
+            .clone()
+            .unwrap_or_else(|| credential_record_label(&record));
+        let target = credential_display_target(&record);
+        let key_path = record.key_path.clone().unwrap_or_else(|| "-".to_string());
+        let last_used = record
+            .last_used
+            .map(timestamp_label)
+            .unwrap_or_else(|| "-".to_string());
+
+        self.dialog_panel("凭据详情", cx)
+            .w(px(640.0))
+            .max_h(px(620.0))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .text_size(px(12.0))
+                    .child(self.credential_detail_row("名称", display_name))
+                    .child(self.credential_detail_row(
+                        "类型",
+                        credential_kind_label(record.kind).to_string(),
+                    ))
+                    .child(self.credential_detail_row(
+                        "复用范围",
+                        credential_scope_label(record.scope).to_string(),
+                    ))
+                    .child(self.credential_detail_row("站点 / 远端", target))
+                    .child(self.credential_detail_row("用户名", record.username))
+                    .child(self.credential_detail_row("SSH Key 路径", key_path))
+                    .child(
+                        self.credential_detail_row("创建时间", timestamp_label(record.created_at)),
+                    )
+                    .child(
+                        self.credential_detail_row("更新时间", timestamp_label(record.updated_at)),
+                    )
+                    .child(self.credential_detail_row("最后使用时间", last_used)),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(COLOR_TEXT_FAINT))
+                    .child("密码、PAT 和 SSH 密码短语不会在这里显示。"),
+            )
+            .child(div().flex().justify_end().child(self.button(
+                "关闭",
+                !self.busy,
+                |this, _, _| this.active_dialog = Some(DialogState::CredentialManager),
+                cx,
+            )))
+    }
+
+    fn credential_detail_row(&self, label: &'static str, value: String) -> impl IntoElement {
+        div()
+            .flex()
+            .items_start()
+            .gap_3()
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(96.0))
+                    .text_color(rgb(COLOR_TEXT_MUTED))
+                    .child(label),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .text_color(rgb(COLOR_TEXT))
+                    .child(value),
+            )
     }
 
     fn credential_manager_header(&self) -> impl IntoElement {
@@ -6949,13 +7296,20 @@ impl RepositoryView {
             .text_size(px(11.0))
             .font_weight(gpui::FontWeight::BOLD)
             .text_color(rgb(COLOR_TEXT_MUTED))
-            .child(div().flex_none().w(px(112.0)).child("类型"))
-            .child(div().flex_none().w(px(72.0)).child("范围"))
-            .child(div().flex_1().min_w(px(0.0)).child("站点 / 远端"))
-            .child(div().flex_none().w(px(92.0)).child("用户名"))
-            .child(div().flex_none().w(px(92.0)).child("SSH Key"))
-            .child(div().flex_none().w(px(132.0)).child("更新时间"))
-            .child(div().flex_none().w(px(106.0)).child("操作"))
+            .child(div().flex_none().w(px(112.0)).truncate().child("名称"))
+            .child(div().flex_none().w(px(106.0)).truncate().child("类型"))
+            .child(div().flex_none().w(px(64.0)).truncate().child("范围"))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(120.0))
+                    .truncate()
+                    .child("站点 / 远端"),
+            )
+            .child(div().flex_none().w(px(78.0)).truncate().child("用户名"))
+            .child(div().flex_none().w(px(76.0)).truncate().child("SSH Key"))
+            .child(div().flex_none().w(px(118.0)).truncate().child("更新时间"))
+            .child(div().flex_none().w(px(100.0)).truncate().child("操作"))
     }
 
     fn credential_record_row(
@@ -6964,10 +7318,14 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let record_id = record.id.clone();
+        let detail_id = record.id.clone();
+        let menu_id = record.id.clone();
         let delete_id = record.id.clone();
+        let actions_id = record.id.clone();
         let label = credential_record_label(&record);
         let target = credential_display_target(&record);
         let key_file = credential_key_filename(&record);
+        let display_name = record.display_name.clone().unwrap_or_else(|| label.clone());
         div()
             .id(format!("credential-record-{}", record.id))
             .flex()
@@ -6980,11 +7338,33 @@ impl RepositoryView {
             .border_color(rgb(COLOR_BORDER))
             .text_size(px(12.0))
             .bg(rgb(COLOR_SURFACE))
+            .cursor_pointer()
             .hover(|this| this.bg(rgb(COLOR_BLUE_SOFT)))
+            .on_click(cx.listener(move |this, _event, _window, cx| {
+                this.open_credential_details(detail_id.clone());
+                cx.notify();
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event, window, cx| {
+                    this.open_credential_context_menu(menu_id.clone(), event, window);
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .id(format!("credential-record-actions-{actions_id}"))
+                    .flex_none()
+                    .w(px(112.0))
+                    .text_color(rgb(COLOR_TEXT))
+                    .truncate()
+                    .child(display_name),
+            )
             .child(
                 div()
                     .flex_none()
-                    .w(px(112.0))
+                    .w(px(106.0))
                     .text_color(rgb(COLOR_TEXT))
                     .truncate()
                     .child(credential_kind_label(record.kind)),
@@ -6992,7 +7372,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(72.0))
+                    .w(px(64.0))
                     .text_color(rgb(COLOR_BLUE_DARK))
                     .truncate()
                     .child(credential_scope_label(record.scope)),
@@ -7000,7 +7380,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(0.0))
+                    .min_w(px(120.0))
                     .text_color(rgb(COLOR_TEXT))
                     .truncate()
                     .child(target),
@@ -7008,7 +7388,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(92.0))
+                    .w(px(78.0))
                     .text_color(rgb(COLOR_TEXT_MUTED))
                     .truncate()
                     .child(record.username),
@@ -7016,7 +7396,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(92.0))
+                    .w(px(76.0))
                     .text_color(rgb(COLOR_TEXT_MUTED))
                     .truncate()
                     .child(key_file),
@@ -7024,7 +7404,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(132.0))
+                    .w(px(118.0))
                     .text_color(rgb(COLOR_TEXT_MUTED))
                     .truncate()
                     .child(timestamp_label(record.updated_at)),
@@ -7032,20 +7412,30 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(106.0))
+                    .w(px(100.0))
                     .flex()
                     .gap_1()
+                    .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                        cx.stop_propagation();
+                    })
+                    .on_mouse_down(MouseButton::Right, |_event, _window, cx| {
+                        cx.stop_propagation();
+                    })
                     .child(self.button(
                         "测试",
                         !self.busy,
-                        move |this, _, _| this.test_credential_record(record_id.clone()),
+                        move |this, _, cx| {
+                            cx.stop_propagation();
+                            this.test_credential_record(record_id.clone());
+                        },
                         cx,
                     ))
                     .child(self.button(
                         "删除",
                         !self.busy,
-                        move |this, _, _| {
-                            this.open_delete_credential_confirm(delete_id.clone(), label.clone())
+                        move |this, _, cx| {
+                            cx.stop_propagation();
+                            this.open_delete_credential_confirm(delete_id.clone(), label.clone());
                         },
                         cx,
                     )),
@@ -7158,6 +7548,7 @@ impl Render for RepositoryView {
                 }
                 if this.branch_context_menu.is_some()
                     || this.change_context_menu.is_some()
+                    || this.credential_context_menu.is_some()
                     || this.tag_context_menu.is_some()
                     || this.stash_context_menu.is_some()
                     || this.commit_context_menu.is_some()
@@ -7166,6 +7557,7 @@ impl Render for RepositoryView {
                     let closed_encoding_menu = this.encoding_menu_target;
                     this.branch_context_menu = None;
                     this.change_context_menu = None;
+                    this.credential_context_menu = None;
                     this.tag_context_menu = None;
                     this.stash_context_menu = None;
                     this.commit_context_menu = None;
@@ -7204,6 +7596,7 @@ impl Render for RepositoryView {
             .child(self.render_tag_context_menu(cx))
             .child(self.render_stash_context_menu(cx))
             .child(self.render_dialogs(window, cx))
+            .child(self.render_credential_context_menu(cx))
             .child(self.render_credentials(window, cx))
     }
 }
