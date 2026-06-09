@@ -7,7 +7,7 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::ui_helpers::{COLOR_TEXT, COLOR_TEXT_FAINT};
+use crate::ui::theme as ui_theme;
 use crate::{FieldId, RepositoryView};
 
 const MULTILINE_LINE_HEIGHT: f32 = 18.0;
@@ -649,7 +649,7 @@ impl Element for SingleLineInputElement {
             display.clone().into()
         };
         let text_color: gpui::Hsla = if is_empty {
-            rgba(COLOR_TEXT_FAINT).into()
+            rgba(ui_theme::INPUT_PLACEHOLDER).into()
         } else {
             style.color
         };
@@ -707,7 +707,7 @@ impl Element for SingleLineInputElement {
                         point(bounds.left() + line.x_for_index(start), bounds.top()),
                         point(bounds.left() + line.x_for_index(end), bounds.bottom()),
                     ),
-                    rgba(0x6aa9ff55),
+                    rgba(ui_theme::INPUT_SELECTION),
                 )
             })
         } else {
@@ -724,7 +724,7 @@ impl Element for SingleLineInputElement {
                     point(bounds.left() + line.x_for_index(caret), bounds.top()),
                     size(px(1.5), bounds.bottom() - bounds.top()),
                 ),
-                rgb(COLOR_TEXT),
+                rgb(ui_theme::INPUT_CARET),
             ))
         } else {
             None
@@ -833,7 +833,7 @@ impl Element for MultiLineInputElement {
             let run = TextRun {
                 len: field.placeholder.len(),
                 font: style.font(),
-                color: rgba(COLOR_TEXT_FAINT).into(),
+                color: rgba(ui_theme::INPUT_PLACEHOLDER).into(),
                 background_color: None,
                 underline: None,
                 strikethrough: None,
@@ -845,7 +845,7 @@ impl Element for MultiLineInputElement {
             let cursor = focused.then(|| {
                 fill(
                     Bounds::new(bounds.origin, size(px(1.5), line_height)),
-                    rgb(COLOR_TEXT),
+                    rgb(ui_theme::INPUT_CARET),
                 )
             });
             return MultiLineInputPrepaint {
@@ -888,7 +888,7 @@ impl Element for MultiLineInputElement {
                             line_bounds.bottom(),
                         ),
                     ),
-                    rgba(0x6aa9ff55),
+                    rgba(ui_theme::INPUT_SELECTION),
                 ));
             }
 
@@ -906,7 +906,7 @@ impl Element for MultiLineInputElement {
                         ),
                         size(px(1.5), line_height),
                     ),
-                    rgb(COLOR_TEXT),
+                    rgb(ui_theme::INPUT_CARET),
                 ));
             }
 

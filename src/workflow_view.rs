@@ -5,9 +5,12 @@ use gpui::{Context, IntoElement, div, prelude::*, px, rgb};
 use khaslana::{WorkflowExecutor, WorkflowProgressEvent, WorkflowRunOptions, parse_workflow_json5};
 
 use crate::{
-    COLOR_BLUE_DARK, COLOR_BORDER, COLOR_BORDER_STRONG, COLOR_HEADER_BG, COLOR_SURFACE, COLOR_TEXT,
-    COLOR_TEXT_FAINT, COLOR_TEXT_MUTED, DialogState, RepositoryLoading, RepositorySnapshot,
-    RepositoryView, ScrollbarMode, UiEvent, placeholder_row, scrollable_frame_when, send_ui_event,
+    DialogState, RepositoryLoading, RepositorySnapshot, RepositoryView, ScrollbarMode, UiEvent,
+    placeholder_row, scrollable_frame_when, send_ui_event,
+    ui::{
+        components::{dialog_actions, dialog_panel as ui_dialog_panel, section_title},
+        theme as ui_theme,
+    },
 };
 
 impl RepositoryView {
@@ -23,13 +26,15 @@ impl RepositoryView {
     }
 
     pub(crate) fn browse_workflow_file(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("JSON5 工作流", &["json5", "jsonc"])
-            .pick_file()
-        else {
-            return;
-        };
-        self.load_workflow_file(path);
+        self.status = "正在选择工作流文件".to_string();
+        self.last_error = None;
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let path = rfd::FileDialog::new()
+                .add_filter("JSON5 工作流", &["json5", "jsonc"])
+                .pick_file();
+            send_ui_event(&tx, UiEvent::WorkflowFileSelected { path });
+        });
     }
 
     pub(crate) fn clear_workflow_file(&mut self) {
@@ -40,7 +45,7 @@ impl RepositoryView {
         self.last_error = None;
     }
 
-    fn load_workflow_file(&mut self, path: std::path::PathBuf) {
+    pub(crate) fn load_workflow_file(&mut self, path: std::path::PathBuf) {
         let Some(repo_path) = self.repo_path.clone() else {
             self.last_error = Some("请先打开一个仓库".into());
             return;
@@ -180,53 +185,27 @@ impl RepositoryView {
             .map(|preview| preview.name.clone())
             .unwrap_or_else(|| "选择 .json5 或 .jsonc 文件后显示预览".to_string());
 
-        div()
-            .id("dialog-工作流")
+        ui_dialog_panel("运行工作流")
             .w(px(720.0))
             .max_h(px(660.0))
-            .p_4()
-            .rounded_sm()
-            .border_1()
-            .border_color(rgb(COLOR_BORDER_STRONG))
-            .bg(rgb(COLOR_SURFACE))
-            .shadow_lg()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .cursor(gpui::CursorStyle::Arrow)
-            .occlude()
-            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                cx.stop_propagation();
-            })
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(14.0))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(rgb(COLOR_TEXT))
-                            .child("运行工作流"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(self.button(
-                                "选择文件",
-                                !self.busy,
-                                |this, _, _| this.browse_workflow_file(),
-                                cx,
-                            ))
-                            .child(self.button(
-                                "清空",
-                                self.workflow_definition.is_some() && !self.busy,
-                                |this, _, _| this.clear_workflow_file(),
-                                cx,
-                            )),
-                    ),
+                div().flex().items_center().justify_end().gap_2().child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(self.button(
+                            "选择文件",
+                            !self.busy,
+                            |this, _, _| this.browse_workflow_file(),
+                            cx,
+                        ))
+                        .child(self.button(
+                            "清空",
+                            self.workflow_definition.is_some() && !self.busy,
+                            |this, _, _| this.clear_workflow_file(),
+                            cx,
+                        )),
+                ),
             )
             .child(
                 div()
@@ -236,13 +215,13 @@ impl RepositoryView {
                     .text_size(px(12.0))
                     .child(
                         div()
-                            .text_color(rgb(COLOR_TEXT_MUTED))
+                            .text_color(rgb(ui_theme::TEXT_MUTED))
                             .truncate()
                             .child(file_label),
                     )
                     .child(
                         div()
-                            .text_color(rgb(COLOR_BLUE_DARK))
+                            .text_color(rgb(ui_theme::ACCENT_STRONG))
                             .font_weight(gpui::FontWeight::BOLD)
                             .truncate()
                             .child(workflow_name),
@@ -251,12 +230,9 @@ impl RepositoryView {
             .child(self.render_workflow_preview(cx))
             .child(self.render_workflow_log(cx))
             .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap_2()
+                dialog_actions()
                     .child(self.button("关闭", !self.busy, |this, _, _| this.close_dialog(), cx))
-                    .child(self.button(
+                    .child(self.primary_button(
                         if self.busy { "运行中..." } else { "运行" },
                         self.workflow_definition.is_some() && !self.busy,
                         |this, _, _| this.run_workflow(),
@@ -282,28 +258,28 @@ impl RepositoryView {
                             .px_2()
                             .py_2()
                             .border_b_1()
-                            .border_color(rgb(COLOR_BORDER))
-                            .bg(rgb(COLOR_SURFACE))
+                            .border_color(rgb(ui_theme::BORDER))
+                            .bg(rgb(ui_theme::SURFACE))
                             .text_size(px(12.0))
                             .child(
                                 div()
                                     .flex_none()
                                     .w(px(46.0))
-                                    .text_color(rgb(COLOR_TEXT_FAINT))
+                                    .text_color(rgb(ui_theme::TEXT_FAINT))
                                     .child(format!("#{}", step.index + 1)),
                             )
                             .child(
                                 div()
                                     .flex_none()
                                     .w(px(110.0))
-                                    .text_color(rgb(COLOR_BLUE_DARK))
+                                    .text_color(rgb(ui_theme::ACCENT_STRONG))
                                     .child(step.op),
                             )
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w(px(0.0))
-                                    .text_color(rgb(COLOR_TEXT))
+                                    .text_color(rgb(ui_theme::TEXT))
                                     .truncate()
                                     .child(step.summary.clone()),
                             )
@@ -323,7 +299,7 @@ impl RepositoryView {
             .min_h(px(170.0))
             .max_h(px(240.0))
             .border_1()
-            .border_color(rgb(COLOR_BORDER))
+            .border_color(rgb(ui_theme::BORDER))
             .rounded_sm()
             .child(section_title("步骤预览"))
             .child({
@@ -361,10 +337,10 @@ impl RepositoryView {
                         .px_2()
                         .py_1()
                         .border_b_1()
-                        .border_color(rgb(COLOR_BORDER))
+                        .border_color(rgb(ui_theme::BORDER))
                         .text_size(px(12.0))
-                        .text_color(rgb(COLOR_TEXT_MUTED))
-                        .bg(rgb(COLOR_SURFACE))
+                        .text_color(rgb(ui_theme::TEXT_MUTED))
+                        .bg(rgb(ui_theme::SURFACE))
                         .child(line.clone())
                         .into_any_element()
                 })
@@ -378,7 +354,7 @@ impl RepositoryView {
             .min_h(px(130.0))
             .max_h(px(190.0))
             .border_1()
-            .border_color(rgb(COLOR_BORDER))
+            .border_color(rgb(ui_theme::BORDER))
             .rounded_sm()
             .child(section_title("运行日志"))
             .child({
@@ -424,18 +400,4 @@ fn workflow_progress_message(event: &WorkflowProgressEvent) -> String {
             format!("工作流“{name}”已完成（{total} 步）")
         }
     }
-}
-
-fn section_title(title: &'static str) -> impl IntoElement {
-    div()
-        .flex_none()
-        .px_2()
-        .py_2()
-        .border_b_1()
-        .border_color(rgb(COLOR_BORDER))
-        .bg(rgb(COLOR_HEADER_BG))
-        .text_size(px(11.0))
-        .font_weight(gpui::FontWeight::BOLD)
-        .text_color(rgb(COLOR_TEXT_MUTED))
-        .child(title)
 }

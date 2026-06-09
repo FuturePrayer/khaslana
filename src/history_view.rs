@@ -7,25 +7,15 @@ use gpui::{
 use khaslana::{CommitFileChange, CommitInfo, CommitRefInfo, CommitRefKind};
 
 use crate::{
-    CHANGE_ROW_HEIGHT, COLOR_BLUE, COLOR_BLUE_DARK, COLOR_BLUE_SOFT, COLOR_BORDER,
-    COLOR_BORDER_STRONG, COLOR_HASH_BG, COLOR_PANEL_BG, COLOR_ROW_SELECTED, COLOR_SURFACE,
-    COLOR_TEXT, COLOR_TEXT_FAINT, COLOR_TEXT_MUTED, DiffHeaderTarget, EncodingMenuTarget,
-    RepositoryView, ResizeTarget, ScrollbarMode, author_avatar, commit_time_label,
-    history_scope_button, placeholder_row, scrollable_uniform_frame, section_header,
-    section_header_action,
+    CHANGE_ROW_HEIGHT, DiffHeaderTarget, EncodingMenuTarget, RepositoryView, ResizeTarget,
+    ScrollbarMode, author_avatar, commit_time_label, history_scope_button, placeholder_row,
+    scrollable_uniform_frame, section_header, section_header_action, ui::theme as ui_theme,
 };
 
 const HISTORY_GRAPH_WIDTH: f32 = 96.0;
 const HISTORY_GRAPH_ROW_HEIGHT: f32 = 42.0;
 const GRAPH_LANE_START: f32 = 12.0;
 const GRAPH_LANE_SPACING: f32 = 14.0;
-const GRAPH_COLORS: [u32; 8] = [
-    0xf97316, 0x14b8a6, 0x3b82f6, 0xeab308, 0xef4444, 0x8b5cf6, 0x22c55e, 0xec4899,
-];
-const COLOR_UNPUSHED_BG: u32 = 0xfffbeb;
-const COLOR_UNPUSHED_BORDER: u32 = 0xf59e0b;
-const COLOR_UNPUSHED_TEXT: u32 = 0x92400e;
-
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CommitGraphRow {
     lane: usize,
@@ -41,7 +31,7 @@ impl RepositoryView {
             .flex_1()
             .min_w(px(0.0))
             .min_h(px(0.0))
-            .bg(rgb(COLOR_PANEL_BG))
+            .bg(rgb(ui_theme::PANEL_BG))
             .child(self.render_commit_history(cx))
             .child(self.render_column_splitter(ResizeTarget::HistoryTop, cx))
             .child(
@@ -73,7 +63,7 @@ impl RepositoryView {
             .min_w(px(0.0))
             .min_h(px(0.0))
             .p_2()
-            .bg(rgb(COLOR_PANEL_BG))
+            .bg(rgb(ui_theme::PANEL_BG))
             .child(
                 uniform_list(
                     "commit-history-list",
@@ -208,21 +198,21 @@ impl RepositoryView {
             .rounded_sm()
             .cursor_pointer()
             .bg(if selected {
-                rgb(COLOR_ROW_SELECTED)
+                rgb(ui_theme::ROW_SELECTED)
             } else if unpushed {
-                rgb(COLOR_UNPUSHED_BG)
+                rgb(ui_theme::WARNING_SOFT)
             } else {
-                rgb(COLOR_SURFACE)
+                rgb(ui_theme::SURFACE)
             })
             .border_1()
             .border_color(if selected {
-                rgb(COLOR_BORDER_STRONG)
+                rgb(ui_theme::BORDER_STRONG)
             } else if unpushed {
-                rgb(COLOR_UNPUSHED_BORDER)
+                rgb(ui_theme::WARNING)
             } else {
-                rgb(COLOR_BORDER)
+                rgb(ui_theme::BORDER)
             })
-            .hover(|this| this.bg(rgb(COLOR_BLUE_SOFT)))
+            .hover(|this| this.bg(rgb(ui_theme::ACCENT_SOFT)))
             .when(unpushed, |this| {
                 this.child(
                     div()
@@ -233,7 +223,7 @@ impl RepositoryView {
                         .flex_none()
                         .w(px(3.0))
                         .rounded_sm()
-                        .bg(rgb(COLOR_UNPUSHED_BORDER)),
+                        .bg(rgb(ui_theme::WARNING)),
                 )
             })
             .on_click(cx.listener(move |this, _event, _window, cx| {
@@ -262,10 +252,10 @@ impl RepositoryView {
                     .px_2()
                     .py_1()
                     .rounded_sm()
-                    .bg(rgb(COLOR_HASH_BG))
+                    .bg(rgb(ui_theme::HASH_BG))
                     .font_family("Consolas, monospace")
                     .text_size(px(11.0))
-                    .text_color(rgb(COLOR_BLUE_DARK))
+                    .text_color(rgb(ui_theme::ACCENT_STRONG))
                     .text_align(gpui::TextAlign::Center)
                     .child(commit.short_oid),
             )
@@ -282,7 +272,7 @@ impl RepositoryView {
                             .min_w(px(0.0))
                             .text_size(px(12.0))
                             .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(rgb(COLOR_TEXT))
+                            .text_color(rgb(ui_theme::TEXT))
                             .truncate()
                             .child(commit.summary),
                     )
@@ -298,10 +288,10 @@ impl RepositoryView {
                                 .py(px(1.0))
                                 .rounded_sm()
                                 .border_1()
-                                .border_color(rgb(0xfbbf24))
-                                .bg(rgb(0xfff7d6))
+                                .border_color(rgb(ui_theme::WARNING))
+                                .bg(rgb(ui_theme::WARNING_BADGE_BG))
                                 .text_size(px(10.0))
-                                .text_color(rgb(COLOR_UNPUSHED_TEXT))
+                                .text_color(rgb(ui_theme::WARNING_TEXT))
                                 .child("未推送"),
                         )
                     }),
@@ -312,7 +302,7 @@ impl RepositoryView {
                     .flex_none()
                     .w(px(118.0))
                     .text_size(px(11.0))
-                    .text_color(rgb(COLOR_TEXT_MUTED))
+                    .text_color(rgb(ui_theme::TEXT_MUTED))
                     .truncate()
                     .child(author),
             )
@@ -321,14 +311,14 @@ impl RepositoryView {
                     .flex_none()
                     .w(px(142.0))
                     .text_size(px(11.0))
-                    .text_color(rgb(COLOR_TEXT_MUTED))
+                    .text_color(rgb(ui_theme::TEXT_MUTED))
                     .child(time),
             )
             .child(
                 div()
                     .flex_none()
                     .text_size(px(16.0))
-                    .text_color(rgb(COLOR_TEXT_FAINT))
+                    .text_color(rgb(ui_theme::TEXT_FAINT))
                     .child(">"),
             )
     }
@@ -346,7 +336,7 @@ impl RepositoryView {
             .min_w(px(0.0))
             .min_h(px(0.0))
             .p_2()
-            .bg(rgb(COLOR_PANEL_BG))
+            .bg(rgb(ui_theme::PANEL_BG))
             .child(
                 uniform_list(
                     "commit-file-list",
@@ -426,17 +416,17 @@ impl RepositoryView {
             .cursor_pointer()
             .overflow_hidden()
             .bg(if selected {
-                rgb(COLOR_ROW_SELECTED)
+                rgb(ui_theme::ROW_SELECTED)
             } else {
-                rgb(COLOR_SURFACE)
+                rgb(ui_theme::SURFACE)
             })
             .border_1()
             .border_color(if selected {
-                rgb(COLOR_BORDER_STRONG)
+                rgb(ui_theme::BORDER_STRONG)
             } else {
-                rgb(COLOR_BORDER)
+                rgb(ui_theme::BORDER)
             })
-            .hover(|this| this.bg(rgb(COLOR_BLUE_SOFT)))
+            .hover(|this| this.bg(rgb(ui_theme::ACCENT_SOFT)))
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 this.select_history_file(path.clone());
                 cx.notify();
@@ -447,7 +437,7 @@ impl RepositoryView {
                     .w(px(24.0))
                     .text_size(px(11.0))
                     .font_family("Consolas, monospace")
-                    .text_color(rgb(COLOR_BLUE))
+                    .text_color(rgb(ui_theme::ACCENT))
                     .child(state),
             )
             .child(
@@ -455,7 +445,7 @@ impl RepositoryView {
                     .flex_1()
                     .min_w(px(0.0))
                     .text_size(px(12.0))
-                    .text_color(rgb(COLOR_TEXT))
+                    .text_color(rgb(ui_theme::TEXT))
                     .truncate()
                     .child(path_label),
             )
@@ -634,7 +624,7 @@ fn render_commit_graph_cell(graph: CommitGraphRow) -> impl IntoElement {
                     .top(px(15.0))
                     .text_size(px(10.0))
                     .font_family("Consolas, monospace")
-                    .text_color(rgb(COLOR_TEXT_FAINT))
+                    .text_color(rgb(ui_theme::TEXT_FAINT))
                     .child("..."),
             )
         })
@@ -645,7 +635,7 @@ fn graph_x(lane: usize) -> f32 {
 }
 
 fn graph_color(lane: usize) -> u32 {
-    GRAPH_COLORS[lane % GRAPH_COLORS.len()]
+    ui_theme::HISTORY_GRAPH_COLORS[lane % ui_theme::HISTORY_GRAPH_COLORS.len()]
 }
 
 fn paint_graph_line(
@@ -667,7 +657,7 @@ fn paint_graph_line(
 fn paint_graph_dot(window: &mut gpui::Window, x: gpui::Pixels, y: gpui::Pixels, color: u32) {
     let outer = px(5.0);
     let inner = px(4.0);
-    paint_graph_circle(window, x, y, outer, COLOR_PANEL_BG);
+    paint_graph_circle(window, x, y, outer, ui_theme::PANEL_BG);
     paint_graph_circle(window, x, y, inner, color);
 }
 
@@ -710,10 +700,30 @@ fn commit_ref_labels(refs: &[CommitRefInfo]) -> Vec<gpui::AnyElement> {
 
 fn commit_ref_label(reference: CommitRefInfo) -> impl IntoElement {
     let (bg, border, fg, label) = match reference.kind {
-        CommitRefKind::LocalBranch => (0xe1fbf4, 0x14b8a6, 0x0f766e, reference.name),
-        CommitRefKind::RemoteBranch => (0xffeadf, 0xff6a3d, 0xc2410c, reference.name),
-        CommitRefKind::Tag => (0xfff3bf, 0xf0b429, 0x9a6700, reference.name),
-        CommitRefKind::Head => (0x2f2a24, 0x2f2a24, 0xffffff, reference.name),
+        CommitRefKind::LocalBranch => (
+            ui_theme::REF_LOCAL_BG,
+            ui_theme::REF_LOCAL_BORDER,
+            ui_theme::REF_LOCAL_TEXT,
+            reference.name,
+        ),
+        CommitRefKind::RemoteBranch => (
+            ui_theme::REF_REMOTE_BG,
+            ui_theme::REF_REMOTE_BORDER,
+            ui_theme::REF_REMOTE_TEXT,
+            reference.name,
+        ),
+        CommitRefKind::Tag => (
+            ui_theme::REF_TAG_BG,
+            ui_theme::REF_TAG_BORDER,
+            ui_theme::REF_TAG_TEXT,
+            reference.name,
+        ),
+        CommitRefKind::Head => (
+            ui_theme::REF_HEAD_BG,
+            ui_theme::REF_HEAD_BG,
+            ui_theme::REF_HEAD_TEXT,
+            reference.name,
+        ),
     };
 
     div()
@@ -738,9 +748,9 @@ fn commit_ref_overflow_label(count: usize) -> impl IntoElement {
         .py(px(1.0))
         .rounded_sm()
         .border_1()
-        .border_color(rgb(COLOR_BORDER))
-        .bg(rgb(COLOR_HASH_BG))
+        .border_color(rgb(ui_theme::BORDER))
+        .bg(rgb(ui_theme::HASH_BG))
         .text_size(px(10.0))
-        .text_color(rgb(COLOR_TEXT_MUTED))
+        .text_color(rgb(ui_theme::TEXT_MUTED))
         .child(format!("+{count}"))
 }

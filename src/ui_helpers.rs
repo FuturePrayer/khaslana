@@ -7,21 +7,18 @@ use khaslana::{DiffLineKind, DiffScope};
 
 use crate::{DiffHeaderTarget, RepositoryView};
 
-pub(crate) const COLOR_APP_BG: u32 = 0xf7f9fc;
-pub(crate) const COLOR_SURFACE: u32 = 0xffffff;
-pub(crate) const COLOR_SURFACE_SOFT: u32 = 0xf3f6fb;
-pub(crate) const COLOR_PANEL_BG: u32 = 0xffffff;
-pub(crate) const COLOR_HEADER_BG: u32 = 0xf8fbff;
-pub(crate) const COLOR_BORDER: u32 = 0xdbe5f2;
-pub(crate) const COLOR_BORDER_STRONG: u32 = 0x3b82f6;
-pub(crate) const COLOR_BLUE: u32 = 0x3b82f6;
-pub(crate) const COLOR_BLUE_DARK: u32 = 0x1d4ed8;
-pub(crate) const COLOR_BLUE_SOFT: u32 = 0xeaf2ff;
-pub(crate) const COLOR_TEXT: u32 = 0x111827;
-pub(crate) const COLOR_TEXT_MUTED: u32 = 0x4b5563;
-pub(crate) const COLOR_TEXT_FAINT: u32 = 0x8a96a8;
-pub(crate) const COLOR_ROW_SELECTED: u32 = 0xeaf2ff;
-pub(crate) const COLOR_HASH_BG: u32 = 0xf1f5fb;
+pub(crate) use crate::ui::theme::ACCENT_SOFT as COLOR_BLUE_SOFT;
+pub(crate) use crate::ui::theme::ACCENT_STRONG as COLOR_BLUE_DARK;
+pub(crate) use crate::ui::theme::BORDER as COLOR_BORDER;
+pub(crate) use crate::ui::theme::BORDER_STRONG as COLOR_BORDER_STRONG;
+pub(crate) use crate::ui::theme::HEADER_BG as COLOR_HEADER_BG;
+pub(crate) use crate::ui::theme::PANEL_BG as COLOR_PANEL_BG;
+pub(crate) use crate::ui::theme::ROW_SELECTED as COLOR_ROW_SELECTED;
+pub(crate) use crate::ui::theme::SURFACE as COLOR_SURFACE;
+pub(crate) use crate::ui::theme::SURFACE_MUTED as COLOR_SURFACE_SOFT;
+pub(crate) use crate::ui::theme::TEXT as COLOR_TEXT;
+pub(crate) use crate::ui::theme::TEXT_FAINT as COLOR_TEXT_FAINT;
+pub(crate) use crate::ui::theme::TEXT_MUTED as COLOR_TEXT_MUTED;
 const SCROLLBAR_THICKNESS: f32 = 8.0;
 const SCROLLBAR_MARGIN: f32 = 2.0;
 const SCROLLBAR_MIN_THUMB: f32 = 28.0;
@@ -648,12 +645,18 @@ pub(crate) fn nav_row(
 pub(crate) fn placeholder_row(text: &'static str) -> impl IntoElement {
     div()
         .flex_none()
-        .h(px(NAV_ROW_HEIGHT))
         .min_h(px(NAV_ROW_HEIGHT))
-        .px_2()
+        .mx_1()
+        .my_1()
+        .px_3()
         .py_2()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(COLOR_BORDER))
+        .bg(rgb(COLOR_SURFACE_SOFT))
         .text_size(px(12.0))
         .text_color(rgb(COLOR_TEXT_FAINT))
+        .line_height(px(18.0))
         .child(text)
 }
 
