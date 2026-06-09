@@ -206,6 +206,15 @@ pub struct CommitRefInfo {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchSyncStatus {
+    pub branch: String,
+    pub upstream: Option<String>,
+    pub ahead: usize,
+    pub behind: usize,
+    pub unpushed_oids: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommitRefKind {
     LocalBranch,
     RemoteBranch,

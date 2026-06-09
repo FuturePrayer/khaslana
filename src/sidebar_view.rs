@@ -205,6 +205,11 @@ impl RepositoryView {
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 this.selected_remote = Some(name.clone());
                 this.close_popups();
+                if let Some((tab_id, path, remote, load_id, request_id)) =
+                    this.prepare_branch_sync_status_request()
+                {
+                    this.load_branch_sync_status_for_tab(tab_id, path, remote, load_id, request_id);
+                }
                 cx.notify();
             }))
     }

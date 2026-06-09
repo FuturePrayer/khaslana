@@ -27,9 +27,9 @@ use gpui::{
     actions, canvas, div, point, prelude::*, px, rgb, rgba, size, uniform_list,
 };
 use khaslana::{
-    BranchKind, BranchName, CommitFileChange, CommitInfo, CommitMessage, CredentialProvider,
-    CredentialRecord, CredentialRequest, CredentialScope, CredentialStore, DiffEncodingChoice,
-    DiffLineKind, DiffScope, FileDiff, GitCredential, GitService, HistoryScope,
+    BranchKind, BranchName, BranchSyncStatus, CommitFileChange, CommitInfo, CommitMessage,
+    CredentialProvider, CredentialRecord, CredentialRequest, CredentialScope, CredentialStore,
+    DiffEncodingChoice, DiffLineKind, DiffScope, FileDiff, GitCredential, GitService, HistoryScope,
     KeyringCredentialStore, OperationEvent, ProgressEmitter, RemoteCredentialPolicy, RemoteInfo,
     RemoteName, RepoPath, RepositorySnapshot, ResetMode, TagName, credential_display_target,
     credential_key_filename, credential_kind_label, credential_record_is_compatible_with_url,
@@ -428,6 +428,9 @@ struct RepoTabState {
     pub(crate) history_loading: HistoryLoading,
     pub(crate) history_scope: HistoryScope,
     pub(crate) history_graph_rows: Vec<history_view::CommitGraphRow>,
+    pub(crate) branch_sync_status: Option<BranchSyncStatus>,
+    pub(crate) branch_sync_loading: bool,
+    pub(crate) branch_sync_request_id: u64,
     pub(crate) busy: bool,
     pub(crate) loading: RepositoryLoading,
     pub(crate) repository_load_id: u64,
@@ -458,6 +461,9 @@ impl RepoTabState {
             history_loading: HistoryLoading::default(),
             history_scope: HistoryScope::default(),
             history_graph_rows: Vec::new(),
+            branch_sync_status: None,
+            branch_sync_loading: false,
+            branch_sync_request_id: 0,
             busy: false,
             loading: RepositoryLoading::default(),
             repository_load_id: 0,
@@ -658,6 +664,18 @@ pub(crate) enum UiEvent {
         tab_id: RepoTabId,
         error: String,
         load_id: u64,
+    },
+    BranchSyncStatusLoaded {
+        tab_id: RepoTabId,
+        status: Option<BranchSyncStatus>,
+        load_id: u64,
+        request_id: u64,
+    },
+    BranchSyncStatusFailed {
+        tab_id: RepoTabId,
+        error: String,
+        load_id: u64,
+        request_id: u64,
     },
     OperationFailed {
         tab_id: Option<RepoTabId>,
@@ -1659,6 +1677,8 @@ impl RepositoryView {
                         this.status = message;
                         this.last_error = None;
                         this.diff = None;
+                        this.branch_sync_status = None;
+                        this.branch_sync_loading = false;
                         this.clear_history();
                         this.change_selection.clear();
                         this.repo_path = Some(snapshot.path.clone());
@@ -1676,6 +1696,7 @@ impl RepositoryView {
                 snapshot,
                 load_id,
             } => {
+                let mut sync_request = None;
                 self.with_tab_context(tab_id, |this| {
                     if load_id == this.repository_load_id {
                         this.busy = false;
@@ -1683,8 +1704,12 @@ impl RepositoryView {
                         this.status = message;
                         this.merge_metadata_snapshot(snapshot);
                         this.scroll_local_branch_to_current();
+                        sync_request = this.prepare_branch_sync_status_request();
                     }
                 });
+                if let Some((tab_id, path, remote, load_id, request_id)) = sync_request {
+                    self.load_branch_sync_status_for_tab(tab_id, path, remote, load_id, request_id);
+                }
             }
             UiEvent::RepositoryStatusFastLoaded {
                 tab_id,
@@ -1746,6 +1771,7 @@ impl RepositoryView {
                 diff,
             } => {
                 let mut full_status_request = None;
+                let mut sync_request = None;
                 self.apply_status_event(tab_id, |this| {
                     this.busy = false;
                     this.loading = RepositoryLoading::default();
@@ -1773,6 +1799,7 @@ impl RepositoryView {
                                 .map(|path| (tab_id, path, this.repository_load_id));
                             this.loading.status_full = true;
                         }
+                        sync_request = this.prepare_branch_sync_status_request();
                     }
                     if let Some(diff) = diff {
                         this.diff = Some(Arc::new(diff));
@@ -1782,6 +1809,9 @@ impl RepositoryView {
                 });
                 if let Some((tab_id, path, load_id)) = full_status_request {
                     self.load_full_status_for_tab(tab_id, path, load_id, "变更已补全".to_string());
+                }
+                if let Some((tab_id, path, remote, load_id, request_id)) = sync_request {
+                    self.load_branch_sync_status_for_tab(tab_id, path, remote, load_id, request_id);
                 }
             }
             UiEvent::DiscardChangeFinished {
@@ -1910,6 +1940,37 @@ impl RepositoryView {
                     }
                 });
             }
+            UiEvent::BranchSyncStatusLoaded {
+                tab_id,
+                status,
+                load_id,
+                request_id,
+            } => {
+                self.with_tab_context(tab_id, |this| {
+                    if load_id == this.repository_load_id
+                        && request_id == this.branch_sync_request_id
+                    {
+                        this.branch_sync_loading = false;
+                        this.branch_sync_status = status;
+                    }
+                });
+            }
+            UiEvent::BranchSyncStatusFailed {
+                tab_id,
+                error,
+                load_id,
+                request_id,
+            } => {
+                self.with_tab_context(tab_id, |this| {
+                    if load_id == this.repository_load_id
+                        && request_id == this.branch_sync_request_id
+                    {
+                        this.branch_sync_loading = false;
+                        this.branch_sync_status = None;
+                        tracing::warn!("branch sync status skipped: {error}");
+                    }
+                });
+            }
             UiEvent::OperationFailed { tab_id, error } => {
                 self.apply_status_event(tab_id, |this| {
                     this.busy = false;
@@ -1954,6 +2015,7 @@ impl RepositoryView {
                 log,
             } => {
                 let mut full_status_request = None;
+                let mut sync_request = None;
                 self.with_tab_context(tab_id, |this| {
                     this.busy = false;
                     this.loading = RepositoryLoading::default();
@@ -1976,9 +2038,13 @@ impl RepositoryView {
                         .clone()
                         .map(|path| (tab_id, path, this.repository_load_id));
                     this.loading.status_full = true;
+                    sync_request = this.prepare_branch_sync_status_request();
                 });
                 if let Some((tab_id, path, load_id)) = full_status_request {
                     self.load_full_status_for_tab(tab_id, path, load_id, "变更已补全".to_string());
+                }
+                if let Some((tab_id, path, remote, load_id, request_id)) = sync_request {
+                    self.load_branch_sync_status_for_tab(tab_id, path, remote, load_id, request_id);
                 }
             }
         }
@@ -2922,6 +2988,9 @@ impl RepositoryView {
             tab.repo_path = Some(path.clone());
             tab.busy = true;
             tab.loading = RepositoryLoading::default();
+            tab.branch_sync_status = None;
+            tab.branch_sync_loading = false;
+            tab.branch_sync_request_id = tab.branch_sync_request_id.wrapping_add(1).max(1);
             tab.status = started.to_string();
             tab.last_error = None;
             load_id
@@ -3184,6 +3253,76 @@ impl RepositoryView {
                             tab_id,
                             error: err.to_string(),
                             load_id,
+                        },
+                    );
+                }
+            }
+        });
+    }
+
+    pub(crate) fn prepare_branch_sync_status_request(
+        &mut self,
+    ) -> Option<(RepoTabId, PathBuf, String, u64, u64)> {
+        let tab_id = self.active_tab_id()?;
+        let path = self.repo_path.clone()?;
+        let Some(remote) = self.current_remote() else {
+            self.branch_sync_status = None;
+            self.branch_sync_loading = false;
+            self.branch_sync_request_id = self.branch_sync_request_id.wrapping_add(1).max(1);
+            return None;
+        };
+        let load_id = self.repository_load_id;
+        self.branch_sync_request_id = self.branch_sync_request_id.wrapping_add(1).max(1);
+        self.branch_sync_loading = true;
+        Some((tab_id, path, remote, load_id, self.branch_sync_request_id))
+    }
+
+    pub(crate) fn load_branch_sync_status_for_tab(
+        &self,
+        tab_id: RepoTabId,
+        path: PathBuf,
+        remote: String,
+        load_id: u64,
+        request_id: u64,
+    ) {
+        let service = self.service_for_tab(tab_id);
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let started = Instant::now();
+            let result = (|| -> khaslana::Result<Option<BranchSyncStatus>> {
+                let repo = Repository::open(path)?;
+                service.branch_sync_status(&repo, &RemoteName::new(remote))
+            })();
+            match result {
+                Ok(status) => {
+                    perf_log(
+                        "branch.sync_status",
+                        started,
+                        format!(
+                            "tab={} ahead={} behind={}",
+                            tab_id.0,
+                            status.as_ref().map(|status| status.ahead).unwrap_or(0),
+                            status.as_ref().map(|status| status.behind).unwrap_or(0)
+                        ),
+                    );
+                    send_ui_event(
+                        &tx,
+                        UiEvent::BranchSyncStatusLoaded {
+                            tab_id,
+                            status,
+                            load_id,
+                            request_id,
+                        },
+                    );
+                }
+                Err(err) => {
+                    send_ui_event(
+                        &tx,
+                        UiEvent::BranchSyncStatusFailed {
+                            tab_id,
+                            error: err.to_string(),
+                            load_id,
+                            request_id,
                         },
                     );
                 }
@@ -4406,6 +4545,17 @@ impl RepositoryView {
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        self.button_with_badge(label, None, enabled, on_click, cx)
+    }
+
+    fn button_with_badge(
+        &self,
+        label: &'static str,
+        badge: Option<usize>,
+        enabled: bool,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let enabled_color = if enabled {
             COLOR_SURFACE
         } else {
@@ -4418,6 +4568,10 @@ impl RepositoryView {
         };
         div()
             .id(label)
+            .relative()
+            .flex()
+            .items_center()
+            .justify_center()
             .flex_none()
             .px_2()
             .py_1()
@@ -4439,6 +4593,27 @@ impl RepositoryView {
                 }
             }))
             .child(label)
+            .when_some(badge.filter(|count| *count > 0), |this, count| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top(px(-7.0))
+                        .right(px(-7.0))
+                        .min_w(px(16.0))
+                        .h(px(16.0))
+                        .px_1()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(rgb(0xffedd5))
+                        .bg(rgb(0xf97316))
+                        .text_color(rgb(COLOR_SURFACE))
+                        .text_size(px(10.0))
+                        .line_height(px(14.0))
+                        .child(format_badge_count(count)),
+                )
+            })
     }
 
     fn mode_button(
@@ -4819,6 +4994,14 @@ impl RepositoryView {
     fn render_toolbar(&self, _window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let repo_open = self.repo_path.is_some();
         let remote_open = !self.loading.remote() && self.current_remote().is_some();
+        let pull_badge = self
+            .branch_sync_status
+            .as_ref()
+            .and_then(|status| (status.behind > 0).then_some(status.behind));
+        let push_badge = self
+            .branch_sync_status
+            .as_ref()
+            .and_then(|status| (status.ahead > 0).then_some(status.ahead));
         div()
             .id("repo-tab-bar")
             .flex()
@@ -4854,14 +5037,16 @@ impl RepositoryView {
                         |this, _, _| this.fetch(),
                         cx,
                     ))
-                    .child(self.button(
+                    .child(self.button_with_badge(
                         "拉取",
+                        pull_badge,
                         repo_open && remote_open && !self.busy,
                         |this, _, _| this.pull(),
                         cx,
                     ))
-                    .child(self.button(
+                    .child(self.button_with_badge(
                         "推送",
+                        push_badge,
                         repo_open && remote_open && !self.busy,
                         |this, _, _| this.push(),
                         cx,
@@ -7944,6 +8129,14 @@ fn timestamp_label(seconds: i64) -> String {
                 .to_string()
         })
         .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_badge_count(count: usize) -> String {
+    if count > 99 {
+        "99+".to_string()
+    } else {
+        count.to_string()
+    }
 }
 
 fn input_segments(

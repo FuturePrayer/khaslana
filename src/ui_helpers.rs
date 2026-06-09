@@ -25,6 +25,9 @@ pub(crate) const COLOR_HASH_BG: u32 = 0xf1f5fb;
 const SCROLLBAR_THICKNESS: f32 = 8.0;
 const SCROLLBAR_MARGIN: f32 = 2.0;
 const SCROLLBAR_MIN_THUMB: f32 = 28.0;
+const REPO_TAB_SCROLL_ID: &str = "repo-tab-bar-scroll";
+const REPO_TAB_SCROLLBAR_Y_OFFSET: f32 = 4.0;
+const REPO_TAB_SCROLLBAR_THICKNESS: f32 = 5.0;
 pub(crate) const DIFF_ROW_HEIGHT: f32 = 22.0;
 pub(crate) const NAV_ROW_HEIGHT: f32 = 30.0;
 
@@ -158,7 +161,7 @@ fn scrollable_frame_base(
                         .as_ref()
                         .filter(|drag| drag.scroll_id == scroll_id)
                         .map(|drag| drag.axis);
-                    paint_scrollbars(&handle, mode, bounds, active_axis, window);
+                    paint_scrollbars(&handle, &scroll_id, mode, bounds, active_axis, window);
 
                     register_scrollbar_mouse_down(
                         entity.clone(),
@@ -187,19 +190,22 @@ fn scrollable_frame_base(
 
 fn paint_scrollbars(
     handle: &ScrollHandle,
+    scroll_id: &SharedString,
     mode: ScrollbarMode,
     bounds: Bounds<Pixels>,
     active_axis: Option<ScrollbarAxis>,
     window: &mut Window,
 ) {
     if mode.has_vertical()
-        && let Some(geometry) = scrollbar_geometry(handle, bounds, ScrollbarAxis::Vertical)
+        && let Some(geometry) =
+            scrollbar_geometry(handle, scroll_id, bounds, ScrollbarAxis::Vertical)
     {
         paint_scrollbar_axis(&geometry, ScrollbarAxis::Vertical, active_axis, window);
     }
 
     if mode.has_horizontal()
-        && let Some(geometry) = scrollbar_geometry(handle, bounds, ScrollbarAxis::Horizontal)
+        && let Some(geometry) =
+            scrollbar_geometry(handle, scroll_id, bounds, ScrollbarAxis::Horizontal)
     {
         paint_scrollbar_axis(&geometry, ScrollbarAxis::Horizontal, active_axis, window);
     }
@@ -211,11 +217,11 @@ fn paint_scrollbar_axis(
     active_axis: Option<ScrollbarAxis>,
     window: &mut Window,
 ) {
-    window.paint_quad(fill(geometry.track, rgb(0xf2f7ff)).corner_radii(px(4.0)));
+    window.paint_quad(fill(geometry.track, rgb(0xf6f9fd)).corner_radii(px(4.0)));
     let thumb_color = if active_axis == Some(axis) {
-        COLOR_BLUE_DARK
+        0x8fb9e8
     } else {
-        COLOR_BLUE
+        0xbfd8f5
     };
     window.paint_quad(fill(geometry.thumb, rgb(thumb_color)).corner_radii(px(4.0)));
 }
@@ -240,7 +246,7 @@ fn register_scrollbar_mouse_down(
         .into_iter()
         .flatten()
         .filter_map(|axis| {
-            scrollbar_geometry(&handle, bounds, axis).map(|geometry| (axis, geometry))
+            scrollbar_geometry(&handle, &scroll_id, bounds, axis).map(|geometry| (axis, geometry))
         })
         .find(|(_, geometry)| geometry.track.contains(&event.position));
 
@@ -315,6 +321,7 @@ fn register_scrollbar_mouse_up(entity: gpui::Entity<RepositoryView>, window: &mu
 
 fn scrollbar_geometry(
     handle: &ScrollHandle,
+    scroll_id: &SharedString,
     bounds: Bounds<Pixels>,
     axis: ScrollbarAxis,
 ) -> Option<ScrollbarGeometry> {
@@ -359,10 +366,20 @@ fn scrollbar_geometry(
             if max_offset <= 1.0 {
                 return None;
             }
+            let is_repo_tab_scroll = scroll_id.as_ref() == REPO_TAB_SCROLL_ID;
+            let y_offset = is_repo_tab_scroll
+                .then_some(REPO_TAB_SCROLLBAR_Y_OFFSET)
+                .unwrap_or_default();
+            let horizontal_thickness = if is_repo_tab_scroll {
+                REPO_TAB_SCROLLBAR_THICKNESS
+            } else {
+                thickness
+            };
+            let bottom_margin = (margin - y_offset).max(0.0);
             let track = Bounds::from_corners(
                 point(
                     bounds.origin.x + px(margin),
-                    bounds.origin.y + bounds.size.height - px(thickness + margin),
+                    bounds.origin.y + bounds.size.height - px(horizontal_thickness + bottom_margin),
                 ),
                 point(
                     bounds.origin.x + bounds.size.width
@@ -372,7 +389,7 @@ fn scrollbar_geometry(
                             } else {
                                 0.0
                             }),
-                    bounds.origin.y + bounds.size.height - px(margin),
+                    bounds.origin.y + bounds.size.height - px(bottom_margin),
                 ),
             );
             (

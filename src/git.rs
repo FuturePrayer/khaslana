@@ -15,10 +15,11 @@ use git2::{
 
 use crate::credentials::{CredentialProvider, CredentialRequest, to_git_credential};
 use crate::types::{
-    BranchInfo, BranchKind, BranchName, ChangeState, CommitFileChange, CommitInfo, CommitMessage,
-    CommitRefInfo, CommitRefKind, DiffEncodingChoice, DiffEncodingInfo, DiffLine, DiffLineKind,
-    DiffScope, FileDiff, GitError, HistoryScope, OperationEvent, RemoteInfo, RemoteName, RepoPath,
-    RepositorySnapshot, ResetMode, Result, StashInfo, TagInfo, TagName, WorktreeChange,
+    BranchInfo, BranchKind, BranchName, BranchSyncStatus, ChangeState, CommitFileChange,
+    CommitInfo, CommitMessage, CommitRefInfo, CommitRefKind, DiffEncodingChoice, DiffEncodingInfo,
+    DiffLine, DiffLineKind, DiffScope, FileDiff, GitError, HistoryScope, OperationEvent,
+    RemoteInfo, RemoteName, RepoPath, RepositorySnapshot, ResetMode, Result, StashInfo, TagInfo,
+    TagName, WorktreeChange,
 };
 
 mod conflicts;
@@ -164,6 +165,45 @@ impl GitService {
 
     pub fn current_branch(&self, repo: &Repository) -> Option<String> {
         self.head_name(repo)
+    }
+
+    pub fn branch_sync_status(
+        &self,
+        repo: &Repository,
+        remote: &RemoteName,
+    ) -> Result<Option<BranchSyncStatus>> {
+        let Some(branch) = self.current_branch(repo) else {
+            return Ok(None);
+        };
+        let Ok(local_branch) = repo.find_branch(&branch, BranchType::Local) else {
+            return Ok(None);
+        };
+        let Some(local_oid) = local_branch.get().target() else {
+            return Ok(None);
+        };
+        let Some((upstream, remote_oid)) =
+            self.branch_sync_upstream(repo, remote, &local_branch)?
+        else {
+            return Ok(None);
+        };
+
+        let (ahead, behind) = repo.graph_ahead_behind(local_oid, remote_oid)?;
+        let mut walk = repo.revwalk()?;
+        walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
+        walk.push(local_oid)?;
+        walk.hide(remote_oid)?;
+        let mut unpushed_oids = Vec::with_capacity(ahead);
+        for oid in walk {
+            unpushed_oids.push(oid?.to_string());
+        }
+
+        Ok(Some(BranchSyncStatus {
+            branch,
+            upstream: Some(upstream),
+            ahead,
+            behind,
+            unpushed_oids,
+        }))
     }
 
     pub fn local_branches(&self, repo: &Repository) -> Result<Vec<BranchInfo>> {
@@ -1275,6 +1315,45 @@ impl GitService {
         callbacks
     }
 
+    fn branch_sync_upstream(
+        &self,
+        repo: &Repository,
+        remote: &RemoteName,
+        local_branch: &git2::Branch<'_>,
+    ) -> Result<Option<(String, git2::Oid)>> {
+        if let Ok(upstream) = local_branch.upstream() {
+            let name = upstream
+                .name()
+                .ok()
+                .flatten()
+                .map(str::to_string)
+                .or_else(|| upstream.get().name().ok().map(str::to_string))
+                .unwrap_or_else(|| "upstream".to_string());
+            if let Some(oid) = upstream.get().target() {
+                return Ok(Some((name, oid)));
+            }
+        }
+
+        let Some(local_name) = local_branch.name().ok().flatten() else {
+            return Ok(None);
+        };
+        match repo.find_branch(&format!("{}/{}", remote.0, local_name), BranchType::Remote) {
+            Ok(remote_branch) => {
+                let name = remote_branch
+                    .name()
+                    .ok()
+                    .flatten()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("{}/{}", remote.0, local_name));
+                Ok(remote_branch.get().target().map(|oid| (name, oid)))
+            }
+            Err(err) if matches!(err.code(), ErrorCode::NotFound | ErrorCode::InvalidSpec) => {
+                Ok(None)
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
     fn remote_ref_for_branch<'repo>(
         &self,
         repo: &'repo Repository,
@@ -1796,6 +1875,20 @@ mod tests {
         write_file(&work_path, "feature.txt", "feature\nremote update\n");
         commit_all(&repo, "remote feature update");
         service.push(&mut repo, &RemoteName::new("origin")).unwrap();
+    }
+
+    fn advance_remote_main(remote_dir: &Path, service: &GitService, path: &str, body: &str) -> Oid {
+        let work_dir = TempDir::new().unwrap();
+        let work_path = work_dir.path().join("remote-work");
+        service
+            .clone_repo(&path_url(remote_dir), &RepoPath::new(&work_path))
+            .unwrap();
+        let mut repo = Repository::open(&work_path).unwrap();
+        configure_user(&repo);
+        write_file(&work_path, path, body);
+        let oid = commit_all(&repo, "remote main update");
+        service.push(&mut repo, &RemoteName::new("origin")).unwrap();
+        oid
     }
 
     #[test]
@@ -2390,6 +2483,103 @@ mod tests {
         assert!(details.branches.iter().any(|branch| {
             branch.kind == BranchKind::Remote && branch.name == "origin/feature"
         }));
+    }
+
+    #[test]
+    fn branch_sync_status_reports_local_ahead_commits() {
+        let (_remote_dir, clone_dir, _clone_path, repo, service) = clone_repo_with_remote_feature();
+        write_file(
+            clone_dir.path().join("clone").as_path(),
+            "local.txt",
+            "local\n",
+        );
+        let oid = commit_all(&repo, "local ahead");
+
+        let status = service
+            .branch_sync_status(&repo, &RemoteName::new("origin"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(status.branch, "main");
+        assert_eq!(status.ahead, 1);
+        assert_eq!(status.behind, 0);
+        assert_eq!(status.unpushed_oids, vec![oid.to_string()]);
+    }
+
+    #[test]
+    fn branch_sync_status_reports_remote_behind_commits() {
+        let (remote_dir, _clone_dir, _clone_path, mut repo, service) =
+            clone_repo_with_remote_feature();
+        advance_remote_main(remote_dir.path(), &service, "remote.txt", "remote\n");
+        service
+            .fetch(&mut repo, &RemoteName::new("origin"))
+            .unwrap();
+
+        let status = service
+            .branch_sync_status(&repo, &RemoteName::new("origin"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(status.ahead, 0);
+        assert_eq!(status.behind, 1);
+        assert!(status.unpushed_oids.is_empty());
+    }
+
+    #[test]
+    fn branch_sync_status_reports_diverged_branch() {
+        let (remote_dir, clone_dir, _clone_path, mut repo, service) =
+            clone_repo_with_remote_feature();
+        write_file(
+            clone_dir.path().join("clone").as_path(),
+            "local.txt",
+            "local\n",
+        );
+        let local_oid = commit_all(&repo, "local ahead");
+        advance_remote_main(remote_dir.path(), &service, "remote.txt", "remote\n");
+        service
+            .fetch(&mut repo, &RemoteName::new("origin"))
+            .unwrap();
+
+        let status = service
+            .branch_sync_status(&repo, &RemoteName::new("origin"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(status.ahead, 1);
+        assert_eq!(status.behind, 1);
+        assert_eq!(status.unpushed_oids, vec![local_oid.to_string()]);
+    }
+
+    #[test]
+    fn branch_sync_status_falls_back_to_remote_tracking_name() {
+        let (_remote_dir, _clone_dir, _clone_path, repo, service) =
+            clone_repo_with_remote_feature();
+        let mut branch = repo.find_branch("main", BranchType::Local).unwrap();
+        branch.set_upstream(None).unwrap();
+
+        let status = service
+            .branch_sync_status(&repo, &RemoteName::new("origin"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(status.branch, "main");
+        assert_eq!(status.upstream.as_deref(), Some("origin/main"));
+        assert_eq!(status.ahead, 0);
+        assert_eq!(status.behind, 0);
+    }
+
+    #[test]
+    fn branch_sync_status_is_unknown_for_detached_head() {
+        let (_remote_dir, _clone_dir, _clone_path, repo, service) =
+            clone_repo_with_remote_feature();
+        let oid = repo.head().unwrap().target().unwrap();
+        repo.set_head_detached(oid).unwrap();
+
+        let status = service
+            .branch_sync_status(&repo, &RemoteName::new("origin"))
+            .unwrap();
+
+        assert!(status.is_none());
     }
 
     #[test]

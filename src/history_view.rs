@@ -22,6 +22,9 @@ const GRAPH_LANE_SPACING: f32 = 14.0;
 const GRAPH_COLORS: [u32; 8] = [
     0xf97316, 0x14b8a6, 0x3b82f6, 0xeab308, 0xef4444, 0x8b5cf6, 0x22c55e, 0xec4899,
 ];
+const COLOR_UNPUSHED_BG: u32 = 0xfffbeb;
+const COLOR_UNPUSHED_BORDER: u32 = 0xf59e0b;
+const COLOR_UNPUSHED_TEXT: u32 = 0x92400e;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CommitGraphRow {
@@ -185,9 +188,14 @@ impl RepositoryView {
         let time = commit_time_label(commit.time);
         let ref_labels = commit_ref_labels(&commit.refs);
         let hidden_ref_count = commit.refs.len().saturating_sub(3);
+        let unpushed = self
+            .branch_sync_status
+            .as_ref()
+            .is_some_and(|status| status.unpushed_oids.iter().any(|oid| oid == &commit.oid));
 
         div()
             .id(format!("commit-{}", commit.short_oid))
+            .relative()
             .flex()
             .flex_none()
             .w_full()
@@ -201,16 +209,33 @@ impl RepositoryView {
             .cursor_pointer()
             .bg(if selected {
                 rgb(COLOR_ROW_SELECTED)
+            } else if unpushed {
+                rgb(COLOR_UNPUSHED_BG)
             } else {
                 rgb(COLOR_SURFACE)
             })
             .border_1()
             .border_color(if selected {
                 rgb(COLOR_BORDER_STRONG)
+            } else if unpushed {
+                rgb(COLOR_UNPUSHED_BORDER)
             } else {
                 rgb(COLOR_BORDER)
             })
             .hover(|this| this.bg(rgb(COLOR_BLUE_SOFT)))
+            .when(unpushed, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .left(px(0.0))
+                        .top(px(8.0))
+                        .bottom(px(8.0))
+                        .flex_none()
+                        .w(px(3.0))
+                        .rounded_sm()
+                        .bg(rgb(COLOR_UNPUSHED_BORDER)),
+                )
+            })
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 this.select_history_commit(oid.clone());
                 cx.notify();
@@ -264,6 +289,21 @@ impl RepositoryView {
                     .children(ref_labels)
                     .when(hidden_ref_count > 0, |this| {
                         this.child(commit_ref_overflow_label(hidden_ref_count))
+                    })
+                    .when(unpushed, |this| {
+                        this.child(
+                            div()
+                                .flex_none()
+                                .px_1()
+                                .py(px(1.0))
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(rgb(0xfbbf24))
+                                .bg(rgb(0xfff7d6))
+                                .text_size(px(10.0))
+                                .text_color(rgb(COLOR_UNPUSHED_TEXT))
+                                .child("未推送"),
+                        )
                     }),
             )
             .child(author_avatar(&author))
