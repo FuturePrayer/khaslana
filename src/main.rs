@@ -3,12 +3,13 @@
 mod conflicts;
 mod history_view;
 mod sidebar_view;
+mod text_input;
 mod ui_helpers;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs;
-use std::ops::{Deref, DerefMut};
+use std::ops::{Deref, DerefMut, Range};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -19,10 +20,10 @@ use directories::ProjectDirs;
 use git2::Repository;
 use gpui::{
     App, Application, Bounds, ClipboardItem, Context, CursorStyle, FocusHandle, Focusable,
-    KeyDownEvent, ListHorizontalSizingBehavior, ListSizingBehavior, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ScrollHandle, SharedString, TitlebarOptions,
-    UniformListScrollHandle, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div, point,
-    prelude::*, px, rgb, rgba, size, uniform_list,
+    KeyBinding, KeyDownEvent, ListHorizontalSizingBehavior, ListSizingBehavior, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollHandle, TitlebarOptions,
+    UTF16Selection, UniformListScrollHandle, WeakEntity, Window, WindowBounds, WindowOptions,
+    actions, canvas, div, point, prelude::*, px, rgb, rgba, size, uniform_list,
 };
 use khaslana::{
     BranchKind, BranchName, CommitFileChange, CommitInfo, CommitMessage, CredentialProvider,
@@ -35,7 +36,26 @@ use khaslana::{
     test_credential_connection,
 };
 use serde::{Deserialize, Serialize};
+use text_input::{SingleLineInputElement, TextFieldState};
 use ui_helpers::*;
+
+actions!(
+    text_input,
+    [
+        TextBackspace,
+        TextDelete,
+        TextLeft,
+        TextRight,
+        TextSelectLeft,
+        TextSelectRight,
+        TextSelectAll,
+        TextHome,
+        TextEnd,
+        TextPaste,
+        TextCopy,
+        TextCut,
+    ]
+);
 
 const DEFAULT_SIDEBAR_WIDTH: f32 = 330.0;
 const DEFAULT_CHANGES_WIDTH: f32 = 330.0;
@@ -81,256 +101,6 @@ enum FieldId {
     CredentialPassphrase,
     CredentialRemoteUrl,
     CredentialDisplayName,
-}
-
-#[derive(Clone, Debug)]
-struct TextEditState {
-    value: String,
-    secret: bool,
-    caret: usize,
-    selection_anchor: Option<usize>,
-}
-
-impl TextEditState {
-    fn new() -> Self {
-        Self {
-            value: String::new(),
-            secret: false,
-            caret: 0,
-            selection_anchor: None,
-        }
-    }
-
-    #[cfg(test)]
-    fn for_test(value: &str, secret: bool) -> Self {
-        Self {
-            value: value.to_string(),
-            secret,
-            caret: value.len(),
-            selection_anchor: None,
-        }
-    }
-
-    fn set_value(&mut self, value: impl Into<String>) {
-        self.value = value.into();
-        self.caret = self.value.len();
-        self.selection_anchor = None;
-    }
-
-    fn clear(&mut self) {
-        self.value.clear();
-        self.caret = 0;
-        self.selection_anchor = None;
-    }
-
-    fn display_text(&self) -> String {
-        if self.secret {
-            "*".repeat(self.value.chars().count())
-        } else {
-            self.value.clone()
-        }
-    }
-
-    fn display_byte_for_value_byte(&self, value_byte: usize) -> usize {
-        if self.secret {
-            self.value[..value_byte].chars().count()
-        } else {
-            value_byte
-        }
-    }
-
-    fn selected_range(&self) -> Option<std::ops::Range<usize>> {
-        let anchor = self.selection_anchor?;
-        if anchor == self.caret {
-            None
-        } else if anchor < self.caret {
-            Some(anchor..self.caret)
-        } else {
-            Some(self.caret..anchor)
-        }
-    }
-
-    fn selected_text(&self) -> Option<String> {
-        self.selected_range()
-            .map(|range| self.value[range].to_string())
-    }
-
-    fn copyable_selected_text(&self) -> Option<String> {
-        (!self.secret).then(|| self.selected_text()).flatten()
-    }
-
-    fn select_all(&mut self) {
-        self.caret = self.value.len();
-        self.selection_anchor = Some(0);
-    }
-
-    fn delete_selection(&mut self) -> bool {
-        let Some(range) = self.selected_range() else {
-            return false;
-        };
-        let start = range.start;
-        self.value.replace_range(range, "");
-        self.caret = start;
-        self.selection_anchor = None;
-        true
-    }
-
-    fn insert_text(&mut self, text: &str, multiline: bool) {
-        self.delete_selection();
-        let text = if multiline {
-            text.to_string()
-        } else {
-            text.replace(['\r', '\n'], "")
-        };
-        self.value.insert_str(self.caret, &text);
-        self.caret += text.len();
-        self.selection_anchor = None;
-    }
-
-    fn delete_backward(&mut self) {
-        if self.delete_selection() || self.caret == 0 {
-            return;
-        }
-        let previous = self.value[..self.caret]
-            .char_indices()
-            .last()
-            .map(|(index, _)| index)
-            .unwrap_or(0);
-        self.value.replace_range(previous..self.caret, "");
-        self.caret = previous;
-    }
-
-    fn delete_forward(&mut self) {
-        if self.delete_selection() || self.caret >= self.value.len() {
-            return;
-        }
-        let next = self.value[self.caret..]
-            .char_indices()
-            .nth(1)
-            .map(|(index, _)| self.caret + index)
-            .unwrap_or(self.value.len());
-        self.value.replace_range(self.caret..next, "");
-    }
-
-    fn move_caret_to(&mut self, position: usize, extend_selection: bool) {
-        let position = clamp_to_char_boundary(&self.value, position);
-        if extend_selection {
-            if self.selection_anchor.is_none() {
-                self.selection_anchor = Some(self.caret);
-            }
-        } else {
-            self.selection_anchor = None;
-        }
-        self.caret = position;
-    }
-
-    fn move_left(&mut self, extend_selection: bool) {
-        if !extend_selection && let Some(range) = self.selected_range() {
-            self.move_caret_to(range.start, false);
-            return;
-        }
-        let previous = self.value[..self.caret]
-            .char_indices()
-            .last()
-            .map(|(index, _)| index)
-            .unwrap_or(0);
-        self.move_caret_to(previous, extend_selection);
-    }
-
-    fn move_right(&mut self, extend_selection: bool) {
-        if !extend_selection && let Some(range) = self.selected_range() {
-            self.move_caret_to(range.end, false);
-            return;
-        }
-        let next = self.value[self.caret..]
-            .char_indices()
-            .nth(1)
-            .map(|(index, _)| self.caret + index)
-            .unwrap_or(self.value.len());
-        self.move_caret_to(next, extend_selection);
-    }
-
-    fn byte_for_approx_x(&self, x: f32) -> usize {
-        let mut width = 0.0;
-        let mut previous = 0;
-        for (index, ch) in self.value.char_indices() {
-            let char_width = approx_input_char_width(ch);
-            if x < width + char_width / 2.0 {
-                return index;
-            }
-            width += char_width;
-            previous = index + ch.len_utf8();
-        }
-        previous
-    }
-}
-
-#[derive(Clone, Debug)]
-struct TextFieldState {
-    focus: FocusHandle,
-    placeholder: SharedString,
-    edit: TextEditState,
-}
-
-impl TextFieldState {
-    fn new(cx: &mut Context<RepositoryView>, placeholder: impl Into<SharedString>) -> Self {
-        Self {
-            focus: cx.focus_handle().tab_stop(true),
-            placeholder: placeholder.into(),
-            edit: TextEditState::new(),
-        }
-    }
-
-    fn secret(mut self) -> Self {
-        self.edit.secret = true;
-        self
-    }
-}
-
-impl Deref for TextFieldState {
-    type Target = TextEditState;
-
-    fn deref(&self) -> &Self::Target {
-        &self.edit
-    }
-}
-
-impl DerefMut for TextFieldState {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.edit
-    }
-}
-
-fn clamp_to_char_boundary(value: &str, mut position: usize) -> usize {
-    position = position.min(value.len());
-    while position > 0 && !value.is_char_boundary(position) {
-        position -= 1;
-    }
-    position
-}
-
-fn approx_input_char_width(ch: char) -> f32 {
-    if ch == '\t' {
-        28.0
-    } else if ch.is_ascii() {
-        7.0
-    } else if ch_width_is_wide(ch) {
-        14.0
-    } else {
-        8.5
-    }
-}
-
-fn ch_width_is_wide(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x1100..=0x11FF
-            | 0x2E80..=0xA4CF
-            | 0xAC00..=0xD7AF
-            | 0xF900..=0xFAFF
-            | 0xFE10..=0xFE6F
-            | 0xFF00..=0xFFEF
-    )
 }
 
 #[derive(Clone, Debug)]
@@ -2217,8 +1987,47 @@ impl RepositoryView {
     }
 
     fn handle_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(field) = self.focused_field(window, cx) {
-            self.handle_field_key(field, event, window, cx);
+        if self
+            .focused_field(window, cx)
+            .is_some_and(|field| field == FieldId::CommitMessage)
+        {
+            self.handle_field_key(FieldId::CommitMessage, event, window, cx);
+        }
+    }
+
+    fn submit_focused_field(&mut self, field: FieldId) {
+        if matches!(field, FieldId::CommitMessage) {
+            self.commit();
+        } else if matches!(field, FieldId::CloneUrl | FieldId::ClonePath) {
+            if self.active_dialog == Some(DialogState::CloneRepo) {
+                self.clone_repo();
+            }
+        } else if matches!(field, FieldId::BranchName) {
+            if self.active_dialog == Some(DialogState::CreateBranch) {
+                self.create_branch();
+            }
+        } else if matches!(field, FieldId::BranchRename) {
+            if let Some(DialogState::RenameBranch { branch }) = self.active_dialog.clone() {
+                self.rename_branch(branch);
+            }
+        } else if matches!(field, FieldId::RemoteName | FieldId::RemoteUrl) {
+            if let Some(DialogState::RemoteForm { editing }) = self.active_dialog.clone() {
+                self.save_remote(editing);
+            }
+        } else if matches!(
+            field,
+            FieldId::CredentialSecret
+                | FieldId::CredentialPassphrase
+                | FieldId::CredentialUsername
+                | FieldId::CredentialKeyPath
+                | FieldId::CredentialRemoteUrl
+                | FieldId::CredentialDisplayName
+        ) {
+            if matches!(self.active_dialog, Some(DialogState::CredentialForm { .. })) {
+                self.save_credential_form();
+            } else {
+                self.use_credentials();
+            }
         }
     }
 
@@ -2260,39 +2069,7 @@ impl RepositoryView {
                 cx.notify();
             }
             "enter" => {
-                if matches!(field, FieldId::CommitMessage) {
-                    self.commit();
-                } else if matches!(field, FieldId::CloneUrl | FieldId::ClonePath) {
-                    if self.active_dialog == Some(DialogState::CloneRepo) {
-                        self.clone_repo();
-                    }
-                } else if matches!(field, FieldId::BranchName) {
-                    if self.active_dialog == Some(DialogState::CreateBranch) {
-                        self.create_branch();
-                    }
-                } else if matches!(field, FieldId::BranchRename) {
-                    if let Some(DialogState::RenameBranch { branch }) = self.active_dialog.clone() {
-                        self.rename_branch(branch);
-                    }
-                } else if matches!(field, FieldId::RemoteName | FieldId::RemoteUrl) {
-                    if let Some(DialogState::RemoteForm { editing }) = self.active_dialog.clone() {
-                        self.save_remote(editing);
-                    }
-                } else if matches!(
-                    field,
-                    FieldId::CredentialSecret
-                        | FieldId::CredentialPassphrase
-                        | FieldId::CredentialUsername
-                        | FieldId::CredentialKeyPath
-                        | FieldId::CredentialRemoteUrl
-                        | FieldId::CredentialDisplayName
-                ) {
-                    if matches!(self.active_dialog, Some(DialogState::CredentialForm { .. })) {
-                        self.save_credential_form();
-                    } else {
-                        self.use_credentials();
-                    }
-                }
+                self.submit_focused_field(field);
             }
             _ => {
                 if control {
@@ -2329,6 +2106,116 @@ impl RepositoryView {
     fn push_field_text(&mut self, field: FieldId, text: &str) {
         let multiline = field == FieldId::CommitMessage;
         self.field_mut(field).insert_text(text, multiline);
+    }
+
+    fn focused_single_line_field(&self, window: &Window, cx: &App) -> Option<FieldId> {
+        self.focused_field(window, cx)
+            .filter(|field| *field != FieldId::CommitMessage)
+    }
+
+    fn text_backspace(&mut self, _: &TextBackspace, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(field) = self.focused_single_line_field(window, cx) {
+            self.field_mut(field).delete_backward();
+            cx.notify();
+        }
+    }
+
+    fn text_delete(&mut self, _: &TextDelete, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(field) = self.focused_single_line_field(window, cx) {
+            self.field_mut(field).delete_forward();
+            cx.notify();
+        }
+    }
+
+    fn text_left(&mut self, _: &TextLeft, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(field) = self.focused_single_line_field(window, cx) {
+            self.field_mut(field).move_left(false);
+            cx.notify();
+        }
+    }
+
+    fn text_right(&mut self, _: &TextRight, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(field) = self.focused_single_line_field(window, cx) {
+            self.field_mut(field).move_right(false);
+            cx.notify();
+        }
+    }
+
+    fn text_select_left(
+        &mut self,
+        _: &TextSelectLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(field) = self.focused_single_line_field(window, cx) {
+            self.field_mut(field).move_left(true);
+            cx.notify();
+        }
+    }
+
+    fn text_select_right(
+        &mut self,
+        _: &TextSelectRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(field) = self.focused_single_line_field(window, cx) {
+            self.field_mut(field).move_right(true);
+            cx.notify();
+        }
+    }
+
+    fn text_select_all(&mut self, _: &TextSelectAll, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(field) = self.focused_single_line_field(window, cx) {
+            self.field_mut(field).select_all();
+            cx.notify();
+        }
+    }
+
+    fn text_home(&mut self, _: &TextHome, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(field) = self.focused_single_line_field(window, cx) {
+            self.field_mut(field).move_caret_to(0, false);
+            cx.notify();
+        }
+    }
+
+    fn text_end(&mut self, _: &TextEnd, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(field) = self.focused_single_line_field(window, cx) {
+            let end = self.field(field).value.len();
+            self.field_mut(field).move_caret_to(end, false);
+            cx.notify();
+        }
+    }
+
+    fn text_paste(&mut self, _: &TextPaste, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(field) = self.focused_single_line_field(window, cx) else {
+            return;
+        };
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            self.field_mut(field)
+                .replace_text_in_utf16_range(None, &text);
+            cx.notify();
+        }
+    }
+
+    fn text_copy(&mut self, _: &TextCopy, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(field) = self.focused_single_line_field(window, cx) else {
+            return;
+        };
+        if let Some(text) = self.field(field).copyable_selected_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    fn text_cut(&mut self, _: &TextCut, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(field) = self.focused_single_line_field(window, cx) else {
+            return;
+        };
+        if let Some(text) = self.field(field).copyable_selected_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            self.field_mut(field).delete_selection();
+            cx.notify();
+        }
     }
 
     fn focused_field(&self, window: &Window, _cx: &App) -> Option<FieldId> {
@@ -4660,6 +4547,22 @@ impl RepositoryView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        if id != FieldId::CommitMessage {
+            return self
+                .single_line_input(id, compact, window, cx)
+                .into_any_element();
+        }
+        self.legacy_input(id, compact, window, cx)
+            .into_any_element()
+    }
+
+    fn legacy_input(
+        &self,
+        id: FieldId,
+        compact: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let field = self.field(id);
         let focused = field.focus.is_focused(window);
         let empty = field.value.is_empty();
@@ -4747,6 +4650,105 @@ impl RepositoryView {
                 .right(px(0.0))
                 .bottom(px(0.0)),
             )
+    }
+
+    fn single_line_input(
+        &self,
+        id: FieldId,
+        compact: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let field = self.field(id);
+        let focused = field.focus.is_focused(window);
+        div()
+            .id(format!("field-{id:?}"))
+            .relative()
+            .track_focus(&field.focus)
+            .key_context("TextInput")
+            .on_action(cx.listener(Self::text_backspace))
+            .on_action(cx.listener(Self::text_delete))
+            .on_action(cx.listener(Self::text_left))
+            .on_action(cx.listener(Self::text_right))
+            .on_action(cx.listener(Self::text_select_left))
+            .on_action(cx.listener(Self::text_select_right))
+            .on_action(cx.listener(Self::text_select_all))
+            .on_action(cx.listener(Self::text_home))
+            .on_action(cx.listener(Self::text_end))
+            .on_action(cx.listener(Self::text_paste))
+            .on_action(cx.listener(Self::text_copy))
+            .on_action(cx.listener(Self::text_cut))
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _window, cx| {
+                if event.keystroke.key.as_str() == "enter" {
+                    this.submit_focused_field(id);
+                    cx.stop_propagation();
+                }
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    window.focus(&this.field(id).focus);
+                    let position = this.field(id).index_for_mouse_position(event.position);
+                    let field = this.field_mut(id);
+                    field.is_selecting = true;
+                    if event.modifiers.shift {
+                        field.select_to(position);
+                    } else {
+                        field.move_to(position);
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _event, _window, cx| {
+                    this.field_mut(id).is_selecting = false;
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(move |this, _event, _window, cx| {
+                    this.field_mut(id).is_selecting = false;
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(
+                cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
+                    if !this.field(id).is_selecting {
+                        return;
+                    }
+                    let position = this.field(id).index_for_mouse_position(event.position);
+                    this.field_mut(id).select_to(position);
+                    cx.notify();
+                }),
+            )
+            .px_2()
+            .py_1()
+            .min_h(if compact { px(26.0) } else { px(32.0) })
+            .w_full()
+            .flex()
+            .items_center()
+            .rounded_sm()
+            .border_1()
+            .border_color(if focused {
+                rgb(COLOR_BORDER_STRONG)
+            } else {
+                rgb(COLOR_BORDER)
+            })
+            .bg(if focused {
+                rgb(COLOR_BLUE_SOFT)
+            } else {
+                rgb(COLOR_SURFACE)
+            })
+            .text_size(px(12.0))
+            .line_height(px(18.0))
+            .cursor(CursorStyle::IBeam)
+            .child(SingleLineInputElement {
+                field_id: id,
+                entity: cx.entity(),
+            })
     }
 
     fn render_toolbar(&self, _window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -7655,6 +7657,123 @@ impl Focusable for RepositoryView {
     }
 }
 
+impl gpui::EntityInputHandler for RepositoryView {
+    fn text_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let field = self.focused_single_line_field(window, cx)?;
+        let field_state = self.field(field);
+        let range = field_state.range_from_utf16(&range_utf16);
+        adjusted_range.replace(field_state.range_to_utf16(&range));
+        Some(field_state.text_for_utf16_range(&range_utf16))
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        let field = self.focused_single_line_field(window, cx)?;
+        let field_state = self.field(field);
+        Some(UTF16Selection {
+            range: field_state.range_to_utf16(&field_state.input_range()),
+            reversed: field_state.selection_reversed(),
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        let field = self.focused_single_line_field(window, cx)?;
+        let field_state = self.field(field);
+        field_state
+            .marked_range
+            .as_ref()
+            .map(|range| field_state.range_to_utf16(range))
+    }
+
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(field) = self.focused_single_line_field(window, cx) {
+            self.field_mut(field).marked_range = None;
+        }
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(field) = self.focused_single_line_field(window, cx) {
+            self.field_mut(field)
+                .replace_text_in_utf16_range(range_utf16, text);
+            cx.notify();
+        }
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        new_text: &str,
+        new_selected_range_utf16: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(field) = self.focused_single_line_field(window, cx) {
+            self.field_mut(field).replace_and_mark_text_in_utf16_range(
+                range_utf16,
+                new_text,
+                new_selected_range_utf16,
+            );
+            cx.notify();
+        }
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let field = self.focused_single_line_field(window, cx)?;
+        let field_state = self.field(field);
+        let layout = field_state.last_layout.as_ref()?;
+        let range = field_state.range_from_utf16(&range_utf16);
+        let display_range = field_state.display_byte_for_value_byte(range.start)
+            ..field_state.display_byte_for_value_byte(range.end);
+        Some(Bounds::from_corners(
+            point(
+                bounds.left() + layout.x_for_index(display_range.start),
+                bounds.top(),
+            ),
+            point(
+                bounds.left() + layout.x_for_index(display_range.end),
+                bounds.bottom(),
+            ),
+        ))
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        let field = self.focused_single_line_field(window, cx)?;
+        let field_state = self.field(field);
+        Some(field_state.offset_to_utf16(field_state.index_for_mouse_position(position)))
+    }
+}
+
 trait EmptyStringExt {
     fn if_empty_then(self, f: impl FnOnce() -> String) -> String;
 }
@@ -8041,94 +8160,6 @@ mod app_tests {
         );
     }
 
-    #[test]
-    fn text_field_edits_at_utf8_char_boundaries() {
-        let mut field = TextEditState::for_test("ab你cd", false);
-
-        field.move_caret_to(3, false);
-        assert_eq!(field.caret, 2);
-        field.insert_text("X", false);
-        assert_eq!(field.value, "abX你cd");
-
-        field.delete_backward();
-        assert_eq!(field.value, "ab你cd");
-        assert_eq!(field.caret, 2);
-
-        field.move_caret_to("ab你".len(), false);
-        field.delete_backward();
-        assert_eq!(field.value, "abcd");
-        assert_eq!(field.caret, 2);
-
-        field.set_value("ab你cd");
-        field.move_caret_to(2, false);
-        field.delete_forward();
-        assert_eq!(field.value, "abcd");
-        assert_eq!(field.caret, 2);
-    }
-
-    #[test]
-    fn text_field_selection_replace_and_navigation_work() {
-        let mut field = TextEditState::for_test("abcdef", false);
-
-        field.move_caret_to(2, false);
-        field.move_caret_to(5, true);
-        assert_eq!(field.selected_text().as_deref(), Some("cde"));
-
-        field.insert_text("X", false);
-        assert_eq!(field.value, "abXf");
-        assert_eq!(field.caret, 3);
-        assert_eq!(field.selected_range(), None);
-
-        field.select_all();
-        assert_eq!(field.selected_text().as_deref(), Some("abXf"));
-        field.move_left(false);
-        assert_eq!(field.caret, 0);
-        assert_eq!(field.selected_range(), None);
-
-        field.move_right(false);
-        assert_eq!(field.caret, 1);
-    }
-
-    #[test]
-    fn text_field_single_line_paste_strips_newlines() {
-        let mut single_line = TextEditState::for_test("ab", false);
-        single_line.move_caret_to(1, false);
-        single_line.insert_text("x\ny\r\nz", false);
-        assert_eq!(single_line.value, "axyzb");
-
-        let mut multiline = TextEditState::for_test("ab", false);
-        multiline.move_caret_to(1, false);
-        multiline.insert_text("x\ny", true);
-        assert_eq!(multiline.value, "ax\nyb");
-    }
-
-    #[test]
-    fn text_field_secret_display_masks_and_blocks_copyable_text() {
-        let mut field = TextEditState::for_test("密码12", true);
-
-        assert_eq!(field.display_text(), "****");
-        assert_eq!(field.display_byte_for_value_byte("密码".len()), 2);
-
-        field.select_all();
-        assert_eq!(field.selected_text().as_deref(), Some("密码12"));
-        assert_eq!(field.copyable_selected_text(), None);
-
-        field.clear();
-        assert!(field.value.is_empty());
-        assert_eq!(field.caret, 0);
-        assert_eq!(field.selected_range(), None);
-    }
-
-    #[test]
-    fn text_field_click_position_uses_wide_character_widths() {
-        let field = TextEditState::for_test("a你b", false);
-
-        assert_eq!(field.byte_for_approx_x(0.0), 0);
-        assert_eq!(field.byte_for_approx_x(8.0), 1);
-        assert_eq!(field.byte_for_approx_x(18.0), "a你".len());
-        assert_eq!(field.byte_for_approx_x(80.0), "a你b".len());
-    }
-
     fn test_diff(lines: Vec<khaslana::DiffLine>, is_binary: bool) -> FileDiff {
         FileDiff {
             path: "file.txt".to_string(),
@@ -8208,6 +8239,24 @@ fn main() {
 
     Application::new().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1280.0), px(820.0)), cx);
+        cx.bind_keys([
+            KeyBinding::new("backspace", TextBackspace, Some("TextInput")),
+            KeyBinding::new("delete", TextDelete, Some("TextInput")),
+            KeyBinding::new("left", TextLeft, Some("TextInput")),
+            KeyBinding::new("right", TextRight, Some("TextInput")),
+            KeyBinding::new("shift-left", TextSelectLeft, Some("TextInput")),
+            KeyBinding::new("shift-right", TextSelectRight, Some("TextInput")),
+            KeyBinding::new("home", TextHome, Some("TextInput")),
+            KeyBinding::new("end", TextEnd, Some("TextInput")),
+            KeyBinding::new("cmd-a", TextSelectAll, Some("TextInput")),
+            KeyBinding::new("cmd-c", TextCopy, Some("TextInput")),
+            KeyBinding::new("cmd-v", TextPaste, Some("TextInput")),
+            KeyBinding::new("cmd-x", TextCut, Some("TextInput")),
+            KeyBinding::new("ctrl-a", TextSelectAll, Some("TextInput")),
+            KeyBinding::new("ctrl-c", TextCopy, Some("TextInput")),
+            KeyBinding::new("ctrl-v", TextPaste, Some("TextInput")),
+            KeyBinding::new("ctrl-x", TextCut, Some("TextInput")),
+        ]);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
