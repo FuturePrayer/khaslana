@@ -25,8 +25,7 @@ use gpui::{
     prelude::*, px, rgb, rgba, size, uniform_list,
 };
 use khaslana::{
-    BranchKind, BranchName, CommitFileChange, CommitInfo, CommitMessage, MemoryCredentialStore,
-    CredentialProvider,
+    BranchKind, BranchName, CommitFileChange, CommitInfo, CommitMessage, CredentialProvider,
     CredentialRecord, CredentialRequest, CredentialScope, CredentialStore, DiffEncodingChoice,
     DiffLineKind, DiffScope, FileDiff, GitCredential, GitService, HistoryScope,
     KeyringCredentialStore, OperationEvent, ProgressEmitter, RemoteCredentialPolicy, RemoteInfo,
@@ -6237,6 +6236,16 @@ impl RepositoryView {
                     .text_color(rgb(COLOR_TEXT_MUTED))
                     .child(format!("将当前分支重置到该提交。{mode_label}：{mode_help}")),
             )
+            .when(mode == ResetMode::Hard, |this| {
+                this.child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(rgb(0xa03a3a))
+                        .child(
+                            "强制重置会移动当前分支，目标提交之后的已提交代码会从分支历史中移除。确认前请确保目标提交正确。",
+                        ),
+                )
+            })
             .child(
                 div()
                     .flex()
