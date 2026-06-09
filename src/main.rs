@@ -1937,6 +1937,11 @@ impl RepositoryView {
                             .or_else(|| this.repo_path.clone());
                         this.sync_selected_remote(&snapshot);
                         this.change_indexes = ChangeListIndexes::rebuild(&snapshot.changes);
+                        if !snapshot.conflicts.is_empty() {
+                            this.diff = None;
+                            this.diff_headers_expanded = false;
+                            this.reset_uniform_scroll("diff-scroll");
+                        }
                         this.snapshot = Some(snapshot);
                         this.prune_change_selection();
                         this.clear_history();
@@ -3161,14 +3166,31 @@ impl RepositoryView {
             return;
         };
         let service = self.service_for_tab(tab_id);
+        let snapshot_service = service.clone();
         self.spawn_operation_for_tab(Some(tab_id), label, move || {
             let mut repo = Repository::open(path)?;
-            f(service, &mut repo).map(|snapshot| UiEvent::OperationFinished {
-                tab_id: Some(tab_id),
-                message: label.to_string(),
-                snapshot: Some(snapshot),
-                diff: None,
-            })
+            match f(service, &mut repo) {
+                Ok(snapshot) => Ok(UiEvent::OperationFinished {
+                    tab_id: Some(tab_id),
+                    message: label.to_string(),
+                    snapshot: Some(snapshot),
+                    diff: None,
+                }),
+                Err(err) => {
+                    let snapshot = snapshot_service.snapshot_after_operation(&mut repo).ok();
+                    if let Some(snapshot) = snapshot
+                        && !snapshot.conflicts.is_empty()
+                    {
+                        return Ok(UiEvent::OperationFinished {
+                            tab_id: Some(tab_id),
+                            message: conflict_status_message(label, snapshot.conflicts.len()),
+                            snapshot: Some(snapshot),
+                            diff: None,
+                        });
+                    }
+                    Err(err)
+                }
+            }
         });
     }
 
@@ -7583,6 +7605,11 @@ fn conflict_paths(snapshot: Option<&RepositorySnapshot>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn conflict_status_message(label: &str, count: usize) -> String {
+    let operation = label.strip_suffix("完成").unwrap_or("操作");
+    format!("{operation}产生冲突，请在左侧“冲突”区域解决（{count} 个文件）")
+}
+
 fn dedupe_repo_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut seen = BTreeSet::new();
     paths
@@ -7733,6 +7760,18 @@ mod app_tests {
             vec!["a.txt".to_string(), "dir/b.txt".to_string()]
         );
         assert!(conflict_paths(None).is_empty());
+    }
+
+    #[test]
+    fn conflict_status_message_names_operation_and_resolution_area() {
+        assert_eq!(
+            conflict_status_message("合并完成", 2),
+            "合并产生冲突，请在左侧“冲突”区域解决（2 个文件）"
+        );
+        assert_eq!(
+            conflict_status_message("正在同步", 1),
+            "操作产生冲突，请在左侧“冲突”区域解决（1 个文件）"
+        );
     }
 
     #[test]
