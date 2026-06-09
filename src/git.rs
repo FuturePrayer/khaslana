@@ -162,6 +162,10 @@ impl GitService {
         })
     }
 
+    pub fn current_branch(&self, repo: &Repository) -> Option<String> {
+        self.head_name(repo)
+    }
+
     pub fn local_branches(&self, repo: &Repository) -> Result<Vec<BranchInfo>> {
         self.branches_by_type(repo, Some(BranchType::Local))
     }
@@ -404,26 +408,39 @@ impl GitService {
         let head = repo.head()?;
         let branch = head.shorthand().map_err(GitError::from)?.to_string();
         drop(head);
+        self.push_branch(repo, remote, &BranchName::new(branch), true)
+    }
 
+    pub fn push_branch(
+        &self,
+        repo: &mut Repository,
+        remote: &RemoteName,
+        branch: &BranchName,
+        set_upstream: bool,
+    ) -> Result<RepositorySnapshot> {
+        validate_branch_name(&branch.0)?;
+        if repo.find_branch(&branch.0, BranchType::Local).is_err() {
+            return Err(GitError::Message(format!("本地分支不存在：{}", branch.0)));
+        }
         self.progress
-            .emit(OperationEvent::Started(format!("正在推送 {branch}")));
+            .emit(OperationEvent::Started(format!("正在推送 {}", branch.0)));
         let _remote_context = self.set_remote_context(repo, remote);
         let mut remote_handle = repo.find_remote(&remote.0)?;
         let mut options = PushOptions::new();
         options.remote_callbacks(self.remote_callbacks(Some(repo)));
-        let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+        let refspec = format!("refs/heads/{}:refs/heads/{}", branch.0, branch.0);
         let result = remote_handle.push(&[refspec.as_str()], Some(&mut options));
         drop(remote_handle);
         drop(options);
         result?;
 
-        if let Ok(mut local) = repo.find_branch(&branch, BranchType::Local) {
-            let upstream = format!("{}/{}", remote.0, branch);
+        if set_upstream && let Ok(mut local) = repo.find_branch(&branch.0, BranchType::Local) {
+            let upstream = format!("{}/{}", remote.0, branch.0);
             let _ = local.set_upstream(Some(&upstream));
         }
 
         self.progress
-            .emit(OperationEvent::Finished(format!("已推送 {branch}")));
+            .emit(OperationEvent::Finished(format!("已推送 {}", branch.0)));
         self.snapshot_after_operation(repo)
     }
 
@@ -518,10 +535,31 @@ impl GitService {
         repo: &mut Repository,
         branch: &BranchName,
     ) -> Result<RepositorySnapshot> {
+        self.create_branch_from(repo, branch, None, false)
+    }
+
+    pub fn create_branch_from(
+        &self,
+        repo: &mut Repository,
+        branch: &BranchName,
+        from: Option<&BranchName>,
+        checkout: bool,
+    ) -> Result<RepositorySnapshot> {
         validate_branch_name(&branch.0)?;
-        let head = repo.head()?.peel_to_commit()?;
-        repo.branch(&branch.0, &head, false)?;
-        drop(head);
+        if repo.find_branch(&branch.0, BranchType::Local).is_ok() {
+            return Err(GitError::Message(format!("分支名称已存在：{}", branch.0)));
+        }
+        let commit = if let Some(from) = from {
+            self.find_branch_reference(repo, &from.0)?
+                .peel_to_commit()?
+        } else {
+            repo.head()?.peel_to_commit()?
+        };
+        repo.branch(&branch.0, &commit, false)?;
+        drop(commit);
+        if checkout {
+            return self.checkout_branch(repo, branch);
+        }
         self.snapshot_after_operation(repo)
     }
 

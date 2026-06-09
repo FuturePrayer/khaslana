@@ -5,6 +5,7 @@ mod history_view;
 mod sidebar_view;
 mod text_input;
 mod ui_helpers;
+mod workflow_view;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -35,6 +36,7 @@ use khaslana::{
     credential_record_label, credential_record_matches_remote_url, credential_scope_label,
     test_credential_connection,
 };
+use khaslana::{WorkflowDefinition, WorkflowPreview};
 use serde::{Deserialize, Serialize};
 use text_input::{SingleLineInputElement, TextFieldState};
 use ui_helpers::*;
@@ -133,6 +135,7 @@ struct RemoteCredentialBinding {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DialogState {
     CloneRepo,
+    WorkflowRunner,
     CreateBranch,
     RenameBranch {
         branch: String,
@@ -575,7 +578,7 @@ impl RepositoryLoading {
 }
 
 #[derive(Clone, Debug)]
-enum UiEvent {
+pub(crate) enum UiEvent {
     OperationStarted {
         tab_id: Option<RepoTabId>,
         message: String,
@@ -669,11 +672,21 @@ enum UiEvent {
         request: CredentialRequest,
         response_tx: Arc<Mutex<Option<mpsc::Sender<khaslana::Result<Option<GitCredential>>>>>>,
     },
+    WorkflowProgress {
+        tab_id: RepoTabId,
+        message: String,
+    },
+    WorkflowFinished {
+        tab_id: RepoTabId,
+        message: String,
+        snapshot: RepositorySnapshot,
+        log: Vec<String>,
+    },
 }
 
 #[derive(Clone)]
 struct TabProgress {
-    tx: Sender<UiEvent>,
+    pub(crate) tx: Sender<UiEvent>,
     tab_id: RepoTabId,
 }
 
@@ -949,7 +962,7 @@ fn credential_form_mode_for_request(request: &CredentialRequest) -> CredentialFo
     }
 }
 
-fn send_ui_event(tx: &Sender<UiEvent>, event: UiEvent) {
+pub(crate) fn send_ui_event(tx: &Sender<UiEvent>, event: UiEvent) {
     let _ = tx.try_send(event);
 }
 
@@ -976,6 +989,10 @@ pub(crate) struct RepositoryView {
     credential_store: Arc<KeyringCredentialStore>,
     remote_credential_bindings: Arc<Mutex<RemoteCredentialBindings>>,
     credential_records: Vec<CredentialRecord>,
+    pub(crate) workflow_definition: Option<WorkflowDefinition>,
+    pub(crate) workflow_preview: Option<WorkflowPreview>,
+    pub(crate) workflow_file_path: Option<PathBuf>,
+    pub(crate) workflow_log: Vec<String>,
     diff_encoding_preferences: DiffEncodingPreferences,
     tabs: Vec<RepoTabState>,
     active_tab: Option<RepoTabId>,
@@ -1040,6 +1057,10 @@ impl RepositoryView {
             credential_store,
             remote_credential_bindings,
             credential_records: Vec::new(),
+            workflow_definition: None,
+            workflow_preview: None,
+            workflow_file_path: None,
+            workflow_log: Vec::new(),
             diff_encoding_preferences: Self::load_diff_encoding_preferences(),
             tabs: Vec::new(),
             active_tab: None,
@@ -1169,7 +1190,7 @@ impl RepositoryView {
             .set_offset(point(px(0.0), px(0.0)));
     }
 
-    fn active_tab_id(&self) -> Option<RepoTabId> {
+    pub(crate) fn active_tab_id(&self) -> Option<RepoTabId> {
         self.active_tab
     }
 
@@ -1490,7 +1511,7 @@ impl RepositoryView {
         &mut self.fallback_tab
     }
 
-    fn service_for_tab(&self, tab_id: RepoTabId) -> GitService {
+    pub(crate) fn service_for_tab(&self, tab_id: RepoTabId) -> GitService {
         GitService::new(
             Arc::new(TabCredentialProvider::new(
                 self.credential_store.clone(),
@@ -1520,7 +1541,11 @@ impl RepositoryView {
         Some(result)
     }
 
-    fn apply_status_event(&mut self, tab_id: Option<RepoTabId>, f: impl FnOnce(&mut Self)) {
+    pub(crate) fn apply_status_event(
+        &mut self,
+        tab_id: Option<RepoTabId>,
+        f: impl FnOnce(&mut Self),
+    ) {
         if let Some(tab_id) = tab_id {
             let _ = self.with_tab_context(tab_id, f);
         } else {
@@ -1915,6 +1940,46 @@ impl RepositoryView {
                     response_tx,
                 });
                 self.prepare_current_credential_prompt();
+            }
+            UiEvent::WorkflowProgress { tab_id, message } => {
+                self.with_tab_context(tab_id, |this| {
+                    this.status = message.clone();
+                    this.workflow_log.push(message);
+                });
+            }
+            UiEvent::WorkflowFinished {
+                tab_id,
+                message,
+                snapshot,
+                log,
+            } => {
+                let mut full_status_request = None;
+                self.with_tab_context(tab_id, |this| {
+                    this.busy = false;
+                    this.loading = RepositoryLoading::default();
+                    this.status = message;
+                    this.last_error = None;
+                    this.workflow_log = log;
+                    this.repo_path = Some(snapshot.path.clone());
+                    this.sync_selected_remote(&snapshot);
+                    this.change_indexes = ChangeListIndexes::rebuild(&snapshot.changes);
+                    this.snapshot = Some(snapshot);
+                    this.prune_change_selection();
+                    this.diff = None;
+                    this.diff_headers_expanded = false;
+                    this.reset_uniform_scroll("diff-scroll");
+                    this.clear_history();
+                    this.scroll_local_branch_to_current();
+                    this.reload_history_if_active();
+                    full_status_request = this
+                        .repo_path
+                        .clone()
+                        .map(|path| (tab_id, path, this.repository_load_id));
+                    this.loading.status_full = true;
+                });
+                if let Some((tab_id, path, load_id)) = full_status_request {
+                    self.load_full_status_for_tab(tab_id, path, load_id, "变更已补全".to_string());
+                }
             }
         }
         cx.notify();
@@ -2328,7 +2393,7 @@ impl RepositoryView {
         self.encoding_menu_closed_by_capture = None;
     }
 
-    fn close_dialog(&mut self) {
+    pub(crate) fn close_dialog(&mut self) {
         self.active_dialog = None;
         self.credential_context_menu = None;
     }
@@ -4802,6 +4867,12 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.button(
+                        "工作流",
+                        repo_open && !self.busy,
+                        |this, _, _| this.open_workflow_dialog(),
+                        cx,
+                    ))
+                    .child(self.button(
                         "凭据管理",
                         !self.busy,
                         |this, _, _| this.open_credential_manager(),
@@ -6267,6 +6338,7 @@ impl RepositoryView {
 
         let content = match dialog {
             DialogState::CloneRepo => self.render_clone_dialog(window, cx).into_any_element(),
+            DialogState::WorkflowRunner => self.render_workflow_dialog(cx).into_any_element(),
             DialogState::CreateBranch => self
                 .render_create_branch_dialog(window, cx)
                 .into_any_element(),

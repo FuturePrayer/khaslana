@@ -12,6 +12,7 @@ directories = "6"
 encoding_rs = "0.8"
 git2 = { version = "0.21", features = ["https", "ssh"] }
 gpui = { package = "gpui-ce", version = "0.3" }
+json5 = "1"
 keyring = "4"
 keyring-core = "1"
 rfd = "0.17"

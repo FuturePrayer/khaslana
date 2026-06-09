@@ -1,6 +1,7 @@
 pub mod credentials;
 pub mod git;
 pub mod types;
+pub mod workflow;
 
 pub use credentials::{
     CredentialProvider, CredentialRecord, CredentialRequest, CredentialScope, CredentialStore,
@@ -12,3 +13,8 @@ pub use credentials::{
 };
 pub use git::{GitService, NoopProgress, ProgressEmitter};
 pub use types::*;
+pub use workflow::{
+    WorkflowDefinition, WorkflowExecutor, WorkflowPreview, WorkflowPreviewStep,
+    WorkflowProgressEvent, WorkflowRunOptions, WorkflowRunResult, WorkflowStep,
+    parse_workflow_json5,
+};
