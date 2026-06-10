@@ -8323,14 +8323,37 @@ pub(crate) fn clamped_menu_position(
 ) -> (f32, f32) {
     let position_x: f32 = event.position.x.into();
     let position_y: f32 = event.position.y.into();
-    let window_size = window.window_bounds().get_bounds().size;
-    let max_x =
-        (f32::from(window_size.width) - width - MENU_VIEWPORT_MARGIN).max(MENU_VIEWPORT_MARGIN);
-    let max_y =
-        (f32::from(window_size.height) - height - MENU_VIEWPORT_MARGIN).max(MENU_VIEWPORT_MARGIN);
+    let viewport_size = window.viewport_size();
+    context_menu_position(
+        position_x,
+        position_y,
+        f32::from(viewport_size.width),
+        f32::from(viewport_size.height),
+        width,
+        height,
+    )
+}
+
+fn context_menu_position(
+    mouse_x: f32,
+    mouse_y: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+    menu_width: f32,
+    menu_height: f32,
+) -> (f32, f32) {
+    let max_x = (viewport_width - menu_width - MENU_VIEWPORT_MARGIN).max(MENU_VIEWPORT_MARGIN);
+    let max_y = (viewport_height - menu_height - MENU_VIEWPORT_MARGIN).max(MENU_VIEWPORT_MARGIN);
+    let x = if mouse_x + menu_width + MENU_VIEWPORT_MARGIN > viewport_width {
+        mouse_x - menu_width
+    } else {
+        mouse_x
+    };
+    let y = mouse_y;
+
     (
-        position_x.clamp(MENU_VIEWPORT_MARGIN, max_x),
-        position_y.clamp(MENU_VIEWPORT_MARGIN, max_y),
+        x.clamp(MENU_VIEWPORT_MARGIN, max_x),
+        y.clamp(MENU_VIEWPORT_MARGIN, max_y),
     )
 }
 
@@ -8392,6 +8415,46 @@ mod app_tests {
             true,
             false
         ));
+    }
+
+    #[test]
+    fn context_menu_position_opens_from_cursor_when_space_allows() {
+        assert_eq!(
+            context_menu_position(120.0, 160.0, 800.0, 600.0, 170.0, 110.0),
+            (120.0, 160.0)
+        );
+    }
+
+    #[test]
+    fn context_menu_position_flips_left_near_right_edge() {
+        assert_eq!(
+            context_menu_position(760.0, 160.0, 800.0, 600.0, 170.0, 110.0),
+            (590.0, 160.0)
+        );
+    }
+
+    #[test]
+    fn context_menu_position_clamps_to_bottom_near_bottom_edge() {
+        assert_eq!(
+            context_menu_position(120.0, 570.0, 800.0, 600.0, 170.0, 110.0),
+            (120.0, 482.0)
+        );
+    }
+
+    #[test]
+    fn context_menu_position_flips_left_and_clamps_bottom_near_bottom_right() {
+        assert_eq!(
+            context_menu_position(790.0, 590.0, 800.0, 600.0, 170.0, 110.0),
+            (620.0, 482.0)
+        );
+    }
+
+    #[test]
+    fn context_menu_position_uses_viewport_bounds_for_bottom_clamp() {
+        assert_eq!(
+            context_menu_position(280.0, 510.0, 900.0, 540.0, 170.0, 110.0),
+            (280.0, 422.0)
+        );
     }
 
     #[test]
