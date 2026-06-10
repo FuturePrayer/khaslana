@@ -404,7 +404,7 @@ pub(crate) fn segmented_button(id: String, selected: bool, enabled: bool) -> Sta
         .rounded_sm()
         .border_1()
         .border_color(if selected {
-            rgb(theme::SEGMENT_SELECTED_BG)
+            rgb(theme::FOCUS_RING)
         } else {
             rgb(theme::BORDER)
         })
@@ -426,6 +426,7 @@ pub(crate) fn segmented_button(id: String, selected: bool, enabled: bool) -> Sta
         } else {
             gpui::FontWeight::NORMAL
         })
+        .when(selected, |this| this.shadow_sm())
         .when(enabled, |this| this.cursor_pointer())
         .when(!enabled, |this| this.cursor_not_allowed().opacity(0.68))
         .when(enabled, |this| {

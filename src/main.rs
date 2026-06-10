@@ -7479,6 +7479,7 @@ impl RepositoryView {
             .id("dialog-凭据管理")
             .w(px(860.0))
             .max_h(px(620.0))
+            .min_w(px(0.0))
             .p_4()
             .rounded_sm()
             .border_1()
@@ -7539,8 +7540,11 @@ impl RepositoryView {
                 div()
                     .flex()
                     .flex_col()
+                    .w_full()
+                    .min_w(px(0.0))
                     .min_h(px(0.0))
                     .max_h(px(440.0))
+                    .overflow_hidden()
                     .border_1()
                     .border_color(rgb(ui_theme::BORDER))
                     .rounded_sm()
@@ -7558,6 +7562,7 @@ impl RepositoryView {
                             .flex()
                             .flex_col()
                             .flex_1()
+                            .w_full()
                             .gap_0()
                             .min_w(px(0.0))
                             .min_h(px(0.0))
@@ -7690,6 +7695,8 @@ impl RepositoryView {
         div()
             .flex()
             .flex_none()
+            .w_full()
+            .min_w(px(0.0))
             .items_center()
             .gap_2()
             .px_2()
@@ -7701,19 +7708,19 @@ impl RepositoryView {
             .font_weight(gpui::FontWeight::BOLD)
             .text_color(rgb(ui_theme::TEXT_MUTED))
             .child(div().flex_none().w(px(112.0)).truncate().child("名称"))
-            .child(div().flex_none().w(px(106.0)).truncate().child("类型"))
+            .child(div().flex_none().w(px(88.0)).truncate().child("类型"))
             .child(div().flex_none().w(px(64.0)).truncate().child("范围"))
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(120.0))
+                    .min_w(px(0.0))
                     .truncate()
                     .child("站点 / 远端"),
             )
-            .child(div().flex_none().w(px(78.0)).truncate().child("用户名"))
-            .child(div().flex_none().w(px(76.0)).truncate().child("SSH Key"))
-            .child(div().flex_none().w(px(118.0)).truncate().child("更新时间"))
-            .child(div().flex_none().w(px(100.0)).truncate().child("操作"))
+            .child(div().flex_none().w(px(72.0)).truncate().child("用户名"))
+            .child(div().flex_none().w(px(68.0)).truncate().child("SSH Key"))
+            .child(div().flex_none().w(px(108.0)).truncate().child("更新时间"))
+            .child(div().flex_none().w(px(112.0)).truncate().child("操作"))
     }
 
     fn credential_record_row(
@@ -7734,6 +7741,8 @@ impl RepositoryView {
             .id(format!("credential-record-{}", record.id))
             .flex()
             .flex_none()
+            .w_full()
+            .min_w(px(0.0))
             .items_center()
             .gap_2()
             .px_2()
@@ -7768,7 +7777,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(106.0))
+                    .w(px(88.0))
                     .text_color(rgb(ui_theme::TEXT))
                     .truncate()
                     .child(credential_kind_label(record.kind)),
@@ -7784,7 +7793,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(120.0))
+                    .min_w(px(0.0))
                     .text_color(rgb(ui_theme::TEXT))
                     .truncate()
                     .child(target),
@@ -7792,7 +7801,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(78.0))
+                    .w(px(72.0))
                     .text_color(rgb(ui_theme::TEXT_MUTED))
                     .truncate()
                     .child(record.username),
@@ -7800,7 +7809,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(76.0))
+                    .w(px(68.0))
                     .text_color(rgb(ui_theme::TEXT_MUTED))
                     .truncate()
                     .child(key_file),
@@ -7808,7 +7817,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(118.0))
+                    .w(px(108.0))
                     .text_color(rgb(ui_theme::TEXT_MUTED))
                     .truncate()
                     .child(timestamp_label(record.updated_at)),
@@ -7816,8 +7825,9 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(100.0))
+                    .w(px(112.0))
                     .flex()
+                    .justify_end()
                     .gap_1()
                     .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                         cx.stop_propagation();
