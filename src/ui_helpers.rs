@@ -3,7 +3,7 @@ use gpui::{
     Pixels, Point, ScrollHandle, SharedString, UniformListScrollHandle, Window, canvas, div, fill,
     point, prelude::*, px, rgb, rgba,
 };
-use khaslana::{DiffLineKind, DiffScope};
+use khaslana::{ChangeState, DiffLineKind, DiffScope};
 
 use crate::{DiffHeaderTarget, RepositoryView, ui::theme as ui_theme};
 
@@ -716,6 +716,17 @@ pub(crate) fn diff_scope_id(scope: &DiffScope) -> &'static str {
     }
 }
 
+pub(crate) fn change_state_color(state: &ChangeState) -> u32 {
+    match state {
+        ChangeState::Added => ui_theme::SUCCESS,
+        ChangeState::Modified => ui_theme::WARNING_ACCENT_TEXT,
+        ChangeState::Deleted | ChangeState::Conflicted => ui_theme::DANGER_STRONG,
+        ChangeState::Renamed => ui_theme::ACCENT_STRONG,
+        ChangeState::Typechange => ui_theme::TYPECHANGE,
+        ChangeState::Untracked => ui_theme::TEXT_FAINT,
+    }
+}
+
 pub(crate) fn context_menu_item(
     label: &'static str,
     enabled: bool,
@@ -845,4 +856,30 @@ fn diff_lineno(line: String) -> impl IntoElement {
         .text_color(rgb(COLOR_TEXT_FAINT))
         .bg(rgb(COLOR_HEADER_BG))
         .child(line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn change_state_color_uses_semantic_status_colors() {
+        assert_eq!(change_state_color(&ChangeState::Added), ui_theme::SUCCESS);
+        assert_eq!(
+            change_state_color(&ChangeState::Modified),
+            ui_theme::WARNING_ACCENT_TEXT
+        );
+        assert_eq!(
+            change_state_color(&ChangeState::Deleted),
+            ui_theme::DANGER_STRONG
+        );
+        assert_eq!(
+            change_state_color(&ChangeState::Conflicted),
+            ui_theme::DANGER_STRONG
+        );
+        assert_eq!(
+            change_state_color(&ChangeState::Untracked),
+            ui_theme::TEXT_FAINT
+        );
+    }
 }

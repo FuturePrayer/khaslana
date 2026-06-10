@@ -43,6 +43,7 @@ pub(crate) const WARNING_TEXT: u32 = 0x92400e;
 pub(crate) const WARNING_HOVER: u32 = 0xfff0d1;
 pub(crate) const WARNING_ACCENT_TEXT: u32 = 0xa15c00;
 pub(crate) const WARNING_BADGE_BG: u32 = 0xfff2d9;
+pub(crate) const TYPECHANGE: u32 = 0x7c3aed;
 pub(crate) const BADGE_BG: u32 = 0x2563eb;
 pub(crate) const BADGE_BORDER: u32 = 0xdbeafe;
 pub(crate) const TOOLTIP_BG: u32 = 0x111827;
