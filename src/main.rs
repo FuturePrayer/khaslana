@@ -25,7 +25,7 @@ use gpui::{
     KeyBinding, KeyDownEvent, ListHorizontalSizingBehavior, ListSizingBehavior, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollHandle, TitlebarOptions,
     UTF16Selection, UniformListScrollHandle, WeakEntity, Window, WindowBounds, WindowOptions,
-    actions, canvas, div, point, prelude::*, px, rgb, size, uniform_list,
+    actions, canvas, div, point, prelude::*, px, rgb, rgba, size, uniform_list,
 };
 use khaslana::{
     BranchKind, BranchName, BranchSyncStatus, CommitFileChange, CommitInfo, CommitMessage,
@@ -42,10 +42,11 @@ use serde::{Deserialize, Serialize};
 use text_input::{MultiLineInputElement, SingleLineInputElement, TextFieldState};
 use ui::{
     components::{
-        AppToastKind, FeedbackMessage, InputFrameSize, app_panel, bottom_progress_bar,
-        danger_callout, dialog_actions, dialog_overlay, dialog_panel as ui_dialog_panel,
-        feedback_bubble, feedback_stack, inline_error_bubble, input_frame, list_row_surface,
-        operation_loading_bar, segmented_button, status_pill, toggle_box,
+        AppToastKind, FeedbackMessage, InputFrameSize, app_panel, app_shell_surface,
+        bottom_progress_bar, danger_callout, dialog_actions, dialog_overlay,
+        dialog_panel as ui_dialog_panel, feedback_bubble, feedback_stack, glass_menu, hero_toolbar,
+        inline_error_bubble, input_frame, list_row_surface, operation_loading_bar,
+        segmented_button, status_pill, toggle_box,
     },
     theme as ui_theme,
 };
@@ -5125,22 +5126,20 @@ impl RepositoryView {
             .branch_sync_status
             .as_ref()
             .and_then(|status| (status.ahead > 0).then_some(status.ahead));
-        div()
+        hero_toolbar()
             .id("repo-tab-bar")
             .flex()
             .items_center()
             .justify_between()
             .gap_3()
-            .px_3()
-            .py_2()
-            .border_b_1()
-            .border_color(rgb(ui_theme::BORDER_MUTED))
-            .bg(rgb(ui_theme::CHROME_BG))
+            .px_4()
+            .py_3()
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
+                    .relative()
                     .child(self.button("打开仓库", !self.busy, |this, _, _| this.browse_open(), cx))
                     .child(self.button(
                         "克隆仓库",
@@ -5188,9 +5187,16 @@ impl RepositoryView {
                     ))
                     .child(
                         div()
-                            .ml_2()
+                            .ml_3()
+                            .px_3()
+                            .py_1()
+                            .rounded_full()
+                            .border_1()
+                            .border_color(rgb(ui_theme::GLASS_BORDER))
+                            .bg(rgba(ui_theme::GLASS_BG))
                             .text_size(px(12.0))
-                            .text_color(rgb(ui_theme::ACCENT_STRONG))
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(rgb(ui_theme::TEXT))
                             .child(
                                 self.repo_path
                                     .as_ref()
@@ -5205,6 +5211,7 @@ impl RepositoryView {
                     .flex_none()
                     .items_center()
                     .gap_1()
+                    .relative()
                     .child(self.mode_button("工作区", MainMode::Worktree, cx))
                     .child(self.mode_button("提交记录", MainMode::History, cx)),
             )
@@ -5226,8 +5233,8 @@ impl RepositoryView {
             .px_2()
             .py_1()
             .border_b_1()
-            .border_color(rgb(ui_theme::BORDER_MUTED))
-            .bg(rgb(ui_theme::CHROME_MUTED))
+            .border_color(rgb(ui_theme::GLASS_BORDER))
+            .bg(rgba(ui_theme::GLASS_BG))
             .overflow_x_scroll()
             .track_scroll(&handle)
             .children(
@@ -5272,7 +5279,7 @@ impl RepositoryView {
             .rounded_sm()
             .border_1()
             .border_color(if selected {
-                rgb(ui_theme::BORDER_STRONG)
+                rgb(ui_theme::ROW_SELECTED_BORDER)
             } else {
                 rgb(ui_theme::BORDER)
             })
@@ -5286,7 +5293,7 @@ impl RepositoryView {
                 if selected {
                     this.bg(rgb(ui_theme::SURFACE))
                 } else {
-                    this.bg(rgb(ui_theme::ACCENT_SOFT))
+                    this.bg(rgb(ui_theme::ACCENT_VIVID_SOFT))
                 }
             })
             .on_click(cx.listener(move |this, _event, _window, cx| {
@@ -5312,7 +5319,11 @@ impl RepositoryView {
                     .flex_none()
                     .px_1()
                     .text_size(px(12.0))
-                    .text_color(rgb(ui_theme::TEXT_FAINT))
+                    .text_color(if selected {
+                        rgb(ui_theme::TEXT_FAINT)
+                    } else {
+                        rgb(ui_theme::TEXT_FAINT)
+                    })
                     .cursor_pointer()
                     .hover(|this| this.text_color(rgb(ui_theme::DANGER_TEXT)))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
@@ -5332,20 +5343,11 @@ impl RepositoryView {
             return div().into_any_element();
         };
 
-        div()
+        glass_menu()
             .absolute()
             .left(px(menu.x))
             .top(px(menu.y))
             .w(px(TAG_MENU_WIDTH))
-            .py_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(rgb(ui_theme::BORDER_STRONG))
-            .bg(rgb(ui_theme::SURFACE))
-            .shadow_lg()
-            .flex()
-            .flex_col()
-            .text_size(px(12.0))
             .child(context_menu_item(
                 "检出标签",
                 !self.busy,
@@ -5363,20 +5365,11 @@ impl RepositoryView {
             return div().into_any_element();
         };
 
-        div()
+        glass_menu()
             .absolute()
             .left(px(menu.x))
             .top(px(menu.y))
             .w(px(STASH_MENU_WIDTH))
-            .py_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(rgb(ui_theme::BORDER_STRONG))
-            .bg(rgb(ui_theme::SURFACE))
-            .shadow_lg()
-            .flex()
-            .flex_col()
-            .text_size(px(12.0))
             .child(context_menu_item(
                 "应用贮藏",
                 !self.busy,
@@ -5407,20 +5400,11 @@ impl RepositoryView {
         let all_paths = self.change_paths(menu.scope.clone());
         let all_count = all_paths.len();
 
-        let mut menu_el = div()
+        let mut menu_el = glass_menu()
             .absolute()
             .left(px(menu.x))
             .top(px(menu.y))
             .w(px(CHANGE_MENU_WIDTH))
-            .py_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(rgb(ui_theme::BORDER_STRONG))
-            .bg(rgb(ui_theme::SURFACE))
-            .shadow_lg()
-            .flex()
-            .flex_col()
-            .text_size(px(12.0))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event, _window, cx| {
@@ -5571,20 +5555,11 @@ impl RepositoryView {
         };
         let can_revert = !self.busy && menu.parent_count <= 1;
 
-        div()
+        glass_menu()
             .absolute()
             .left(px(menu.x))
             .top(px(menu.y))
             .w(px(COMMIT_MENU_WIDTH))
-            .py_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(rgb(ui_theme::BORDER_STRONG))
-            .bg(rgb(ui_theme::SURFACE))
-            .shadow_lg()
-            .flex()
-            .flex_col()
-            .text_size(px(12.0))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event, _window, cx| {
@@ -5692,20 +5667,11 @@ impl RepositoryView {
         let username = Some(record.username.clone());
         let key_path = record.key_path.clone();
 
-        div()
+        glass_menu()
             .absolute()
             .left(px(menu.x))
             .top(px(menu.y))
             .w(px(CREDENTIAL_MENU_WIDTH))
-            .py_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(rgb(ui_theme::BORDER_STRONG))
-            .bg(rgb(ui_theme::SURFACE))
-            .shadow_lg()
-            .flex()
-            .flex_col()
-            .text_size(px(12.0))
             .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                 cx.stop_propagation();
             })
@@ -5743,10 +5709,10 @@ impl RepositoryView {
             } else {
                 rgb(ui_theme::TEXT_FAINT)
             })
-            .bg(rgb(ui_theme::SURFACE))
+            .bg(rgba(ui_theme::GLASS_BG))
             .when(enabled, |this| {
                 this.cursor_pointer()
-                    .hover(|this| this.bg(rgb(ui_theme::ACCENT_SOFT)))
+                    .hover(|this| this.bg(rgb(ui_theme::ACCENT_VIVID_SOFT)))
             })
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 cx.stop_propagation();
@@ -5764,9 +5730,9 @@ impl RepositoryView {
             .px_3()
             .py_1()
             .text_color(rgb(ui_theme::TEXT))
-            .bg(rgb(ui_theme::SURFACE))
+            .bg(rgba(ui_theme::GLASS_BG))
             .cursor_pointer()
-            .hover(|this| this.bg(rgb(ui_theme::ACCENT_SOFT)))
+            .hover(|this| this.bg(rgb(ui_theme::ACCENT_VIVID_SOFT)))
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 cx.stop_propagation();
                 this.copy_commit_sha(oid.clone(), cx);
@@ -5795,20 +5761,11 @@ impl RepositoryView {
             EncodingMenuTarget::History => "提交差异编码",
         };
 
-        div()
+        glass_menu()
             .absolute()
             .top(px(38.0))
             .right(px(12.0))
             .w(px(ENCODING_MENU_WIDTH))
-            .rounded_sm()
-            .border_1()
-            .border_color(rgb(ui_theme::BORDER_STRONG))
-            .bg(rgb(ui_theme::SURFACE))
-            .shadow_lg()
-            .flex()
-            .flex_col()
-            .text_size(px(12.0))
-            .occlude()
             .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                 cx.stop_propagation();
             })
@@ -6288,7 +6245,7 @@ impl RepositoryView {
             .p_2()
             .font_family("Consolas, monospace")
             .text_size(px(12.0))
-            .bg(rgb(ui_theme::PANEL_BG))
+            .bg(rgb(ui_theme::SURFACE))
             .child(
                 uniform_list(
                     scroll_id,
@@ -6399,14 +6356,14 @@ impl RepositoryView {
             .px_3()
             .py_2()
             .border_b_1()
-            .border_color(rgb(ui_theme::BORDER))
+            .border_color(rgb(ui_theme::BORDER_MUTED))
             .bg(rgb(ui_theme::HEADER_BG))
             .child(
                 div()
                     .min_w(px(0.0))
                     .text_size(px(12.0))
                     .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(rgb(ui_theme::TEXT))
+                    .text_color(rgb(ui_theme::ACCENT_STRONG))
                     .truncate()
                     .child(title),
             )
@@ -6435,11 +6392,11 @@ impl RepositoryView {
             .rounded_sm()
             .border_1()
             .border_color(rgb(ui_theme::BORDER))
-            .bg(rgb(ui_theme::SURFACE))
+            .bg(rgba(ui_theme::GLASS_BG))
             .text_color(rgb(ui_theme::TEXT_MUTED))
             .text_size(px(11.0))
             .cursor_pointer()
-            .hover(|this| this.bg(rgb(ui_theme::ACCENT_SOFT)))
+            .hover(|this| this.bg(rgb(ui_theme::ACCENT_VIVID_SOFT)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
@@ -6460,8 +6417,8 @@ impl RepositoryView {
             .gap_2()
             .p_3()
             .border_t_1()
-            .border_color(rgb(ui_theme::BORDER))
-            .bg(rgb(ui_theme::PANEL_BG))
+            .border_color(rgb(ui_theme::BORDER_MUTED))
+            .bg(rgba(ui_theme::GLASS_BG))
             .child(self.input(FieldId::CommitMessage, false, window, cx))
             .child(
                 div()
@@ -6505,8 +6462,8 @@ impl RepositoryView {
             .px_3()
             .py_2()
             .border_t_1()
-            .border_color(rgb(ui_theme::BORDER_MUTED))
-            .bg(rgb(ui_theme::CHROME_BG))
+            .border_color(rgb(ui_theme::GLASS_BORDER))
+            .bg(rgba(ui_theme::GLASS_BG))
             .text_size(px(12.0))
             .child(status_pill(status_label, self.busy))
             .child(
@@ -6584,8 +6541,8 @@ impl RepositoryView {
             .p_3()
             .rounded_sm()
             .border_1()
-            .border_color(rgb(ui_theme::BORDER_STRONG))
-            .bg(rgb(ui_theme::SURFACE))
+            .border_color(rgb(ui_theme::GLASS_BORDER))
+            .bg(rgba(ui_theme::GLASS_BG_STRONG))
             .shadow_lg()
             .flex()
             .flex_col()
@@ -7004,8 +6961,8 @@ impl RepositoryView {
             .p_4()
             .rounded_sm()
             .border_1()
-            .border_color(rgb(ui_theme::BORDER_STRONG))
-            .bg(rgb(ui_theme::SURFACE))
+            .border_color(rgb(ui_theme::GLASS_BORDER))
+            .bg(rgba(ui_theme::GLASS_BG_STRONG))
             .shadow_lg()
             .flex()
             .flex_col()
@@ -7148,8 +7105,8 @@ impl RepositoryView {
             .border_b_1()
             .border_color(rgb(ui_theme::BORDER))
             .text_size(px(12.0))
-            .bg(rgb(ui_theme::SURFACE))
-            .hover(|this| this.bg(rgb(ui_theme::ACCENT_SOFT)))
+            .bg(rgba(ui_theme::GLASS_BG))
+            .hover(|this| this.bg(rgb(ui_theme::ACCENT_VIVID_SOFT)))
             .child(
                 div()
                     .flex_none()
@@ -7308,7 +7265,7 @@ impl RepositoryView {
             .border_1()
             .border_color(rgb(ui_theme::BORDER))
             .rounded_sm()
-            .bg(rgb(ui_theme::SURFACE))
+            .bg(rgba(ui_theme::GLASS_BG))
             .children(rows)
     }
 
@@ -7525,8 +7482,8 @@ impl RepositoryView {
             .p_4()
             .rounded_sm()
             .border_1()
-            .border_color(rgb(ui_theme::BORDER_STRONG))
-            .bg(rgb(ui_theme::SURFACE))
+            .border_color(rgb(ui_theme::GLASS_BORDER))
+            .bg(rgba(ui_theme::GLASS_BG_STRONG))
             .shadow_lg()
             .flex()
             .flex_col()
@@ -7784,9 +7741,9 @@ impl RepositoryView {
             .border_b_1()
             .border_color(rgb(ui_theme::BORDER))
             .text_size(px(12.0))
-            .bg(rgb(ui_theme::SURFACE))
+            .bg(rgba(ui_theme::GLASS_BG))
             .cursor_pointer()
-            .hover(|this| this.bg(rgb(ui_theme::ACCENT_SOFT)))
+            .hover(|this| this.bg(rgb(ui_theme::ACCENT_VIVID_SOFT)))
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 this.open_credential_details(detail_id.clone());
                 cx.notify();
@@ -7957,12 +7914,10 @@ impl Render for RepositoryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.drain_pending_events(cx);
 
-        div()
-            .size_full()
+        app_shell_surface()
             .relative()
             .flex()
             .flex_col()
-            .bg(rgb(ui_theme::APP_BG))
             .text_color(rgb(ui_theme::TEXT))
             .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _window, cx| {
                 this.encoding_menu_closed_by_capture = None;

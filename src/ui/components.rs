@@ -147,8 +147,8 @@ fn app_button_palette(tone: ButtonTone, enabled: bool) -> ButtonPalette {
 
     match tone {
         ButtonTone::Neutral => ButtonPalette {
-            bg: theme::SURFACE,
-            hover_bg: theme::ACCENT_SOFT,
+            bg: theme::SURFACE_MUTED,
+            hover_bg: theme::ACCENT_VIVID_SOFT,
             fg: theme::TEXT,
             border: theme::BORDER,
         },
@@ -156,7 +156,7 @@ fn app_button_palette(tone: ButtonTone, enabled: bool) -> ButtonPalette {
             bg: theme::ACCENT,
             hover_bg: theme::ACCENT_STRONG,
             fg: theme::SURFACE,
-            border: theme::ACCENT_STRONG,
+            border: theme::ACCENT,
         },
         ButtonTone::Danger => ButtonPalette {
             bg: theme::DANGER,
@@ -173,7 +173,7 @@ pub(crate) fn section_title(title: &'static str) -> impl IntoElement {
         .px_2()
         .py_2()
         .border_b_1()
-        .border_color(rgb(theme::BORDER))
+        .border_color(rgb(theme::BORDER_MUTED))
         .bg(rgb(theme::HEADER_BG))
         .text_size(px(11.0))
         .font_weight(gpui::FontWeight::BOLD)
@@ -182,11 +182,102 @@ pub(crate) fn section_title(title: &'static str) -> impl IntoElement {
 }
 
 pub(crate) fn app_panel() -> Div {
+    flat_panel()
+}
+
+pub(crate) fn app_shell_surface() -> Div {
+    div()
+        .relative()
+        .size_full()
+        .bg(rgb(theme::APP_BG))
+        .child(
+            div()
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .right(px(0.0))
+                .h(px(148.0))
+                .bg(rgb(theme::APP_BG_ALT)),
+        )
+        .child(
+            div()
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .right(px(0.0))
+                .h(px(1.0))
+                .bg(rgba(theme::GLASS_BORDER)),
+        )
+}
+
+pub(crate) fn hero_toolbar() -> Div {
+    div()
+        .relative()
+        .overflow_hidden()
+        .border_b_1()
+        .border_color(rgb(theme::GLASS_BORDER))
+        .bg(rgba(theme::GLASS_BG_STRONG))
+        .shadow_sm()
+        .child(
+            div()
+                .absolute()
+                .left(px(0.0))
+                .top(px(0.0))
+                .right(px(0.0))
+                .h(px(1.0))
+                .bg(rgba(theme::GLASS_BORDER)),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(0.0))
+                .top(px(0.0))
+                .bottom(px(0.0))
+                .w(px(1.0))
+                .bg(rgba(theme::GLASS_BORDER)),
+        )
+}
+
+pub(crate) fn flat_panel() -> Div {
     div()
         .rounded_sm()
         .border_1()
         .border_color(rgb(theme::BORDER))
         .bg(rgb(theme::PANEL_BG))
+        .shadow_sm()
+}
+
+pub(crate) fn glass_panel() -> Div {
+    div()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(theme::GLASS_BORDER))
+        .bg(rgba(theme::GLASS_BG))
+        .shadow_lg()
+}
+
+pub(crate) fn glass_menu() -> Div {
+    glass_panel()
+        .py_1()
+        .flex()
+        .flex_col()
+        .text_size(px(12.0))
+        .occlude()
+}
+
+pub(crate) fn metric_badge(label: impl Into<gpui::SharedString>, tone: u32) -> impl IntoElement {
+    div()
+        .flex_none()
+        .px_2()
+        .py(px(2.0))
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(tone))
+        .bg(rgba(theme::GLASS_BG))
+        .text_size(px(10.0))
+        .font_weight(gpui::FontWeight::BOLD)
+        .text_color(rgb(tone))
+        .child(label.into())
 }
 
 pub(crate) fn dialog_overlay() -> Div {
@@ -211,8 +302,8 @@ pub(crate) fn dialog_panel(title: &'static str) -> Stateful<Div> {
         .p_4()
         .rounded_sm()
         .border_1()
-        .border_color(rgb(theme::BORDER))
-        .bg(rgb(theme::SURFACE))
+        .border_color(rgb(theme::GLASS_BORDER))
+        .bg(rgba(theme::GLASS_BG_STRONG))
         .shadow_lg()
         .flex()
         .flex_col()
@@ -249,7 +340,7 @@ pub(crate) fn dialog_actions() -> Div {
         .items_center()
         .justify_end()
         .gap_2()
-        .pt_1()
+        .pt_2()
         .border_t_1()
         .border_color(rgb(theme::BORDER_MUTED))
 }
@@ -287,9 +378,9 @@ pub(crate) fn input_frame(id: String, focused: bool, size: InputFrameSize) -> St
             rgb(theme::INPUT_BORDER)
         })
         .bg(if focused {
-            rgb(theme::INPUT_BG_FOCUSED)
+            rgba(theme::INPUT_BG_FOCUSED)
         } else {
-            rgb(theme::INPUT_BG)
+            rgba(theme::INPUT_BG)
         })
         .text_size(px(12.0))
         .line_height(px(18.0))
@@ -313,7 +404,7 @@ pub(crate) fn segmented_button(id: String, selected: bool, enabled: bool) -> Sta
         .rounded_sm()
         .border_1()
         .border_color(if selected {
-            rgb(theme::FOCUS_RING)
+            rgb(theme::SEGMENT_SELECTED_BG)
         } else {
             rgb(theme::BORDER)
         })
@@ -338,7 +429,7 @@ pub(crate) fn segmented_button(id: String, selected: bool, enabled: bool) -> Sta
         .when(enabled, |this| this.cursor_pointer())
         .when(!enabled, |this| this.cursor_not_allowed().opacity(0.68))
         .when(enabled, |this| {
-            this.hover(|this| this.bg(rgb(theme::ROW_HOVER)))
+            this.hover(|this| this.bg(rgb(theme::ACCENT_VIVID_SOFT)))
         })
 }
 
@@ -382,8 +473,9 @@ pub(crate) fn list_row_surface(id: String, selected: bool) -> Stateful<Div> {
         .bg(if selected {
             rgb(theme::ROW_SELECTED)
         } else {
-            rgb(theme::SURFACE)
+            rgba(theme::GLASS_BG)
         })
+        .shadow_sm()
         .hover(|this| this.bg(rgb(theme::ROW_HOVER)))
 }
 
@@ -403,7 +495,7 @@ pub(crate) fn status_pill(label: &'static str, active: bool) -> impl IntoElement
         .bg(if active {
             rgb(theme::ACCENT_SOFT)
         } else {
-            rgb(theme::SURFACE)
+            rgba(theme::GLASS_BG)
         })
         .text_color(if active {
             rgb(theme::ACCENT_STRONG)
@@ -473,10 +565,10 @@ pub(crate) fn feedback_bubble(
         .rounded_sm()
         .border_1()
         .border_color(rgb(border))
-        .bg(rgb(theme::FEEDBACK_BG))
+        .bg(rgba(theme::FEEDBACK_BG))
         .shadow_lg()
         .flex()
-        .gap_2()
+        .gap_3()
         .child(feedback_icon(dot, soft_bg, text))
         .child(
             div()
@@ -529,7 +621,7 @@ pub(crate) fn inline_error_bubble(message: impl Into<gpui::SharedString>) -> imp
         .rounded_full()
         .border_1()
         .border_color(rgb(theme::FEEDBACK_ERROR_BORDER))
-        .bg(rgb(theme::FEEDBACK_ERROR_BG))
+        .bg(rgba(theme::FEEDBACK_BG))
         .text_color(rgb(theme::FEEDBACK_ERROR_TEXT))
         .truncate()
         .child(message.into())
@@ -568,7 +660,7 @@ pub(crate) fn operation_loading_bar(message: impl Into<gpui::SharedString>) -> i
         .rounded_sm()
         .border_1()
         .border_color(rgb(theme::FEEDBACK_INFO_BORDER))
-        .bg(rgb(theme::FEEDBACK_BG))
+        .bg(rgba(theme::FEEDBACK_BG))
         .shadow_lg()
         .flex()
         .items_center()
@@ -747,7 +839,7 @@ impl RepositoryView {
             .justify_center()
             .flex_none()
             .min_h(px(28.0))
-            .px_2()
+            .px_3()
             .py_1()
             .border_1()
             .border_color(rgb(palette.border))
@@ -755,6 +847,12 @@ impl RepositoryView {
             .bg(rgb(enabled_color))
             .text_color(rgb(text_color))
             .text_size(px(12.0))
+            .font_weight(if tone == ButtonTone::Primary {
+                gpui::FontWeight::BOLD
+            } else {
+                gpui::FontWeight::NORMAL
+            })
+            .shadow_sm()
             .when(enabled, |this| this.cursor_pointer())
             .when(!enabled, |this| this.cursor_not_allowed().opacity(0.78))
             .when(enabled, |this| {

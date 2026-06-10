@@ -1,21 +1,17 @@
 use gpui::{
     Bounds, Context, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Pixels, Point, ScrollHandle, SharedString, UniformListScrollHandle, Window, canvas, div, fill,
-    point, prelude::*, px, rgb,
+    point, prelude::*, px, rgb, rgba,
 };
 use khaslana::{DiffLineKind, DiffScope};
 
-use crate::{DiffHeaderTarget, RepositoryView};
+use crate::{DiffHeaderTarget, RepositoryView, ui::theme as ui_theme};
 
 pub(crate) use crate::ui::theme::ACCENT_SOFT as COLOR_BLUE_SOFT;
-pub(crate) use crate::ui::theme::ACCENT_STRONG as COLOR_BLUE_DARK;
 pub(crate) use crate::ui::theme::BORDER as COLOR_BORDER;
-pub(crate) use crate::ui::theme::BORDER_STRONG as COLOR_BORDER_STRONG;
 pub(crate) use crate::ui::theme::HEADER_BG as COLOR_HEADER_BG;
 pub(crate) use crate::ui::theme::PANEL_BG as COLOR_PANEL_BG;
-pub(crate) use crate::ui::theme::ROW_SELECTED as COLOR_ROW_SELECTED;
 pub(crate) use crate::ui::theme::SURFACE as COLOR_SURFACE;
-pub(crate) use crate::ui::theme::SURFACE_MUTED as COLOR_SURFACE_SOFT;
 pub(crate) use crate::ui::theme::TEXT as COLOR_TEXT;
 pub(crate) use crate::ui::theme::TEXT_FAINT as COLOR_TEXT_FAINT;
 pub(crate) use crate::ui::theme::TEXT_MUTED as COLOR_TEXT_MUTED;
@@ -500,11 +496,11 @@ pub(crate) fn section_header(label: impl Into<SharedString>) -> impl IntoElement
         .px_3()
         .py_2()
         .border_b_1()
-        .border_color(rgb(COLOR_BORDER))
+        .border_color(rgb(ui_theme::BORDER_MUTED))
         .bg(rgb(COLOR_HEADER_BG))
         .text_size(px(12.0))
         .font_weight(gpui::FontWeight::BOLD)
-        .text_color(rgb(COLOR_TEXT))
+        .text_color(rgb(ui_theme::TEXT))
         .child(label.into())
 }
 
@@ -521,13 +517,13 @@ pub(crate) fn section_header_action(
         .px_3()
         .py_2()
         .border_b_1()
-        .border_color(rgb(COLOR_BORDER))
+        .border_color(rgb(ui_theme::BORDER_MUTED))
         .bg(rgb(COLOR_HEADER_BG))
         .child(
             div()
                 .text_size(px(12.0))
                 .font_weight(gpui::FontWeight::BOLD)
-                .text_color(rgb(COLOR_TEXT))
+                .text_color(rgb(ui_theme::TEXT))
                 .child(label.into()),
         );
     if let Some(action) = action {
@@ -551,23 +547,23 @@ pub(crate) fn history_scope_button(
         .rounded_sm()
         .border_1()
         .border_color(if selected {
-            rgb(COLOR_BORDER_STRONG)
+            rgb(ui_theme::SEGMENT_SELECTED_BG)
         } else {
             rgb(COLOR_BORDER)
         })
         .bg(if selected {
-            rgb(COLOR_BLUE_SOFT)
+            rgb(ui_theme::SEGMENT_SELECTED_BG)
         } else {
-            rgb(COLOR_SURFACE)
+            rgba(ui_theme::GLASS_BG)
         })
         .text_size(px(11.0))
         .text_color(if selected {
-            rgb(COLOR_BLUE_DARK)
+            rgb(ui_theme::SEGMENT_SELECTED_TEXT)
         } else {
-            rgb(COLOR_TEXT_MUTED)
+            rgb(ui_theme::TEXT_MUTED)
         })
         .cursor_pointer()
-        .hover(|this| this.bg(rgb(COLOR_BLUE_SOFT)))
+        .hover(|this| this.bg(rgb(ui_theme::ACCENT_VIVID_SOFT)))
         .on_click(cx.listener(move |this, _event, _window, cx| {
             action(this);
             cx.notify();
@@ -626,17 +622,17 @@ pub(crate) fn nav_row(
         .rounded_sm()
         .cursor_pointer()
         .bg(if selected {
-            rgb(COLOR_ROW_SELECTED)
+            rgb(ui_theme::ROW_SELECTED)
         } else if emphasized {
-            rgb(COLOR_BLUE_SOFT)
+            rgb(ui_theme::ACCENT_SOFT)
         } else {
-            rgb(COLOR_SURFACE)
+            rgba(ui_theme::GLASS_BG)
         })
         .border_1()
         .border_color(if selected {
-            rgb(0x9bbcff)
+            rgb(ui_theme::ROW_SELECTED_BORDER)
         } else if emphasized {
-            rgb(COLOR_BORDER_STRONG)
+            rgb(ui_theme::BORDER_STRONG)
         } else {
             rgb(COLOR_BORDER)
         })
@@ -652,8 +648,8 @@ pub(crate) fn placeholder_row(text: &'static str) -> impl IntoElement {
         .py_2()
         .rounded_sm()
         .border_1()
-        .border_color(rgb(COLOR_BORDER))
-        .bg(rgb(COLOR_SURFACE_SOFT))
+        .border_color(rgb(ui_theme::BORDER_MUTED))
+        .bg(rgba(ui_theme::GLASS_BG))
         .text_size(px(12.0))
         .text_color(rgb(COLOR_TEXT_FAINT))
         .line_height(px(18.0))
@@ -735,10 +731,10 @@ pub(crate) fn context_menu_item(
         } else {
             rgb(COLOR_TEXT_FAINT)
         })
-        .bg(rgb(COLOR_SURFACE))
+        .bg(rgba(ui_theme::GLASS_BG))
         .cursor_pointer()
         .when(enabled, |this| {
-            this.hover(|this| this.bg(rgb(COLOR_BLUE_SOFT)))
+            this.hover(|this| this.bg(rgb(ui_theme::ACCENT_VIVID_SOFT)))
         })
         .on_click(cx.listener(move |this, _event, _window, cx| {
             cx.stop_propagation();
@@ -751,7 +747,11 @@ pub(crate) fn context_menu_item(
 }
 
 pub(crate) fn menu_separator() -> impl IntoElement {
-    div().h(px(1.0)).mx_1().my_1().bg(rgb(COLOR_BORDER))
+    div()
+        .h(px(1.0))
+        .mx_1()
+        .my_1()
+        .bg(rgb(ui_theme::BORDER_MUTED))
 }
 
 pub(crate) fn diff_header_toggle(

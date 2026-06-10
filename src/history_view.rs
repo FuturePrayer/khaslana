@@ -9,7 +9,8 @@ use khaslana::{CommitFileChange, CommitInfo, CommitRefInfo, CommitRefKind};
 use crate::{
     CHANGE_ROW_HEIGHT, DiffHeaderTarget, EncodingMenuTarget, RepositoryView, ResizeTarget,
     ScrollbarMode, author_avatar, commit_time_label, history_scope_button, placeholder_row,
-    scrollable_uniform_frame, section_header, section_header_action, ui::theme as ui_theme,
+    scrollable_uniform_frame, section_header, section_header_action,
+    ui::{components::metric_badge, theme as ui_theme},
 };
 
 const HISTORY_GRAPH_WIDTH: f32 = 96.0;
@@ -206,7 +207,7 @@ impl RepositoryView {
             })
             .border_1()
             .border_color(if selected {
-                rgb(ui_theme::BORDER_STRONG)
+                rgb(ui_theme::ROW_SELECTED_BORDER)
             } else if unpushed {
                 rgb(ui_theme::WARNING)
             } else {
@@ -272,7 +273,11 @@ impl RepositoryView {
                             .min_w(px(0.0))
                             .text_size(px(12.0))
                             .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(rgb(ui_theme::TEXT))
+                            .text_color(if selected {
+                                rgb(ui_theme::TEXT)
+                            } else {
+                                rgb(ui_theme::TEXT)
+                            })
                             .truncate()
                             .child(commit.summary),
                     )
@@ -291,6 +296,7 @@ impl RepositoryView {
                                 .border_color(rgb(ui_theme::WARNING))
                                 .bg(rgb(ui_theme::WARNING_BADGE_BG))
                                 .text_size(px(10.0))
+                                .font_weight(gpui::FontWeight::BOLD)
                                 .text_color(rgb(ui_theme::WARNING_TEXT))
                                 .child("未推送"),
                         )
@@ -302,7 +308,11 @@ impl RepositoryView {
                     .flex_none()
                     .w(px(118.0))
                     .text_size(px(11.0))
-                    .text_color(rgb(ui_theme::TEXT_MUTED))
+                    .text_color(if selected {
+                        rgb(ui_theme::TEXT_MUTED)
+                    } else {
+                        rgb(ui_theme::TEXT_MUTED)
+                    })
                     .truncate()
                     .child(author),
             )
@@ -311,14 +321,22 @@ impl RepositoryView {
                     .flex_none()
                     .w(px(142.0))
                     .text_size(px(11.0))
-                    .text_color(rgb(ui_theme::TEXT_MUTED))
+                    .text_color(if selected {
+                        rgb(ui_theme::TEXT_MUTED)
+                    } else {
+                        rgb(ui_theme::TEXT_MUTED)
+                    })
                     .child(time),
             )
             .child(
                 div()
                     .flex_none()
                     .text_size(px(16.0))
-                    .text_color(rgb(ui_theme::TEXT_FAINT))
+                    .text_color(if selected {
+                        rgb(ui_theme::ACCENT_STRONG)
+                    } else {
+                        rgb(ui_theme::TEXT_FAINT)
+                    })
                     .child(">"),
             )
     }
@@ -416,13 +434,13 @@ impl RepositoryView {
             .cursor_pointer()
             .overflow_hidden()
             .bg(if selected {
-                rgb(ui_theme::ROW_SELECTED)
+                rgb(ui_theme::ACCENT_SOFT)
             } else {
                 rgb(ui_theme::SURFACE)
             })
             .border_1()
             .border_color(if selected {
-                rgb(ui_theme::BORDER_STRONG)
+                rgb(ui_theme::ROW_SELECTED_BORDER)
             } else {
                 rgb(ui_theme::BORDER)
             })
@@ -742,15 +760,5 @@ fn commit_ref_label(reference: CommitRefInfo) -> impl IntoElement {
 }
 
 fn commit_ref_overflow_label(count: usize) -> impl IntoElement {
-    div()
-        .flex_none()
-        .px_1()
-        .py(px(1.0))
-        .rounded_sm()
-        .border_1()
-        .border_color(rgb(ui_theme::BORDER))
-        .bg(rgb(ui_theme::HASH_BG))
-        .text_size(px(10.0))
-        .text_color(rgb(ui_theme::TEXT_MUTED))
-        .child(format!("+{count}"))
+    metric_badge(format!("+{count}"), ui_theme::ACCENT_VIVID)
 }
