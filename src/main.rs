@@ -105,6 +105,7 @@ pub(crate) const STASH_MENU_WIDTH: f32 = 170.0;
 pub(crate) const STASH_MENU_HEIGHT: f32 = 110.0;
 const COMMIT_MENU_WIDTH: f32 = 230.0;
 const COMMIT_MENU_HEIGHT: f32 = 230.0;
+const COMMIT_UNPUSHED_MENU_HEIGHT: f32 = 265.0;
 const ENCODING_MENU_WIDTH: f32 = 170.0;
 const MENU_VIEWPORT_MARGIN: f32 = 8.0;
 const MAX_CONCURRENT_REPO_LOADS: usize = 2;
@@ -171,6 +172,10 @@ pub(crate) enum DialogState {
         oid: String,
         summary: String,
     },
+    ConfirmUncommitToStaged {
+        oid: String,
+        summary: String,
+    },
     ConfirmDiscardChange {
         scope: DiffScope,
         target: DiscardTarget,
@@ -225,6 +230,9 @@ pub(crate) struct CommitContextMenu {
     pub(crate) short_oid: String,
     pub(crate) summary: String,
     pub(crate) parent_count: usize,
+    pub(crate) is_unpushed: bool,
+    pub(crate) is_head: bool,
+    pub(crate) height: f32,
     pub(crate) x: f32,
     pub(crate) y: f32,
 }
@@ -1197,6 +1205,7 @@ pub(crate) struct RepositoryView {
     clone_url: TextFieldState,
     clone_path: TextFieldState,
     branch_name: TextFieldState,
+    create_branch_checkout: bool,
     branch_rename: TextFieldState,
     commit_message: TextFieldState,
     credential_username: TextFieldState,
@@ -1269,6 +1278,7 @@ impl RepositoryView {
             clone_url: TextFieldState::new(cx, "远程仓库 URL"),
             clone_path: TextFieldState::new(cx, "克隆到父文件夹"),
             branch_name: TextFieldState::new(cx, "新分支名称"),
+            create_branch_checkout: true,
             branch_rename: TextFieldState::new(cx, "重命名为"),
             commit_message: TextFieldState::new(cx, "提交信息"),
             credential_username: TextFieldState::new(cx, "用户名"),
@@ -2649,6 +2659,7 @@ impl RepositoryView {
         }
         self.close_popups();
         self.branch_name.clear();
+        self.create_branch_checkout = true;
         self.active_dialog = Some(DialogState::CreateBranch);
         self.last_error = None;
     }
@@ -3697,8 +3708,9 @@ impl RepositoryView {
             self.last_error = Some("需要填写分支名称".into());
             return;
         }
+        let checkout = self.create_branch_checkout;
         self.with_repo("分支已创建", move |service, repo| {
-            service.create_branch(repo, &BranchName::new(name))
+            service.create_branch_from(repo, &BranchName::new(name), None, checkout)
         });
     }
 
@@ -3766,6 +3778,12 @@ impl RepositoryView {
         self.last_error = None;
     }
 
+    pub(crate) fn open_uncommit_to_staged_confirm_dialog(&mut self, oid: String, summary: String) {
+        self.close_popups();
+        self.active_dialog = Some(DialogState::ConfirmUncommitToStaged { oid, summary });
+        self.last_error = None;
+    }
+
     fn open_discard_change_confirm_dialog(
         &mut self,
         paths: Vec<String>,
@@ -3805,6 +3823,12 @@ impl RepositoryView {
     fn revert_commit(&mut self, oid: String) {
         self.with_repo("回滚提交完成", move |service, repo| {
             service.revert_commit(repo, &oid)
+        });
+    }
+
+    fn uncommit_to_staged(&mut self, oid: String) {
+        self.with_repo("提交已还原到暂存区", move |service, repo| {
+            service.uncommit_to_staged(repo, &oid)
         });
     }
 
@@ -4146,9 +4170,10 @@ impl RepositoryView {
             point_in_menu(x, y, menu.x, menu.y, TAG_MENU_WIDTH, TAG_MENU_HEIGHT)
         }) || self.stash_context_menu.as_ref().is_some_and(|menu| {
             point_in_menu(x, y, menu.x, menu.y, STASH_MENU_WIDTH, STASH_MENU_HEIGHT)
-        }) || self.commit_context_menu.as_ref().is_some_and(|menu| {
-            point_in_menu(x, y, menu.x, menu.y, COMMIT_MENU_WIDTH, COMMIT_MENU_HEIGHT)
-        })
+        }) || self
+            .commit_context_menu
+            .as_ref()
+            .is_some_and(|menu| point_in_menu(x, y, menu.x, menu.y, COMMIT_MENU_WIDTH, menu.height))
     }
 
     pub(crate) fn open_commit_context_menu(
@@ -4167,12 +4192,34 @@ impl RepositoryView {
         self.stash_context_menu = None;
         self.encoding_menu_target = None;
         self.active_dialog = None;
-        let (x, y) = clamped_menu_position(event, window, COMMIT_MENU_WIDTH, COMMIT_MENU_HEIGHT);
+        let is_unpushed = self
+            .branch_sync_status
+            .as_ref()
+            .is_some_and(|status| status.unpushed_oids.iter().any(|id| id == &oid));
+        let height = if is_unpushed {
+            COMMIT_UNPUSHED_MENU_HEIGHT
+        } else {
+            COMMIT_MENU_HEIGHT
+        };
+        let (x, y) = clamped_menu_position(event, window, COMMIT_MENU_WIDTH, height);
+        let is_head = self
+            .history_commits
+            .iter()
+            .find(|commit| commit.oid == oid)
+            .is_some_and(|commit| {
+                commit
+                    .refs
+                    .iter()
+                    .any(|reference| reference.kind == khaslana::CommitRefKind::Head)
+            });
         self.commit_context_menu = Some(CommitContextMenu {
             oid,
             short_oid,
             summary,
             parent_count,
+            is_unpushed,
+            is_head,
+            height,
             x,
             y,
         });
@@ -5582,6 +5629,30 @@ impl RepositoryView {
                     .child(format!("提交 {}", menu.short_oid)),
             )
             .child(menu_separator())
+            .when(menu.is_unpushed, |this| {
+                let can_uncommit = !self.busy && menu.is_head;
+                let label = if menu.is_head {
+                    "还原到暂存区..."
+                } else {
+                    "还原到暂存区（仅支持最新提交）"
+                };
+                this.child(context_menu_item(
+                    label,
+                    can_uncommit,
+                    {
+                        let oid = menu.oid.clone();
+                        let summary = menu.summary.clone();
+                        move |this| {
+                            this.open_uncommit_to_staged_confirm_dialog(
+                                oid.clone(),
+                                summary.clone(),
+                            )
+                        }
+                    },
+                    cx,
+                ))
+                .child(menu_separator())
+            })
             .child(context_menu_item(
                 "软重置分支到此次提交",
                 !self.busy,
@@ -6421,35 +6492,24 @@ impl RepositoryView {
             .bg(rgba(ui_theme::GLASS_BG))
             .child(self.input(FieldId::CommitMessage, false, window, cx))
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(rgb(ui_theme::TEXT_MUTED))
-                            .child(self.status.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .child(self.primary_button(
-                                "提交",
-                                can_commit,
-                                |this, _, _| this.commit(),
-                                cx,
-                            ))
-                            .child(self.primary_button(
-                                "提交并推送",
-                                can_commit_and_push,
-                                |this, _, _| this.commit_and_push(),
-                                cx,
-                            )),
-                    ),
+                div().flex().items_center().justify_end().gap_2().child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(self.primary_button(
+                            "提交",
+                            can_commit,
+                            |this, _, _| this.commit(),
+                            cx,
+                        ))
+                        .child(self.primary_button(
+                            "提交并推送",
+                            can_commit_and_push,
+                            |this, _, _| this.commit_and_push(),
+                            cx,
+                        )),
+                ),
             )
     }
 
@@ -6664,6 +6724,9 @@ impl RepositoryView {
             DialogState::ConfirmRevert { oid, summary } => self
                 .render_confirm_revert_dialog(oid, summary, cx)
                 .into_any_element(),
+            DialogState::ConfirmUncommitToStaged { oid, summary } => self
+                .render_confirm_uncommit_to_staged_dialog(oid, summary, cx)
+                .into_any_element(),
             DialogState::ConfirmDiscardChange {
                 scope,
                 target,
@@ -6761,6 +6824,13 @@ impl RepositoryView {
     ) -> impl IntoElement {
         self.dialog_panel("新建分支", cx)
             .child(self.input(FieldId::BranchName, false, window, cx))
+            .child(self.toggle_row(
+                "create-branch-checkout",
+                "创建成功后切换到新分支",
+                self.create_branch_checkout,
+                |this, _, _| this.create_branch_checkout = !this.create_branch_checkout,
+                cx,
+            ))
             .child(
                 dialog_actions()
                     .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
@@ -6872,6 +6942,46 @@ impl RepositoryView {
                         {
                             let oid = oid.clone();
                             move |this, _, _| this.revert_commit(oid.clone())
+                        },
+                        cx,
+                    )),
+            )
+    }
+
+    fn render_confirm_uncommit_to_staged_dialog(
+        &self,
+        oid: String,
+        summary: String,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        self.dialog_panel("确认还原到暂存区", cx)
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(ui_theme::TEXT))
+                    .child(format!("目标提交：{} {}", short_oid(&oid), summary)),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(ui_theme::TEXT_MUTED))
+                    .child("确认后会撤销该提交记录，并把该提交引入的修改保留在暂存区。"),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(ui_theme::TEXT_FAINT))
+                    .child("该操作只支持当前分支最新且尚未推送的普通提交。"),
+            )
+            .child(
+                dialog_actions()
+                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.danger_button(
+                        "确认还原",
+                        !self.busy,
+                        {
+                            let oid = oid.clone();
+                            move |this, _, _| this.uncommit_to_staged(oid.clone())
                         },
                         cx,
                     )),

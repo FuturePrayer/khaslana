@@ -933,6 +933,62 @@ impl GitService {
         self.snapshot_after_operation(repo)
     }
 
+    pub fn uncommit_to_staged(
+        &self,
+        repo: &mut Repository,
+        commit_oid: &str,
+    ) -> Result<RepositorySnapshot> {
+        if repo.head_detached()? {
+            return Err(GitError::Git(git2::Error::from_str(
+                "当前处于 detached HEAD，不能还原提交到暂存区",
+            )));
+        }
+
+        let head = repo.head()?;
+        if !head.is_branch() {
+            return Err(GitError::Git(git2::Error::from_str(
+                "当前 HEAD 未指向本地分支，不能还原提交到暂存区",
+            )));
+        }
+        let Some(head_oid) = head.target() else {
+            return Err(GitError::Git(git2::Error::from_str(
+                "当前分支没有可还原的提交",
+            )));
+        };
+
+        let commit = self.find_commit_by_oid(repo, commit_oid)?;
+        if commit.id() != head_oid {
+            return Err(GitError::Git(git2::Error::from_str(
+                "只能将当前最新提交还原到暂存区",
+            )));
+        }
+        let parent_oid = match commit.parent_count() {
+            0 => {
+                return Err(GitError::Git(git2::Error::from_str(
+                    "初始提交暂不支持还原到暂存区",
+                )));
+            }
+            1 => commit.parent_id(0)?,
+            _ => {
+                return Err(GitError::Git(git2::Error::from_str(
+                    "合并提交暂不支持还原到暂存区",
+                )));
+            }
+        };
+
+        drop(commit);
+        drop(head);
+
+        let parent = repo.find_commit(parent_oid)?;
+        self.progress
+            .emit(OperationEvent::Started("正在还原提交到暂存区".into()));
+        repo.reset(parent.as_object(), ResetType::Soft, None)?;
+        drop(parent);
+        self.progress
+            .emit(OperationEvent::Finished("提交已还原到暂存区".into()));
+        self.snapshot_after_operation(repo)
+    }
+
     pub fn revert_commit(
         &self,
         repo: &mut Repository,
@@ -3383,6 +3439,99 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("detached HEAD"));
+    }
+
+    #[test]
+    fn uncommit_to_staged_soft_resets_head_commit() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "file.txt", "one\n");
+        let first_oid = commit_all(&repo, "one");
+        write_file(dir.path(), "file.txt", "two\n");
+        let second_oid = commit_all(&repo, "two");
+
+        service
+            .uncommit_to_staged(&mut repo, &second_oid.to_string())
+            .unwrap();
+
+        assert_eq!(repo.head().unwrap().target(), Some(first_oid));
+        let changes = service.status_full(&repo).unwrap();
+        let file = changes
+            .iter()
+            .find(|change| change.path == "file.txt")
+            .unwrap();
+        assert_eq!(file.staged, Some(ChangeState::Modified));
+        assert_eq!(file.unstaged, None);
+        assert_file_text(dir.path(), "file.txt", "two\n");
+    }
+
+    #[test]
+    fn uncommit_to_staged_rejects_non_head_commit() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "file.txt", "one\n");
+        let first_oid = commit_all(&repo, "one");
+        write_file(dir.path(), "file.txt", "two\n");
+        let second_oid = commit_all(&repo, "two");
+
+        let error = service
+            .uncommit_to_staged(&mut repo, &first_oid.to_string())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("只能将当前最新提交还原到暂存区"));
+        assert_eq!(repo.head().unwrap().target(), Some(second_oid));
+        assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn uncommit_to_staged_rejects_initial_commit() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "file.txt", "one\n");
+        let first_oid = commit_all(&repo, "one");
+
+        let error = service
+            .uncommit_to_staged(&mut repo, &first_oid.to_string())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("初始提交暂不支持还原到暂存区"));
+        assert_eq!(repo.head().unwrap().target(), Some(first_oid));
+        assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn uncommit_to_staged_rejects_merge_commit() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "shared.txt", "base\n");
+        commit_all(&repo, "base");
+
+        service
+            .create_branch(&mut repo, &BranchName::new("feature"))
+            .unwrap();
+        service
+            .checkout_branch(&mut repo, &BranchName::new("feature"))
+            .unwrap();
+        write_file(dir.path(), "feature.txt", "feature\n");
+        commit_all(&repo, "feature");
+
+        service
+            .checkout_branch(&mut repo, &BranchName::new("main"))
+            .unwrap();
+        write_file(dir.path(), "main.txt", "main\n");
+        commit_all(&repo, "main");
+
+        service
+            .merge_branch(&mut repo, &BranchName::new("feature"))
+            .unwrap();
+        let merge_oid = repo.head().unwrap().target().unwrap();
+
+        let error = service
+            .uncommit_to_staged(&mut repo, &merge_oid.to_string())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("合并提交暂不支持还原到暂存区"));
+        assert_eq!(repo.head().unwrap().target(), Some(merge_oid));
+        assert!(service.status_full(&repo).unwrap().is_empty());
     }
 
     #[test]
