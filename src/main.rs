@@ -811,6 +811,12 @@ pub(crate) enum UiEvent {
     WorkflowFileSelected {
         path: Option<PathBuf>,
     },
+    OpenRepositoryFolderSelected {
+        path: Option<PathBuf>,
+    },
+    CloneTargetFolderSelected {
+        path: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone)]
@@ -2253,6 +2259,23 @@ impl RepositoryView {
                     self.last_error = None;
                 }
             }
+            UiEvent::OpenRepositoryFolderSelected { path } => {
+                if let Some(path) = path {
+                    self.open_repo(path);
+                } else {
+                    self.status = "已取消选择仓库文件夹".to_string();
+                    self.last_error = None;
+                }
+            }
+            UiEvent::CloneTargetFolderSelected { path } => {
+                if let Some(path) = path {
+                    self.clone_path.set_value(path.display().to_string());
+                    self.last_error = None;
+                } else {
+                    self.status = "已取消选择克隆父文件夹".to_string();
+                    self.last_error = None;
+                }
+            }
         }
         cx.notify();
     }
@@ -2590,15 +2613,23 @@ impl RepositoryView {
     }
 
     fn browse_open(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().pick_folder() {
-            self.open_repo(path);
-        }
+        self.status = "正在选择仓库文件夹".to_string();
+        self.last_error = None;
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let path = rfd::FileDialog::new().pick_folder();
+            send_ui_event(&tx, UiEvent::OpenRepositoryFolderSelected { path });
+        });
     }
 
     fn browse_clone_target(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().pick_folder() {
-            self.clone_path.set_value(path.display().to_string());
-        }
+        self.status = "正在选择克隆父文件夹".to_string();
+        self.last_error = None;
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let path = rfd::FileDialog::new().pick_folder();
+            send_ui_event(&tx, UiEvent::CloneTargetFolderSelected { path });
+        });
     }
 
     fn open_clone_dialog(&mut self, window: &mut Window) {
@@ -3107,6 +3138,11 @@ impl RepositoryView {
     }
 
     fn open_repo(&mut self, path: PathBuf) {
+        if Repository::open(&path).is_err() {
+            self.status = "打开仓库失败".to_string();
+            self.last_error = Some("该目录不是 Git 仓库".to_string());
+            return;
+        }
         let tab_id = self.ensure_tab_for_path(path.clone());
         self.queue_repository_load(
             tab_id,
