@@ -5,7 +5,10 @@ use thiserror::Error;
 
 mod conflicts;
 
-pub use conflicts::ConflictResolutionSide;
+pub use conflicts::{
+    ConflictBlock, ConflictBlockResolution, ConflictDraftStatus, ConflictFileKind,
+    ConflictFileView, ConflictResolutionSide,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RepoPath(pub PathBuf);

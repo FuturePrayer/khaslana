@@ -29,8 +29,9 @@ use gpui::{
 };
 use khaslana::{
     BranchKind, BranchName, BranchSyncStatus, CommitFileChange, CommitInfo, CommitMessage,
-    CredentialProvider, CredentialRecord, CredentialRequest, CredentialScope, CredentialStore,
-    DiffEncodingChoice, DiffLineKind, DiffScope, FileDiff, GitCredential, GitService, HistoryScope,
+    ConflictBlockResolution, ConflictFileKind, ConflictFileView, CredentialProvider,
+    CredentialRecord, CredentialRequest, CredentialScope, CredentialStore, DiffEncodingChoice,
+    DiffLineKind, DiffScope, FileDiff, GitCredential, GitService, HistoryScope,
     KeyringCredentialStore, OperationEvent, ProgressEmitter, RemoteCredentialPolicy, RemoteInfo,
     RemoteName, RepoPath, RepositorySnapshot, ResetMode, TagName, credential_display_target,
     credential_key_filename, credential_kind_label, credential_record_is_compatible_with_url,
@@ -126,6 +127,7 @@ enum FieldId {
     CredentialPassphrase,
     CredentialRemoteUrl,
     CredentialDisplayName,
+    ConflictEditor,
 }
 
 #[derive(Clone, Debug)]
@@ -433,6 +435,45 @@ struct DiffEncodingPreferences {
     repositories: BTreeMap<String, DiffEncodingChoice>,
 }
 
+#[derive(Clone, Debug, Default)]
+struct ConflictWorkbenchState {
+    selected_path: Option<String>,
+    selected_block: usize,
+    show_base: bool,
+    files: BTreeMap<String, ConflictFileView>,
+}
+
+fn sync_conflict_state_from_paths(
+    main_mode: &mut MainMode,
+    state: &mut ConflictWorkbenchState,
+    conflict_paths: &[String],
+) {
+    state
+        .files
+        .retain(|path, _| conflict_paths.iter().any(|candidate| candidate == path));
+
+    if conflict_paths.is_empty() {
+        *state = ConflictWorkbenchState::default();
+        if *main_mode == MainMode::Conflict {
+            *main_mode = MainMode::Worktree;
+        }
+        return;
+    }
+
+    if *main_mode != MainMode::Conflict {
+        *main_mode = MainMode::Conflict;
+    }
+    if state
+        .selected_path
+        .as_ref()
+        .is_none_or(|path| !conflict_paths.iter().any(|candidate| candidate == path))
+    {
+        state.selected_path = conflict_paths.first().cloned();
+        state.selected_block = 0;
+        state.show_base = false;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct RepoTabId(u64);
 
@@ -461,6 +502,7 @@ struct RepoTabState {
     pub(crate) branch_sync_status: Option<BranchSyncStatus>,
     pub(crate) branch_sync_loading: bool,
     pub(crate) branch_sync_request_id: u64,
+    pub(crate) conflict_workbench: ConflictWorkbenchState,
     pub(crate) sidebar_sections: SidebarSectionState,
     pub(crate) busy: bool,
     operation_kind: OperationKind,
@@ -496,6 +538,7 @@ impl RepoTabState {
             branch_sync_status: None,
             branch_sync_loading: false,
             branch_sync_request_id: 0,
+            conflict_workbench: ConflictWorkbenchState::default(),
             sidebar_sections: SidebarSectionState::default(),
             busy: false,
             operation_kind: OperationKind::Local,
@@ -610,6 +653,7 @@ pub(crate) enum ResizeTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MainMode {
     Worktree,
+    Conflict,
     History,
 }
 
@@ -1214,6 +1258,7 @@ pub(crate) struct RepositoryView {
     credential_passphrase: TextFieldState,
     credential_remote_url: TextFieldState,
     credential_display_name: TextFieldState,
+    conflict_editor: TextFieldState,
     remote_name: TextFieldState,
     remote_url: TextFieldState,
     remote_credential_policy: RemoteCredentialPolicy,
@@ -1287,6 +1332,7 @@ impl RepositoryView {
             credential_passphrase: TextFieldState::new(cx, "SSH 密码短语").secret(),
             credential_remote_url: TextFieldState::new(cx, "适用远端 URL"),
             credential_display_name: TextFieldState::new(cx, "凭据名称（可选）"),
+            conflict_editor: TextFieldState::new(cx, "冲突结果"),
             remote_name: TextFieldState::new(cx, "远端名称"),
             remote_url: TextFieldState::new(cx, "远端地址"),
             remote_credential_policy: RemoteCredentialPolicy::AutoMatch,
@@ -1431,6 +1477,7 @@ impl RepositoryView {
         }
         self.active_tab = Some(tab_id);
         self.ensure_history_loaded();
+        self.sync_conflict_mode_with_snapshot();
         self.save_session();
     }
 
@@ -1838,6 +1885,7 @@ impl RepositoryView {
                 self.progress_phase = self.progress_phase.wrapping_add(1);
                 let now = Instant::now();
                 self.feedbacks.retain(|feedback| !feedback.is_expired(now));
+                self.sync_conflict_editor_into_state();
             }
             UiEvent::OperationStarted { tab_id, message } => {
                 self.apply_status_event(tab_id, |this| {
@@ -1877,6 +1925,7 @@ impl RepositoryView {
                         this.sync_selected_remote(&snapshot);
                         this.change_indexes = ChangeListIndexes::rebuild(&snapshot.changes);
                         this.snapshot = Some(snapshot);
+                        this.sync_conflict_mode_with_snapshot();
                         this.scroll_local_branch_to_current();
                         this.reload_history_if_active();
                     }
@@ -1987,6 +2036,7 @@ impl RepositoryView {
                         }
                         this.snapshot = Some(snapshot);
                         this.prune_change_selection();
+                        this.sync_conflict_mode_with_snapshot();
                         this.clear_history();
                         this.scroll_local_branch_to_current();
                         this.reload_history_if_active();
@@ -2036,6 +2086,7 @@ impl RepositoryView {
                         this.sync_selected_remote(&snapshot);
                         this.change_indexes = ChangeListIndexes::rebuild(&snapshot.changes);
                         this.snapshot = Some(snapshot);
+                        this.sync_conflict_mode_with_snapshot();
                         this.replace_changes(changes);
                         this.diff = None;
                         this.diff_headers_expanded = false;
@@ -2244,6 +2295,7 @@ impl RepositoryView {
                     this.sync_selected_remote(&snapshot);
                     this.change_indexes = ChangeListIndexes::rebuild(&snapshot.changes);
                     this.snapshot = Some(snapshot);
+                    this.sync_conflict_mode_with_snapshot();
                     this.prune_change_selection();
                     this.diff = None;
                     this.diff_headers_expanded = false;
@@ -2308,6 +2360,7 @@ impl RepositoryView {
         self.sync_selected_remote(&merged);
         self.change_indexes = ChangeListIndexes::rebuild(&merged.changes);
         self.snapshot = Some(merged);
+        self.sync_conflict_mode_with_snapshot();
     }
 
     fn replace_changes(&mut self, changes: Vec<khaslana::WorktreeChange>) {
@@ -2318,6 +2371,207 @@ impl RepositoryView {
             self.change_indexes = ChangeListIndexes::default();
         }
         self.prune_change_selection();
+    }
+
+    fn sync_conflict_mode_with_snapshot(&mut self) {
+        let conflict_paths = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.conflicts.clone())
+            .unwrap_or_default();
+        let tab = self.active_tab_state_mut();
+        sync_conflict_state_from_paths(
+            &mut tab.main_mode,
+            &mut tab.conflict_workbench,
+            &conflict_paths,
+        );
+
+        if conflict_paths.is_empty() {
+            self.conflict_editor.clear();
+            return;
+        }
+        self.ensure_conflict_views_loaded();
+        self.sync_conflict_editor_from_state();
+    }
+
+    fn ensure_conflict_views_loaded(&mut self) {
+        let paths = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.conflicts.clone())
+            .unwrap_or_default();
+        let Some(tab_id) = self.active_tab_id() else {
+            return;
+        };
+        let Some(repo_path) = self.repo_path.clone() else {
+            return;
+        };
+        let service = self.service_for_tab(tab_id);
+        for path in paths {
+            if self.conflict_workbench.files.contains_key(&path) {
+                continue;
+            }
+            match Repository::open(&repo_path)
+                .map_err(khaslana::GitError::from)
+                .and_then(|repo| service.conflict_file_view(&repo, Path::new(&path)))
+            {
+                Ok(view) => {
+                    self.conflict_workbench.files.insert(path, view);
+                }
+                Err(err) => {
+                    self.last_error = Some(err.to_string());
+                }
+            }
+        }
+    }
+
+    fn sync_conflict_editor_from_state(&mut self) {
+        let Some(path) = self.conflict_workbench.selected_path.clone() else {
+            self.conflict_editor.clear();
+            return;
+        };
+        let Some((kind, draft)) = self
+            .conflict_workbench
+            .files
+            .get(&path)
+            .map(|view| (view.kind, view.draft.clone()))
+        else {
+            self.conflict_editor.clear();
+            return;
+        };
+        if kind != ConflictFileKind::Text {
+            self.conflict_editor.clear();
+            return;
+        }
+        if self.conflict_editor.value != draft {
+            self.conflict_editor.set_value(draft);
+        }
+        self.highlight_selected_conflict_block();
+    }
+
+    fn highlight_selected_conflict_block(&mut self) {
+        let Some(path) = self.conflict_workbench.selected_path.clone() else {
+            return;
+        };
+        let Some(view) = self.conflict_workbench.files.get(&path) else {
+            return;
+        };
+        let Some(block) = view
+            .blocks
+            .get(
+                self.conflict_workbench
+                    .selected_block
+                    .min(view.blocks.len().saturating_sub(1)),
+            )
+            .cloned()
+        else {
+            return;
+        };
+        self.conflict_editor.move_caret_to(block.start, false);
+        self.conflict_editor.move_caret_to(block.end, true);
+    }
+
+    fn sync_conflict_editor_into_state(&mut self) {
+        let Some(path) = self.conflict_workbench.selected_path.clone() else {
+            return;
+        };
+        let new_value = self.conflict_editor.value.clone();
+        let Some(view) = self.conflict_workbench.files.get_mut(&path) else {
+            return;
+        };
+        if view.kind == ConflictFileKind::Text && view.draft != new_value {
+            let max_index = view.blocks.len().saturating_sub(1);
+            view.set_draft(new_value);
+            self.conflict_workbench.selected_block =
+                self.conflict_workbench.selected_block.min(max_index);
+        }
+    }
+
+    fn select_conflict_file(&mut self, path: String) {
+        self.sync_conflict_editor_into_state();
+        self.conflict_workbench.selected_path = Some(path.clone());
+        self.conflict_workbench.selected_block = 0;
+        self.conflict_workbench.show_base = false;
+        self.ensure_conflict_views_loaded();
+        if self.conflict_workbench.files.contains_key(&path) {
+            self.sync_conflict_editor_from_state();
+        }
+    }
+
+    fn select_conflict_block(&mut self, index: usize) {
+        self.sync_conflict_editor_into_state();
+        let Some(path) = self.conflict_workbench.selected_path.clone() else {
+            return;
+        };
+        let Some(view) = self.conflict_workbench.files.get(&path) else {
+            return;
+        };
+        if view.blocks.is_empty() {
+            self.conflict_workbench.selected_block = 0;
+        } else {
+            self.conflict_workbench.selected_block = index.min(view.blocks.len() - 1);
+        }
+        self.sync_conflict_editor_from_state();
+    }
+
+    fn step_conflict_block(&mut self, delta: isize) {
+        let Some(path) = self.conflict_workbench.selected_path.clone() else {
+            return;
+        };
+        let Some(view) = self.conflict_workbench.files.get(&path) else {
+            return;
+        };
+        if view.blocks.is_empty() {
+            return;
+        }
+        let current = self.conflict_workbench.selected_block as isize;
+        let target = (current + delta).clamp(0, view.blocks.len() as isize - 1) as usize;
+        self.select_conflict_block(target);
+    }
+
+    fn apply_selected_conflict_resolution(&mut self, resolution: ConflictBlockResolution) {
+        self.sync_conflict_editor_into_state();
+        let Some(path) = self.conflict_workbench.selected_path.clone() else {
+            return;
+        };
+        let selected_block = self.conflict_workbench.selected_block;
+        if let Some(view) = self.conflict_workbench.files.get_mut(&path) {
+            view.apply_block_resolution(selected_block, resolution);
+        }
+        self.sync_conflict_editor_from_state();
+    }
+
+    fn apply_selected_conflict_draft(&mut self, resolve: bool) {
+        self.sync_conflict_editor_into_state();
+        let Some(path) = self.conflict_workbench.selected_path.clone() else {
+            self.last_error = Some("请先选择一个冲突文件".into());
+            return;
+        };
+        let Some(view) = self.conflict_workbench.files.get_mut(&path) else {
+            self.last_error = Some("冲突文件详情尚未加载".into());
+            return;
+        };
+        let draft = view.draft.clone();
+        if !resolve {
+            view.mark_applied();
+        }
+        let path_for_op = path.clone();
+        let label = if resolve {
+            "冲突结果已应用并标记解决"
+        } else {
+            "冲突草稿已应用到工作区"
+        };
+        self.with_repo(label, move |service, repo| {
+            if resolve {
+                service.apply_conflict_draft_and_resolve(
+                    repo,
+                    Path::new(&path_for_op),
+                    &draft,
+                )
+            } else {
+                service.apply_conflict_draft(repo, Path::new(&path_for_op), &draft)
+            }
+        });
     }
 
     fn prune_change_selection(&mut self) {
@@ -2364,6 +2618,8 @@ impl RepositoryView {
     fn submit_focused_field(&mut self, field: FieldId) {
         if matches!(field, FieldId::CommitMessage) {
             self.commit();
+        } else if matches!(field, FieldId::ConflictEditor) {
+            self.apply_selected_conflict_draft(false);
         } else if matches!(field, FieldId::CloneUrl | FieldId::ClonePath) {
             if self.active_dialog == Some(DialogState::CloneRepo) {
                 self.clone_repo();
@@ -2431,7 +2687,7 @@ impl RepositoryView {
 
     fn text_up(&mut self, _: &TextUp, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(field) = self.focused_text_field(window, cx)
-            && field == FieldId::CommitMessage
+            && Self::is_multiline_field(field)
         {
             self.field_mut(field).move_vertical(-1, false);
             cx.notify();
@@ -2440,7 +2696,7 @@ impl RepositoryView {
 
     fn text_down(&mut self, _: &TextDown, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(field) = self.focused_text_field(window, cx)
-            && field == FieldId::CommitMessage
+            && Self::is_multiline_field(field)
         {
             self.field_mut(field).move_vertical(1, false);
             cx.notify();
@@ -2473,7 +2729,7 @@ impl RepositoryView {
 
     fn text_select_up(&mut self, _: &TextSelectUp, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(field) = self.focused_text_field(window, cx)
-            && field == FieldId::CommitMessage
+            && Self::is_multiline_field(field)
         {
             self.field_mut(field).move_vertical(-1, true);
             cx.notify();
@@ -2487,7 +2743,7 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) {
         if let Some(field) = self.focused_text_field(window, cx)
-            && field == FieldId::CommitMessage
+            && Self::is_multiline_field(field)
         {
             self.field_mut(field).move_vertical(1, true);
             cx.notify();
@@ -2503,7 +2759,7 @@ impl RepositoryView {
 
     fn text_home(&mut self, _: &TextHome, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(field) = self.focused_text_field(window, cx) {
-            if field == FieldId::CommitMessage {
+            if Self::is_multiline_field(field) {
                 self.field_mut(field).move_to_line_start(false);
             } else {
                 self.field_mut(field).move_caret_to(0, false);
@@ -2514,7 +2770,7 @@ impl RepositoryView {
 
     fn text_end(&mut self, _: &TextEnd, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(field) = self.focused_text_field(window, cx) {
-            if field == FieldId::CommitMessage {
+            if Self::is_multiline_field(field) {
                 self.field_mut(field).move_to_line_end(false);
             } else {
                 let end = self.field(field).value.len();
@@ -2532,7 +2788,7 @@ impl RepositoryView {
             self.field_mut(field).replace_text_in_utf16_range_with_mode(
                 None,
                 &text,
-                field == FieldId::CommitMessage,
+                Self::is_multiline_field(field),
             );
             cx.notify();
         }
@@ -2559,12 +2815,14 @@ impl RepositoryView {
     }
 
     fn text_submit(&mut self, _: &TextSubmit, window: &mut Window, cx: &mut Context<Self>) {
-        if self
-            .focused_text_field(window, cx)
-            .is_some_and(|field| field == FieldId::CommitMessage)
-        {
-            self.commit();
-            cx.notify();
+        if let Some(field) = self.focused_text_field(window, cx) {
+            if field == FieldId::CommitMessage {
+                self.commit();
+                cx.notify();
+            } else if field == FieldId::ConflictEditor {
+                self.apply_selected_conflict_draft(false);
+                cx.notify();
+            }
         }
     }
 
@@ -2586,6 +2844,7 @@ impl RepositoryView {
                 FieldId::CredentialDisplayName,
                 &self.credential_display_name,
             ),
+            (FieldId::ConflictEditor, &self.conflict_editor),
         ]
         .into_iter()
         .find_map(|(id, field)| field.focus.is_focused(window).then_some(id))
@@ -2606,6 +2865,7 @@ impl RepositoryView {
             FieldId::CredentialPassphrase => &self.credential_passphrase,
             FieldId::CredentialRemoteUrl => &self.credential_remote_url,
             FieldId::CredentialDisplayName => &self.credential_display_name,
+            FieldId::ConflictEditor => &self.conflict_editor,
         }
     }
 
@@ -2624,6 +2884,7 @@ impl RepositoryView {
             FieldId::CredentialPassphrase => &mut self.credential_passphrase,
             FieldId::CredentialRemoteUrl => &mut self.credential_remote_url,
             FieldId::CredentialDisplayName => &mut self.credential_display_name,
+            FieldId::ConflictEditor => &mut self.conflict_editor,
         }
     }
 
@@ -4344,6 +4605,10 @@ impl RepositoryView {
     fn set_main_mode(&mut self, mode: MainMode) {
         self.main_mode = mode;
         self.close_popups();
+        if self.main_mode == MainMode::Conflict {
+            self.ensure_conflict_views_loaded();
+            self.sync_conflict_editor_from_state();
+        }
         self.ensure_history_loaded();
     }
 
@@ -4962,11 +5227,15 @@ impl RepositoryView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        if id == FieldId::CommitMessage {
+        if Self::is_multiline_field(id) {
             return self.multi_line_input(id, window, cx).into_any_element();
         }
         self.single_line_input(id, compact, window, cx)
             .into_any_element()
+    }
+
+    fn is_multiline_field(id: FieldId) -> bool {
+        matches!(id, FieldId::CommitMessage | FieldId::ConflictEditor)
     }
 
     fn single_line_input(
@@ -5140,9 +5409,14 @@ impl RepositoryView {
             .py_2()
             .overflow_hidden()
             .child({
-                let handle = self.scroll_handle("commit-message-input-scroll");
+                let scroll_id = if id == FieldId::ConflictEditor {
+                    "conflict-editor-scroll"
+                } else {
+                    "commit-message-input-scroll"
+                };
+                let handle = self.scroll_handle(scroll_id);
                 let content = div()
-                    .id("commit-message-input-scroll")
+                    .id(scroll_id)
                     .flex()
                     .flex_col()
                     .flex_1()
@@ -5156,7 +5430,7 @@ impl RepositoryView {
                     })
                     .into_any_element();
                 scrollable_frame_when(
-                    "commit-message-input-scroll",
+                    scroll_id,
                     ScrollbarMode::Vertical,
                     content,
                     handle,
@@ -5264,6 +5538,12 @@ impl RepositoryView {
                     .gap_1()
                     .relative()
                     .child(self.mode_button("工作区", MainMode::Worktree, cx))
+                    .when(
+                        self.snapshot
+                            .as_ref()
+                            .is_some_and(|snapshot| !snapshot.conflicts.is_empty()),
+                        |this| this.child(self.mode_button("冲突处理", MainMode::Conflict, cx)),
+                    )
                     .child(self.mode_button("提交记录", MainMode::History, cx)),
             )
     }
@@ -7595,6 +7875,7 @@ impl RepositoryView {
             .id("dialog-凭据管理")
             .w(px(860.0))
             .max_h(px(620.0))
+            .min_w(px(0.0))
             .p_4()
             .rounded_sm()
             .border_1()
@@ -7655,8 +7936,11 @@ impl RepositoryView {
                 div()
                     .flex()
                     .flex_col()
+                    .w_full()
+                    .min_w(px(0.0))
                     .min_h(px(0.0))
                     .max_h(px(440.0))
+                    .overflow_hidden()
                     .border_1()
                     .border_color(rgb(ui_theme::BORDER))
                     .rounded_sm()
@@ -7674,6 +7958,7 @@ impl RepositoryView {
                             .flex()
                             .flex_col()
                             .flex_1()
+                            .w_full()
                             .gap_0()
                             .min_w(px(0.0))
                             .min_h(px(0.0))
@@ -7806,6 +8091,8 @@ impl RepositoryView {
         div()
             .flex()
             .flex_none()
+            .w_full()
+            .min_w(px(0.0))
             .items_center()
             .gap_2()
             .px_2()
@@ -7817,19 +8104,19 @@ impl RepositoryView {
             .font_weight(gpui::FontWeight::BOLD)
             .text_color(rgb(ui_theme::TEXT_MUTED))
             .child(div().flex_none().w(px(112.0)).truncate().child("名称"))
-            .child(div().flex_none().w(px(106.0)).truncate().child("类型"))
+            .child(div().flex_none().w(px(88.0)).truncate().child("类型"))
             .child(div().flex_none().w(px(64.0)).truncate().child("范围"))
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(120.0))
+                    .min_w(px(0.0))
                     .truncate()
                     .child("站点 / 远端"),
             )
-            .child(div().flex_none().w(px(78.0)).truncate().child("用户名"))
-            .child(div().flex_none().w(px(76.0)).truncate().child("SSH Key"))
-            .child(div().flex_none().w(px(118.0)).truncate().child("更新时间"))
-            .child(div().flex_none().w(px(100.0)).truncate().child("操作"))
+            .child(div().flex_none().w(px(72.0)).truncate().child("用户名"))
+            .child(div().flex_none().w(px(68.0)).truncate().child("SSH Key"))
+            .child(div().flex_none().w(px(108.0)).truncate().child("更新时间"))
+            .child(div().flex_none().w(px(112.0)).truncate().child("操作"))
     }
 
     fn credential_record_row(
@@ -7850,6 +8137,8 @@ impl RepositoryView {
             .id(format!("credential-record-{}", record.id))
             .flex()
             .flex_none()
+            .w_full()
+            .min_w(px(0.0))
             .items_center()
             .gap_2()
             .px_2()
@@ -7884,7 +8173,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(106.0))
+                    .w(px(88.0))
                     .text_color(rgb(ui_theme::TEXT))
                     .truncate()
                     .child(credential_kind_label(record.kind)),
@@ -7900,7 +8189,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(120.0))
+                    .min_w(px(0.0))
                     .text_color(rgb(ui_theme::TEXT))
                     .truncate()
                     .child(target),
@@ -7908,7 +8197,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(78.0))
+                    .w(px(72.0))
                     .text_color(rgb(ui_theme::TEXT_MUTED))
                     .truncate()
                     .child(record.username),
@@ -7916,7 +8205,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(76.0))
+                    .w(px(68.0))
                     .text_color(rgb(ui_theme::TEXT_MUTED))
                     .truncate()
                     .child(key_file),
@@ -7924,7 +8213,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(118.0))
+                    .w(px(108.0))
                     .text_color(rgb(ui_theme::TEXT_MUTED))
                     .truncate()
                     .child(timestamp_label(record.updated_at)),
@@ -7932,8 +8221,9 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(100.0))
+                    .w(px(112.0))
                     .flex()
+                    .justify_end()
                     .gap_1()
                     .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                         cx.stop_propagation();
@@ -8080,6 +8370,9 @@ impl Render for RepositoryView {
                             .child(self.render_column_splitter(ResizeTarget::Changes, cx))
                             .child(self.render_diff_and_commit(window, cx))
                             .into_any_element(),
+                        MainMode::Conflict => {
+                            self.render_conflict_workbench(window, cx).into_any_element()
+                        }
                         MainMode::History => self.render_history_view(cx).into_any_element(),
                     }),
             )
@@ -8594,6 +8887,79 @@ mod app_tests {
             infer_clone_target_path("https://github.com/example/abc", ""),
             None
         );
+    }
+
+    fn sample_conflict_view(path: &str) -> ConflictFileView {
+        ConflictFileView {
+            path: path.to_string(),
+            kind: ConflictFileKind::Text,
+            draft: "main\n".to_string(),
+            blocks: vec![khaslana::ConflictBlock {
+                base: Some("base\n".to_string()),
+                ours: "main\n".to_string(),
+                theirs: "feature\n".to_string(),
+                start: 0,
+                end: 5,
+                resolution: None,
+                has_manual_edits: false,
+            }],
+            draft_status: khaslana::ConflictDraftStatus::Dirty,
+            fallback_reason: None,
+        }
+    }
+
+    #[test]
+    fn conflict_state_enters_conflict_mode_and_selects_first_path() {
+        let mut mode = MainMode::Worktree;
+        let mut state = ConflictWorkbenchState::default();
+        let paths = vec!["b.txt".to_string(), "a.txt".to_string()];
+
+        sync_conflict_state_from_paths(&mut mode, &mut state, &paths);
+
+        assert_eq!(mode, MainMode::Conflict);
+        assert_eq!(state.selected_path.as_deref(), Some("b.txt"));
+        assert_eq!(state.selected_block, 0);
+    }
+
+    #[test]
+    fn conflict_state_returns_to_worktree_when_last_conflict_disappears() {
+        let mut mode = MainMode::Conflict;
+        let mut state = ConflictWorkbenchState {
+            selected_path: Some("a.txt".into()),
+            selected_block: 1,
+            show_base: true,
+            files: BTreeMap::from([(String::from("a.txt"), sample_conflict_view("a.txt"))]),
+        };
+
+        sync_conflict_state_from_paths(&mut mode, &mut state, &[]);
+
+        assert_eq!(mode, MainMode::Worktree);
+        assert!(state.selected_path.is_none());
+        assert!(state.files.is_empty());
+    }
+
+    #[test]
+    fn conflict_state_prunes_removed_files_and_keeps_existing_drafts() {
+        let mut mode = MainMode::Conflict;
+        let mut state = ConflictWorkbenchState {
+            selected_path: Some("b.txt".into()),
+            selected_block: 0,
+            show_base: false,
+            files: BTreeMap::from([
+                (String::from("a.txt"), sample_conflict_view("a.txt")),
+                (String::from("b.txt"), sample_conflict_view("b.txt")),
+            ]),
+        };
+
+        sync_conflict_state_from_paths(&mut mode, &mut state, &["b.txt".into()]);
+
+        assert_eq!(mode, MainMode::Conflict);
+        assert_eq!(state.selected_path.as_deref(), Some("b.txt"));
+        assert_eq!(
+            state.files.get("b.txt").map(|view| view.draft.as_str()),
+            Some("main\n")
+        );
+        assert!(!state.files.contains_key("a.txt"));
     }
 
     fn test_diff(lines: Vec<khaslana::DiffLine>, is_binary: bool) -> FileDiff {

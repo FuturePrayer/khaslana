@@ -50,17 +50,17 @@ pub(crate) const TOOLTIP_BG: u32 = 0x111827;
 pub(crate) const TOOLTIP_BORDER: u32 = 0x1f2937;
 pub(crate) const DIALOG_OVERLAY: u32 = 0x0f172a55;
 pub(crate) const INPUT_BG: u32 = 0xfffffff2;
-pub(crate) const INPUT_BG_FOCUSED: u32 = 0xffffff;
+pub(crate) const INPUT_BG_FOCUSED: u32 = 0xfffffff2;
 pub(crate) const INPUT_BORDER: u32 = 0xb8c7df;
 pub(crate) const INPUT_BORDER_FOCUSED: u32 = 0x2563eb;
 pub(crate) const INPUT_PLACEHOLDER: u32 = 0x8a96a8;
 pub(crate) const INPUT_SELECTION: u32 = 0x2563eb33;
 pub(crate) const INPUT_CARET: u32 = 0x111827;
 pub(crate) const SEGMENT_BG: u32 = 0xeef2f7;
-pub(crate) const SEGMENT_SELECTED_BG: u32 = 0xffffff;
+pub(crate) const SEGMENT_SELECTED_BG: u32 = 0xdbeafe;
 pub(crate) const SEGMENT_SELECTED_TEXT: u32 = 0x1d4ed8;
 pub(crate) const HISTORY_GRAPH_COLORS: [u32; 8] = [
-    0x7a91b8, 0x8ba89a, 0xa8987a, 0x9a8db7, 0x89a7b4, 0xb08b8b, 0x8f9aa8, 0xa7a0b8,
+    0xf97316, 0x14b8a6, 0x3b82f6, 0xeab308, 0xef4444, 0x8b5cf6, 0x22c55e, 0xec4899,
 ];
 pub(crate) const REF_LOCAL_BG: u32 = 0xedf7f1;
 pub(crate) const REF_LOCAL_BORDER: u32 = 0xa8d5bc;
