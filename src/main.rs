@@ -1965,6 +1965,8 @@ impl RepositoryView {
                 diff,
             } => {
                 let toast_message = message.clone();
+                let has_snapshot = snapshot.is_some();
+                let has_diff = diff.is_some();
                 let mut full_status_request = None;
                 let mut sync_request = None;
                 self.apply_status_event(tab_id, |this| {
@@ -2009,7 +2011,9 @@ impl RepositoryView {
                 if let Some((tab_id, path, remote, load_id, request_id)) = sync_request {
                     self.load_branch_sync_status_for_tab(tab_id, path, remote, load_id, request_id);
                 }
-                self.notify_completion(&toast_message, cx);
+                if should_notify_operation_finished(&toast_message, has_snapshot, has_diff) {
+                    self.notify_completion(&toast_message, cx);
+                }
             }
             UiEvent::DiscardChangeFinished {
                 tab_id,
@@ -6195,9 +6199,11 @@ impl RepositoryView {
         let state = match scope {
             DiffScope::Staged => change.staged.as_ref(),
             DiffScope::Unstaged => change.unstaged.as_ref(),
-        }
-        .map(|state| state.label())
-        .unwrap_or(" ");
+        };
+        let state_label = state.map(|state| state.label()).unwrap_or(" ");
+        let state_color = state
+            .map(change_state_color)
+            .unwrap_or(ui_theme::TEXT_FAINT);
 
         list_row_surface(
             format!("change-{}-{}", diff_scope_id(&scope), change.path),
@@ -6237,8 +6243,8 @@ impl RepositoryView {
                 .w(px(24.0))
                 .text_size(px(11.0))
                 .font_family("monospace")
-                .text_color(rgb(ui_theme::ACCENT))
-                .child(state),
+                .text_color(rgb(state_color))
+                .child(state_label),
         )
         .child(
             div()
@@ -8332,6 +8338,10 @@ fn point_in_menu(x: f32, y: f32, menu_x: f32, menu_y: f32, width: f32, height: f
     x >= menu_x && x <= menu_x + width && y >= menu_y && y <= menu_y + height
 }
 
+fn should_notify_operation_finished(message: &str, has_snapshot: bool, has_diff: bool) -> bool {
+    !(message == "差异已加载" && !has_snapshot && has_diff)
+}
+
 fn dedupe_repo_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut seen = BTreeSet::new();
     paths
@@ -8370,6 +8380,18 @@ mod app_tests {
             paths,
             vec![PathBuf::from("C:/work/a"), PathBuf::from("C:/work/b")]
         );
+    }
+
+    #[test]
+    fn worktree_diff_load_completion_does_not_emit_toast() {
+        assert!(!should_notify_operation_finished("差异已加载", false, true));
+        assert!(should_notify_operation_finished("差异已加载", true, true));
+        assert!(should_notify_operation_finished("拉取完成", true, false));
+        assert!(should_notify_operation_finished(
+            "提交已还原到暂存区",
+            true,
+            false
+        ));
     }
 
     #[test]
