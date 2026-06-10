@@ -2,7 +2,7 @@
 
 ## 1. 项目定位
 
-Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中文为主。它基于 `gpui-ce` 构建原生桌面 UI，基于 `git2` / libgit2 执行 Git 操作，并通过系统 Keyring 保存 Git 凭据。
+Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中文为主。它基于 `gpui-ce` 和 `yororen_ui` 构建原生桌面 UI，基于 `git2` / libgit2 执行 Git 操作，并通过系统 Keyring 保存 Git 凭据。
 
 当前项目不是简单演示应用，而是已经具备完整 Git 工作流的客户端：
 
@@ -216,6 +216,7 @@ cargo build
 
 ## 8. 编码和设计约定
 
+- 代码修改要有中文注释，完成后应当检查`AGENTS.md`内容是否需要调整。
 - 用户可见文案保持中文。
 - Git 业务能力优先放在 `GitService`。
 - UI 只负责状态、交互、确认和渲染，避免把复杂 Git 流程直接写进渲染函数。
