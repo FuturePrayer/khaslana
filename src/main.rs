@@ -38,7 +38,6 @@ use khaslana::{
     credential_record_label, credential_record_matches_remote_url, credential_scope_label,
     test_credential_connection,
 };
-use khaslana::{WorkflowDefinition, WorkflowPreview};
 use serde::{Deserialize, Serialize};
 use text_input::{MultiLineInputElement, SingleLineInputElement, TextFieldState};
 use ui::{
@@ -52,7 +51,7 @@ use ui::{
     theme as ui_theme,
 };
 use ui_helpers::*;
-use workflow_view::WorkflowInputFieldState;
+use workflow_view::{WorkflowInputFieldState, WorkflowTemplateItem};
 use yororen_ui::{
     assets::UiAsset,
     component::init as init_yororen_components,
@@ -162,7 +161,6 @@ struct RemoteCredentialBinding {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DialogState {
     CloneRepo,
-    WorkflowRunner,
     CreateBranch,
     RenameBranch {
         branch: String,
@@ -445,6 +443,16 @@ struct ConflictWorkbenchState {
     files: BTreeMap<String, ConflictFileView>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct WorkflowState {
+    pub(crate) definition: Option<khaslana::WorkflowDefinition>,
+    pub(crate) preview: Option<khaslana::WorkflowPreview>,
+    pub(crate) file_path: Option<PathBuf>,
+    pub(crate) inputs: Vec<WorkflowInputFieldState>,
+    pub(crate) selected_template_path: Option<PathBuf>,
+    pub(crate) log: Vec<String>,
+}
+
 fn sync_conflict_state_from_paths(
     main_mode: &mut MainMode,
     state: &mut ConflictWorkbenchState,
@@ -491,6 +499,7 @@ struct RepoTabState {
     pub(crate) diff: Option<Arc<FileDiff>>,
     pub(crate) diff_headers_expanded: bool,
     pub(crate) main_mode: MainMode,
+    pub(crate) workflow_state: WorkflowState,
     pub(crate) history_commits: Vec<CommitInfo>,
     pub(crate) history_has_more: bool,
     pub(crate) history_selected_commit: Option<String>,
@@ -527,6 +536,7 @@ impl RepoTabState {
             diff: None,
             diff_headers_expanded: false,
             main_mode: MainMode::Worktree,
+            workflow_state: WorkflowState::default(),
             history_commits: Vec::new(),
             history_has_more: false,
             history_selected_commit: None,
@@ -648,15 +658,17 @@ impl OperationKind {
 pub(crate) enum ResizeTarget {
     Sidebar,
     Changes,
+    WorkflowTemplates,
     HistoryFiles,
     HistoryTop,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MainMode {
+pub(crate) enum MainMode {
     Worktree,
     Conflict,
     History,
+    Workflow,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1207,11 +1219,8 @@ pub(crate) struct RepositoryView {
     credential_store: Arc<KeyringCredentialStore>,
     remote_credential_bindings: Arc<Mutex<RemoteCredentialBindings>>,
     credential_records: Vec<CredentialRecord>,
-    pub(crate) workflow_definition: Option<WorkflowDefinition>,
-    pub(crate) workflow_preview: Option<WorkflowPreview>,
-    pub(crate) workflow_file_path: Option<PathBuf>,
-    pub(crate) workflow_inputs: Vec<WorkflowInputFieldState>,
-    pub(crate) workflow_log: Vec<String>,
+    pub(crate) workflow_templates: Vec<WorkflowTemplateItem>,
+    pub(crate) workflow_template_dir: Option<PathBuf>,
     diff_encoding_preferences: DiffEncodingPreferences,
     tabs: Vec<RepoTabState>,
     active_tab: Option<RepoTabId>,
@@ -1220,10 +1229,12 @@ pub(crate) struct RepositoryView {
     restoring_session: bool,
     pub(crate) sidebar_width: f32,
     pub(crate) changes_width: f32,
+    pub(crate) workflow_templates_width: f32,
     pub(crate) history_top_height: f32,
     pub(crate) history_files_width: f32,
     resizing_sidebar_width: Option<ResizeState>,
     resizing_changes_width: Option<ResizeState>,
+    resizing_workflow_templates_width: Option<ResizeState>,
     resizing_history_files_width: Option<ResizeState>,
     resizing_history_top_height: Option<ResizeState>,
     scroll_handles: RefCell<HashMap<String, ScrollHandle>>,
@@ -1282,11 +1293,8 @@ impl RepositoryView {
             credential_store,
             remote_credential_bindings,
             credential_records: Vec::new(),
-            workflow_definition: None,
-            workflow_preview: None,
-            workflow_file_path: None,
-            workflow_inputs: Vec::new(),
-            workflow_log: Vec::new(),
+            workflow_templates: Vec::new(),
+            workflow_template_dir: None,
             diff_encoding_preferences: Self::load_diff_encoding_preferences(),
             tabs: Vec::new(),
             active_tab: None,
@@ -1295,10 +1303,12 @@ impl RepositoryView {
             restoring_session: false,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             changes_width: DEFAULT_CHANGES_WIDTH,
+            workflow_templates_width: DEFAULT_CHANGES_WIDTH,
             history_top_height: DEFAULT_HISTORY_TOP_HEIGHT,
             history_files_width: DEFAULT_HISTORY_FILES_WIDTH,
             resizing_sidebar_width: None,
             resizing_changes_width: None,
+            resizing_workflow_templates_width: None,
             resizing_history_files_width: None,
             resizing_history_top_height: None,
             scroll_handles: RefCell::new(HashMap::new()),
@@ -2276,7 +2286,7 @@ impl RepositoryView {
             UiEvent::WorkflowProgress { tab_id, message } => {
                 self.with_tab_context(tab_id, |this| {
                     this.status = message.clone();
-                    this.workflow_log.push(message);
+                    this.workflow_state.log.push(message);
                 });
             }
             UiEvent::WorkflowFinished {
@@ -2294,7 +2304,7 @@ impl RepositoryView {
                     this.loading = RepositoryLoading::default();
                     this.status = message;
                     this.last_error = None;
-                    this.workflow_log = log;
+                    this.workflow_state.log = log;
                     this.repo_path = Some(snapshot.path.clone());
                     this.sync_selected_remote(&snapshot);
                     this.change_indexes = ChangeListIndexes::rebuild(&snapshot.changes);
@@ -2324,6 +2334,7 @@ impl RepositoryView {
             }
             UiEvent::WorkflowFileSelected { path } => {
                 if let Some(path) = path {
+                    self.set_main_mode(MainMode::Workflow);
                     self.load_workflow_file(path, cx);
                 } else {
                     self.status = "已取消选择工作流文件".to_string();
@@ -2636,8 +2647,6 @@ impl RepositoryView {
             if let Some(DialogState::RemoteForm { editing }) = self.active_dialog.clone() {
                 self.save_remote(editing);
             }
-        } else if matches!(field, FieldId::WorkflowInput(_)) {
-            self.refresh_workflow_preview();
         } else if matches!(
             field,
             FieldId::CredentialSecret
@@ -4516,6 +4525,7 @@ impl RepositoryView {
         match target {
             ResizeTarget::Sidebar => self.resizing_sidebar_width = Some(state),
             ResizeTarget::Changes => self.resizing_changes_width = Some(state),
+            ResizeTarget::WorkflowTemplates => self.resizing_workflow_templates_width = Some(state),
             ResizeTarget::HistoryFiles => self.resizing_history_files_width = Some(state),
             ResizeTarget::HistoryTop => self.resizing_history_top_height = Some(state),
         }
@@ -4535,7 +4545,7 @@ impl RepositoryView {
                     .clamp(MIN_HISTORY_TOP_HEIGHT, MAX_HISTORY_TOP_HEIGHT);
                 self.set_row_height(target, height);
             }
-            ResizeTarget::HistoryFiles => {
+            ResizeTarget::HistoryFiles | ResizeTarget::WorkflowTemplates => {
                 let width = (resize.start_width + delta)
                     .clamp(MIN_HISTORY_FILES_WIDTH, MAX_HISTORY_FILES_WIDTH);
                 self.set_column_width(target, width);
@@ -4551,6 +4561,7 @@ impl RepositoryView {
         match target {
             ResizeTarget::Sidebar => self.resizing_sidebar_width = None,
             ResizeTarget::Changes => self.resizing_changes_width = None,
+            ResizeTarget::WorkflowTemplates => self.resizing_workflow_templates_width = None,
             ResizeTarget::HistoryFiles => self.resizing_history_files_width = None,
             ResizeTarget::HistoryTop => self.resizing_history_top_height = None,
         }
@@ -4561,6 +4572,9 @@ impl RepositoryView {
         match target {
             ResizeTarget::Sidebar => self.sidebar_width = DEFAULT_SIDEBAR_WIDTH,
             ResizeTarget::Changes => self.changes_width = DEFAULT_CHANGES_WIDTH,
+            ResizeTarget::WorkflowTemplates => {
+                self.workflow_templates_width = DEFAULT_CHANGES_WIDTH
+            }
             ResizeTarget::HistoryFiles => self.history_files_width = DEFAULT_HISTORY_FILES_WIDTH,
             ResizeTarget::HistoryTop => self.history_top_height = DEFAULT_HISTORY_TOP_HEIGHT,
         }
@@ -4570,6 +4584,7 @@ impl RepositoryView {
         match target {
             ResizeTarget::Sidebar => self.sidebar_width,
             ResizeTarget::Changes => self.changes_width,
+            ResizeTarget::WorkflowTemplates => self.workflow_templates_width,
             ResizeTarget::HistoryFiles => self.history_files_width,
             ResizeTarget::HistoryTop => 0.0,
         }
@@ -4579,6 +4594,7 @@ impl RepositoryView {
         match target {
             ResizeTarget::Sidebar => self.sidebar_width = width,
             ResizeTarget::Changes => self.changes_width = width,
+            ResizeTarget::WorkflowTemplates => self.workflow_templates_width = width,
             ResizeTarget::HistoryFiles => self.history_files_width = width,
             ResizeTarget::HistoryTop => {}
         }
@@ -4587,14 +4603,20 @@ impl RepositoryView {
     fn row_height(&self, target: ResizeTarget) -> f32 {
         match target {
             ResizeTarget::HistoryTop => self.history_top_height,
-            ResizeTarget::Sidebar | ResizeTarget::Changes | ResizeTarget::HistoryFiles => 0.0,
+            ResizeTarget::Sidebar
+            | ResizeTarget::Changes
+            | ResizeTarget::WorkflowTemplates
+            | ResizeTarget::HistoryFiles => 0.0,
         }
     }
 
     fn set_row_height(&mut self, target: ResizeTarget, height: f32) {
         match target {
             ResizeTarget::HistoryTop => self.history_top_height = height,
-            ResizeTarget::Sidebar | ResizeTarget::Changes | ResizeTarget::HistoryFiles => {}
+            ResizeTarget::Sidebar
+            | ResizeTarget::Changes
+            | ResizeTarget::WorkflowTemplates
+            | ResizeTarget::HistoryFiles => {}
         }
     }
 
@@ -4602,6 +4624,7 @@ impl RepositoryView {
         match target {
             ResizeTarget::Sidebar => self.resizing_sidebar_width,
             ResizeTarget::Changes => self.resizing_changes_width,
+            ResizeTarget::WorkflowTemplates => self.resizing_workflow_templates_width,
             ResizeTarget::HistoryFiles => self.resizing_history_files_width,
             ResizeTarget::HistoryTop => self.resizing_history_top_height,
         }
@@ -4617,12 +4640,15 @@ impl RepositoryView {
         self.reset_uniform_scroll("history-diff-scroll");
     }
 
-    fn set_main_mode(&mut self, mode: MainMode) {
+    pub(crate) fn set_main_mode(&mut self, mode: MainMode) {
         self.main_mode = mode;
         self.close_popups();
         if self.main_mode == MainMode::Conflict {
             self.ensure_conflict_views_loaded();
             self.sync_conflict_editor_from_state();
+        }
+        if self.main_mode == MainMode::Workflow {
+            self.refresh_workflow_templates();
         }
         self.ensure_history_loaded();
     }
@@ -5514,12 +5540,6 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.button(
-                        "工作流",
-                        repo_open && !self.busy,
-                        |this, _, _| this.open_workflow_dialog(),
-                        cx,
-                    ))
-                    .child(self.button(
                         "凭据管理",
                         !self.busy,
                         |this, _, _| this.open_credential_manager(),
@@ -5559,7 +5579,8 @@ impl RepositoryView {
                             .is_some_and(|snapshot| !snapshot.conflicts.is_empty()),
                         |this| this.child(self.mode_button("冲突处理", MainMode::Conflict, cx)),
                     )
-                    .child(self.mode_button("提交记录", MainMode::History, cx)),
+                    .child(self.mode_button("提交记录", MainMode::History, cx))
+                    .child(self.mode_button("工作流", MainMode::Workflow, cx)),
             )
     }
 
@@ -7012,9 +7033,6 @@ impl RepositoryView {
 
         let content = match dialog {
             DialogState::CloneRepo => self.render_clone_dialog(window, cx).into_any_element(),
-            DialogState::WorkflowRunner => {
-                self.render_workflow_dialog(window, cx).into_any_element()
-            }
             DialogState::CreateBranch => self
                 .render_create_branch_dialog(window, cx)
                 .into_any_element(),
@@ -8391,6 +8409,9 @@ impl Render for RepositoryView {
                             .render_conflict_workbench(window, cx)
                             .into_any_element(),
                         MainMode::History => self.render_history_view(cx).into_any_element(),
+                        MainMode::Workflow => {
+                            self.render_workflow_view(window, cx).into_any_element()
+                        }
                     }),
             )
             .child(self.render_status())
@@ -8906,6 +8927,22 @@ mod app_tests {
             infer_clone_target_path("https://github.com/example/abc", ""),
             None
         );
+    }
+
+    #[test]
+    fn repo_tab_workflow_state_is_isolated_per_tab() {
+        let mut left = RepoTabState::new(RepoTabId(1), Some(PathBuf::from("C:/repos/left")));
+        let right = RepoTabState::new(RepoTabId(2), Some(PathBuf::from("C:/repos/right")));
+
+        left.workflow_state.file_path =
+            Some(PathBuf::from("C:/Users/test/.khaslana/workflows/a.json5"));
+        left.workflow_state.selected_template_path =
+            Some(PathBuf::from("C:/Users/test/.khaslana/workflows/a.json5"));
+        left.workflow_state.log.push("left workflow".into());
+
+        assert!(right.workflow_state.file_path.is_none());
+        assert!(right.workflow_state.selected_template_path.is_none());
+        assert!(right.workflow_state.log.is_empty());
     }
 
     fn sample_conflict_view(path: &str) -> ConflictFileView {
