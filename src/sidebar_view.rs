@@ -7,7 +7,8 @@ use crate::{
     BRANCH_MENU_HEIGHT, BRANCH_MENU_WIDTH, BranchContextMenu, NAV_ROW_HEIGHT, RepositoryView,
     STASH_MENU_HEIGHT, STASH_MENU_WIDTH, SidebarSection, StashContextMenu, TAG_MENU_HEIGHT,
     TAG_MENU_WIDTH, TagContextMenu, clamped_menu_position, context_menu_item, menu_separator,
-    nav_list, nav_row, placeholder_row, ui::theme as ui_theme,
+    nav_list, nav_row, placeholder_row, section_header_action,
+    ui::{components::glass_menu, theme as ui_theme},
 };
 
 impl RepositoryView {
@@ -58,8 +59,8 @@ impl RepositoryView {
             .min_w(px(self.sidebar_width))
             .h_full()
             .border_r_1()
-            .border_color(rgb(ui_theme::BORDER))
-            .bg(rgb(ui_theme::PANEL_BG))
+            .border_color(rgb(ui_theme::GLASS_BORDER))
+            .bg(rgb(ui_theme::PANEL_TINT))
             .child(
                 self.render_nav_section(
                     "本地分支",
@@ -370,14 +371,14 @@ impl RepositoryView {
             BranchKind::Remote => format!("  {}", branch.name),
         };
         let row_bg = if is_current {
-            ui_theme::ACCENT_SOFT
+            ui_theme::ROW_SELECTED
         } else if selected {
             ui_theme::ROW_SELECTED
         } else {
             ui_theme::SURFACE
         };
         let row_border = if is_current {
-            ui_theme::BORDER_STRONG
+            ui_theme::ROW_SELECTED_BORDER
         } else if selected {
             ui_theme::ROW_SELECTED_BORDER
         } else {
@@ -388,7 +389,7 @@ impl RepositoryView {
         } else if selected {
             ui_theme::ROW_SELECTED_BORDER
         } else {
-            ui_theme::SURFACE
+            ui_theme::BORDER_MUTED
         };
 
         div()
@@ -483,20 +484,11 @@ impl RepositoryView {
         };
         let is_local = menu.kind == BranchKind::Local;
 
-        div()
+        glass_menu()
             .absolute()
             .left(px(menu.x))
             .top(px(menu.y))
             .w(px(BRANCH_MENU_WIDTH))
-            .py_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(rgb(ui_theme::BORDER_STRONG))
-            .bg(rgb(ui_theme::SURFACE))
-            .shadow_lg()
-            .flex()
-            .flex_col()
-            .text_size(px(12.0))
             .child(context_menu_item(
                 "切换到此分支",
                 is_local && !menu.is_head && !self.busy,
