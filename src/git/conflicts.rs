@@ -1,13 +1,107 @@
 use std::fs;
 use std::path::Path;
+use std::str;
 
 use git2::build::CheckoutBuilder;
-use git2::{ErrorCode, Repository};
+use git2::{ErrorCode, MergeFileOptions, Repository};
 
 use super::{GitService, ensure_worktree_relative_path, path_to_git, remove_worktree_path};
-use crate::{ConflictResolutionSide, GitError, OperationEvent, RepositorySnapshot, Result};
+use crate::{
+    ConflictBlock, ConflictDraftStatus, ConflictFileKind, ConflictFileView,
+    ConflictResolutionSide, GitError, OperationEvent, RepositorySnapshot, Result,
+};
 
 impl GitService {
+    pub fn conflict_file_view(&self, repo: &Repository, path: &Path) -> Result<ConflictFileView> {
+        ensure_worktree_relative_path(path, "不能读取冲突详情")?;
+        let index = repo.index()?;
+        let conflict = conflict_for_path(&index, path)?;
+        let git_path = path_to_git(path);
+
+        let (Some(ancestor), Some(ours), Some(theirs)) = (
+            conflict.ancestor.as_ref(),
+            conflict.our.as_ref(),
+            conflict.their.as_ref(),
+        ) else {
+            return Ok(ConflictFileView {
+                path: git_path,
+                kind: ConflictFileKind::Unsupported,
+                draft: String::new(),
+                blocks: Vec::new(),
+                draft_status: ConflictDraftStatus::Clean,
+                fallback_reason: Some("该冲突缺少三方文本内容，请使用快捷解决按钮".into()),
+            });
+        };
+
+        if [ancestor, ours, theirs]
+            .into_iter()
+            .any(|entry| entry.mode == 0 || blob_is_binary(repo, entry).unwrap_or(true))
+        {
+            return Ok(ConflictFileView {
+                path: git_path,
+                kind: ConflictFileKind::Binary,
+                draft: String::new(),
+                blocks: Vec::new(),
+                draft_status: ConflictDraftStatus::Clean,
+                fallback_reason: Some("该冲突文件不能使用文本合并编辑器".into()),
+            });
+        }
+
+        let mut options = MergeFileOptions::new();
+        options
+            .style_diff3(true)
+            .ancestor_label("BASE")
+            .our_label("OURS")
+            .their_label("THEIRS");
+        let merged = repo.merge_file_from_index(ancestor, ours, theirs, Some(&mut options))?;
+        let merged_text = str::from_utf8(merged.content()).map_err(|_| {
+            GitError::Message("该冲突文件不是 UTF-8 文本，暂不能使用可视化编辑器".into())
+        })?;
+        let (draft, blocks) = parse_diff3_conflict_text(merged_text)?;
+
+        Ok(ConflictFileView {
+            path: git_path,
+            kind: ConflictFileKind::Text,
+            draft,
+            blocks,
+            draft_status: ConflictDraftStatus::Clean,
+            fallback_reason: None,
+        })
+    }
+
+    pub fn apply_conflict_draft(
+        &self,
+        repo: &mut Repository,
+        path: &Path,
+        draft: &str,
+    ) -> Result<RepositorySnapshot> {
+        ensure_worktree_relative_path(path, "不能应用冲突草稿")?;
+        self.progress
+            .emit(OperationEvent::Started("正在应用冲突草稿".into()));
+        conflict_for_path(&repo.index()?, path)?;
+        write_conflict_draft(repo, path, draft)?;
+        self.progress
+            .emit(OperationEvent::Finished("冲突草稿已应用到工作区".into()));
+        self.snapshot_after_operation(repo)
+    }
+
+    pub fn apply_conflict_draft_and_resolve(
+        &self,
+        repo: &mut Repository,
+        path: &Path,
+        draft: &str,
+    ) -> Result<RepositorySnapshot> {
+        ensure_worktree_relative_path(path, "不能应用并解决冲突")?;
+        self.progress
+            .emit(OperationEvent::Started("正在应用结果并标记冲突解决".into()));
+        conflict_for_path(&repo.index()?, path)?;
+        write_conflict_draft(repo, path, draft)?;
+        let snapshot = self.mark_conflict_resolved_inner(repo, path)?;
+        self.progress
+            .emit(OperationEvent::Finished("冲突结果已应用并标记解决".into()));
+        Ok(snapshot)
+    }
+
     pub fn resolve_conflict_with_side(
         &self,
         repo: &mut Repository,
@@ -120,6 +214,104 @@ fn conflict_for_path(index: &git2::Index, path: &Path) -> Result<git2::IndexConf
     })
 }
 
+fn write_conflict_draft(repo: &Repository, path: &Path, draft: &str) -> Result<()> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| GitError::Message("裸仓库没有工作区，不能写入冲突结果".into()))?;
+    let full_path = workdir.join(path);
+    if let Some(parent) = full_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(full_path, draft)?;
+    Ok(())
+}
+
+fn blob_is_binary(repo: &Repository, entry: &git2::IndexEntry) -> Result<bool> {
+    let blob = repo.find_blob(entry.id)?;
+    Ok(blob.content().contains(&0))
+}
+
+fn parse_diff3_conflict_text(content: &str) -> Result<(String, Vec<ConflictBlock>)> {
+    let lines = split_lines_preserve_endings(content);
+    let mut index = 0;
+    let mut draft = String::new();
+    let mut blocks = Vec::new();
+
+    while index < lines.len() {
+        let line = lines[index];
+        if !line.starts_with("<<<<<<< OURS") {
+            draft.push_str(line);
+            index += 1;
+            continue;
+        }
+
+        index += 1;
+        let ours_start = index;
+        while index < lines.len() && !lines[index].starts_with("||||||| BASE") {
+            index += 1;
+        }
+        if index >= lines.len() {
+            return Err(GitError::Message("冲突文本缺少 BASE 分隔标记".into()));
+        }
+        let ours = lines[ours_start..index].concat();
+
+        index += 1;
+        let base_start = index;
+        while index < lines.len() && !lines[index].starts_with("=======") {
+            index += 1;
+        }
+        if index >= lines.len() {
+            return Err(GitError::Message("冲突文本缺少中间分隔标记".into()));
+        }
+        let base = lines[base_start..index].concat();
+
+        index += 1;
+        let theirs_start = index;
+        while index < lines.len() && !lines[index].starts_with(">>>>>>> THEIRS") {
+            index += 1;
+        }
+        if index >= lines.len() {
+            return Err(GitError::Message("冲突文本缺少 THEIRS 结束标记".into()));
+        }
+        let theirs = lines[theirs_start..index].concat();
+        index += 1;
+
+        let start = draft.len();
+        draft.push_str(&ours);
+        let end = draft.len();
+        blocks.push(ConflictBlock {
+            base: Some(base),
+            ours,
+            theirs,
+            start,
+            end,
+            resolution: None,
+            has_manual_edits: false,
+        });
+    }
+
+    Ok((draft, blocks))
+}
+
+fn split_lines_preserve_endings(content: &str) -> Vec<&str> {
+    if content.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for (index, ch) in content.char_indices() {
+        if ch == '\n' {
+            lines.push(&content[start..index + 1]);
+            start = index + 1;
+        }
+    }
+    if start < content.len() {
+        lines.push(&content[start..]);
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -209,6 +401,41 @@ mod tests {
             .checkout_branch(&mut repo, &BranchName::new("main"))
             .unwrap();
         write_file(dir.path(), "same.txt", "main\n");
+        commit_all(&repo, "main");
+
+        let err = service
+            .merge_branch(&mut repo, &BranchName::new("feature"))
+            .unwrap_err();
+        assert!(matches!(err, GitError::Conflicts(paths) if paths == vec!["same.txt"]));
+        (dir, repo, service)
+    }
+
+    fn create_multi_block_text_conflict() -> (TempDir, Repository, GitService) {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "same.txt", "start\none\nmiddle\ntwo\nend\n");
+        commit_all(&repo, "initial");
+
+        service
+            .create_branch(&mut repo, &BranchName::new("feature"))
+            .unwrap();
+        service
+            .checkout_branch(&mut repo, &BranchName::new("feature"))
+            .unwrap();
+        write_file(
+            dir.path(),
+            "same.txt",
+            "start\nfeature-one\nmiddle\nfeature-two\nend\n",
+        );
+        commit_all(&repo, "feature");
+
+        service
+            .checkout_branch(&mut repo, &BranchName::new("main"))
+            .unwrap();
+        write_file(
+            dir.path(),
+            "same.txt",
+            "start\nmain-one\nmiddle\nmain-two\nend\n",
+        );
         commit_all(&repo, "main");
 
         let err = service
@@ -348,5 +575,94 @@ mod tests {
             .to_string();
 
         assert!(error.contains("不存在冲突"));
+    }
+
+    #[test]
+    fn conflict_file_view_parses_multiple_text_blocks_and_starts_with_ours_result() {
+        let (_dir, repo, service) = create_multi_block_text_conflict();
+
+        let view = service
+            .conflict_file_view(&repo, Path::new("same.txt"))
+            .unwrap();
+
+        assert_eq!(view.kind, crate::ConflictFileKind::Text);
+        assert_eq!(view.blocks.len(), 2);
+        assert_eq!(view.blocks[0].ours, "main-one\n");
+        assert_eq!(view.blocks[0].theirs, "feature-one\n");
+        assert_eq!(view.blocks[0].base.as_deref(), Some("one\n"));
+        assert_eq!(view.blocks[1].ours, "main-two\n");
+        assert_eq!(view.blocks[1].theirs, "feature-two\n");
+        assert_eq!(view.draft, "start\nmain-one\nmiddle\nmain-two\nend\n");
+        assert_eq!(view.draft_status, crate::ConflictDraftStatus::Clean);
+    }
+
+    #[test]
+    fn conflict_file_view_block_actions_update_draft_and_shift_ranges() {
+        let (_dir, repo, service) = create_multi_block_text_conflict();
+
+        let mut view = service
+            .conflict_file_view(&repo, Path::new("same.txt"))
+            .unwrap();
+        view.apply_block_resolution(0, crate::ConflictBlockResolution::Theirs);
+        view.apply_block_resolution(1, crate::ConflictBlockResolution::BothOursFirst);
+
+        assert_eq!(
+            view.draft,
+            "start\nfeature-one\nmiddle\nmain-two\nfeature-two\nend\n"
+        );
+        assert_eq!(view.blocks[0].resolution, Some(crate::ConflictBlockResolution::Theirs));
+        assert_eq!(
+            view.blocks[1].resolution,
+            Some(crate::ConflictBlockResolution::BothOursFirst)
+        );
+        assert_eq!(view.draft_status, crate::ConflictDraftStatus::Dirty);
+    }
+
+    #[test]
+    fn apply_conflict_draft_writes_file_but_keeps_conflict_unresolved() {
+        let (dir, mut repo, service) = create_text_conflict();
+
+        let mut view = service
+            .conflict_file_view(&repo, Path::new("same.txt"))
+            .unwrap();
+        view.apply_block_resolution(0, crate::ConflictBlockResolution::Theirs);
+        let snapshot = service
+            .apply_conflict_draft(&mut repo, Path::new("same.txt"), &view.draft)
+            .unwrap();
+
+        assert_file_text(dir.path(), "same.txt", "feature\n");
+        assert_eq!(snapshot.conflicts, vec!["same.txt".to_string()]);
+        assert_eq!(service.conflicts(&repo).unwrap(), vec!["same.txt".to_string()]);
+    }
+
+    #[test]
+    fn apply_conflict_draft_and_resolve_clears_conflict_and_allows_commit() {
+        let (dir, mut repo, service) = create_text_conflict();
+
+        let view = service
+            .conflict_file_view(&repo, Path::new("same.txt"))
+            .unwrap();
+        let snapshot = service
+            .apply_conflict_draft_and_resolve(&mut repo, Path::new("same.txt"), &view.draft)
+            .unwrap();
+
+        assert_file_text(dir.path(), "same.txt", "main\n");
+        assert!(snapshot.conflicts.is_empty());
+        service
+            .commit(&mut repo, &CommitMessage::new("resolve from workbench"))
+            .unwrap();
+    }
+
+    #[test]
+    fn mark_conflict_file_with_missing_side_as_unsupported() {
+        let (_dir, repo, service) = create_modify_delete_conflict();
+
+        let view = service
+            .conflict_file_view(&repo, Path::new("same.txt"))
+            .unwrap();
+
+        assert_eq!(view.kind, crate::ConflictFileKind::Unsupported);
+        assert!(view.blocks.is_empty());
+        assert!(view.fallback_reason.is_some());
     }
 }
