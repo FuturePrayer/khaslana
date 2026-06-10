@@ -7,7 +7,7 @@ use crate::{
     BRANCH_MENU_HEIGHT, BRANCH_MENU_WIDTH, BranchContextMenu, NAV_ROW_HEIGHT, RepositoryView,
     STASH_MENU_HEIGHT, STASH_MENU_WIDTH, SidebarSection, StashContextMenu, TAG_MENU_HEIGHT,
     TAG_MENU_WIDTH, TagContextMenu, clamped_menu_position, context_menu_item, menu_separator,
-    nav_list, nav_row, placeholder_row, section_header_action,
+    nav_list, nav_row, placeholder_row,
     ui::{components::glass_menu, theme as ui_theme},
 };
 
