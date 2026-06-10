@@ -175,15 +175,20 @@ impl<'a> WorkflowExecutor<'a> {
         validate_input_values(definition, options)?;
         let context = WorkflowEvalContext::new(self.service, repo);
         let mut resolver = WorkflowResolver::new(self.service, repo, definition, options, &context);
+        let mut preview_state = WorkflowPreviewState::default();
         let steps = definition
             .steps
             .iter()
             .enumerate()
             .map(|(index, step)| {
+                let resolved_step = step.resolve(&mut resolver)?;
+                let summary = resolved_step.summary();
+                preview_state.apply(&resolved_step);
+                resolver.set_preview_current_branch(preview_state.current_branch.clone());
                 Ok(WorkflowPreviewStep {
                     index,
                     op: step.op_name(),
-                    summary: step.resolved_summary(&mut resolver)?,
+                    summary,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -302,6 +307,25 @@ enum ResolvedWorkflowStep {
     },
 }
 
+#[derive(Default)]
+struct WorkflowPreviewState {
+    current_branch: Option<String>,
+}
+
+impl WorkflowPreviewState {
+    fn apply(&mut self, step: &ResolvedWorkflowStep) {
+        match step {
+            ResolvedWorkflowStep::Checkout { branch } => {
+                self.current_branch = Some(branch.clone());
+            }
+            ResolvedWorkflowStep::CreateBranch { name, checkout, .. } if *checkout => {
+                self.current_branch = Some(name.clone());
+            }
+            _ => {}
+        }
+    }
+}
+
 impl WorkflowStep {
     pub fn op_name(&self) -> &'static str {
         match self {
@@ -314,10 +338,6 @@ impl WorkflowStep {
             WorkflowStep::EnsureClean => "ensureClean",
             WorkflowStep::AssertBranch { .. } => "assertBranch",
         }
-    }
-
-    fn resolved_summary(&self, resolver: &mut WorkflowResolver<'_, '_>) -> Result<String> {
-        Ok(self.resolve(resolver)?.summary())
     }
 
     fn resolve(&self, resolver: &mut WorkflowResolver<'_, '_>) -> Result<ResolvedWorkflowStep> {
@@ -563,6 +583,7 @@ struct WorkflowResolver<'a, 'repo> {
     definition: &'a WorkflowDefinition,
     options: &'a WorkflowRunOptions,
     context: &'a WorkflowEvalContext,
+    preview_current_branch: Option<String>,
 }
 
 impl<'a, 'repo> WorkflowResolver<'a, 'repo> {
@@ -579,10 +600,18 @@ impl<'a, 'repo> WorkflowResolver<'a, 'repo> {
             definition,
             options,
             context,
+            preview_current_branch: None,
         }
     }
 
+    fn set_preview_current_branch(&mut self, branch: Option<String>) {
+        self.preview_current_branch = branch;
+    }
+
     fn current_branch(&self) -> Result<String> {
+        if let Some(branch) = self.preview_current_branch.as_ref() {
+            return Ok(branch.clone());
+        }
         self.service.current_branch(self.repo).ok_or_else(|| {
             GitError::Message("当前 HEAD 未指向本地分支，无法解析 git.currentBranch".into())
         })
@@ -959,6 +988,83 @@ mod tests {
             .unwrap();
 
         assert_eq!(default, "feature/main");
+    }
+
+    #[test]
+    fn preview_uses_checkout_branch_for_implicit_push_branch() {
+        let (dir, repo, service) = init_repo();
+        write_file(dir.path(), "README.md", "hello\n");
+        commit_all(&repo, "initial");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              steps: [
+                { op: "checkout", branch: "test" },
+                { op: "push", remote: "origin" },
+              ],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let preview = WorkflowExecutor::new(&service)
+            .preview(&repo, &definition, &WorkflowRunOptions::default())
+            .unwrap();
+
+        assert_eq!(preview.steps[1].summary, "推送分支 test 到 origin");
+    }
+
+    #[test]
+    fn preview_tracks_create_branch_checkout_for_current_branch() {
+        let (dir, repo, service) = init_repo();
+        write_file(dir.path(), "README.md", "hello\n");
+        commit_all(&repo, "initial");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              steps: [
+                { op: "createBranch", name: "A", checkout: true },
+                { op: "assertBranch", branch: "${git.currentBranch}" },
+                { op: "push", remote: "origin" },
+              ],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let preview = WorkflowExecutor::new(&service)
+            .preview(&repo, &definition, &WorkflowRunOptions::default())
+            .unwrap();
+
+        assert_eq!(preview.steps[1].summary, "确认当前分支是 A");
+        assert_eq!(preview.steps[2].summary, "推送分支 A 到 origin");
+    }
+
+    #[test]
+    fn preview_does_not_track_create_branch_without_checkout() {
+        let (dir, repo, service) = init_repo();
+        write_file(dir.path(), "README.md", "hello\n");
+        commit_all(&repo, "initial");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              steps: [
+                { op: "createBranch", name: "A", checkout: false },
+                { op: "push", remote: "origin" },
+              ],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let preview = WorkflowExecutor::new(&service)
+            .preview(&repo, &definition, &WorkflowRunOptions::default())
+            .unwrap();
+
+        assert_eq!(preview.steps[1].summary, "推送分支 main 到 origin");
     }
 
     #[test]

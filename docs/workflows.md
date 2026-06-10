@@ -197,6 +197,8 @@ inputs: {
 | `branch` | 否 | 当前分支 | 要推送的本地分支。 |
 | `setUpstream` | 否 | `true` | 推送成功后是否设置 upstream。 |
 
+省略 `branch` 时，会使用执行到该步骤时的当前分支；如果前面有 `checkout` 或 `createBranch` 且 `checkout: true`，步骤预览也会按这个分支推断显示。
+
 ### ensureClean
 
 检查工作区是否干净。
@@ -314,6 +316,8 @@ vars: {
 | `${git.repoName}` | 当前仓库目录名。 |
 
 注意：如果当前处于 detached HEAD，`${git.initialBranch}` 或 `${git.currentBranch}` 可能无法解析，工作流会报错。
+
+步骤预览会基于前置 `checkout` 和 `createBranch checkout: true` 推断 `${git.currentBranch}`，但不会模拟 fetch、pull 或 merge 的真实 Git 结果。
 
 ## 完整示例
 

@@ -224,42 +224,50 @@ impl RepositoryView {
             .w(px(720.0))
             .max_h(px(660.0))
             .child(
-                div().flex().items_center().justify_end().gap_2().child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(self.button(
-                            "选择文件",
-                            !self.busy,
-                            |this, _, _| this.browse_workflow_file(),
-                            cx,
-                        ))
-                        .child(self.button(
-                            "清空",
-                            self.workflow_definition.is_some() && !self.busy,
-                            |this, _, _| this.clear_workflow_file(),
-                            cx,
-                        )),
-                ),
-            )
-            .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap_1()
-                    .text_size(px(12.0))
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
                     .child(
                         div()
-                            .text_color(rgb(ui_theme::TEXT_MUTED))
-                            .truncate()
-                            .child(file_label),
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .gap_1()
+                            .text_size(px(12.0))
+                            .child(
+                                div()
+                                    .text_color(rgb(ui_theme::ACCENT_STRONG))
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .truncate()
+                                    .child(workflow_name),
+                            )
+                            .child(
+                                div()
+                                    .text_color(rgb(ui_theme::TEXT_MUTED))
+                                    .truncate()
+                                    .child(file_label),
+                            ),
                     )
                     .child(
                         div()
-                            .text_color(rgb(ui_theme::ACCENT_STRONG))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .truncate()
-                            .child(workflow_name),
+                            .flex()
+                            .flex_none()
+                            .gap_2()
+                            .child(self.button(
+                                "选择文件",
+                                !self.busy,
+                                |this, _, _| this.browse_workflow_file(),
+                                cx,
+                            ))
+                            .child(self.button(
+                                "清空",
+                                self.workflow_definition.is_some() && !self.busy,
+                                |this, _, _| this.clear_workflow_file(),
+                                cx,
+                            )),
                     ),
             )
             .child(self.render_workflow_inputs(window, cx))
