@@ -24,6 +24,13 @@ impl ConflictBlockResolution {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConflictBlockStatus {
+    Unresolved,
+    Resolved(ConflictBlockResolution),
+    Ignored,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConflictFileKind {
     Text,
     Binary,
@@ -44,7 +51,11 @@ pub struct ConflictBlock {
     pub theirs: String,
     pub start: usize,
     pub end: usize,
-    pub resolution: Option<ConflictBlockResolution>,
+    pub ours_start: usize,
+    pub ours_end: usize,
+    pub theirs_start: usize,
+    pub theirs_end: usize,
+    pub status: ConflictBlockStatus,
     pub has_manual_edits: bool,
 }
 
@@ -59,6 +70,8 @@ pub struct ConflictFileView {
     pub path: String,
     pub kind: ConflictFileKind,
     pub draft: String,
+    pub ours_text: String,
+    pub theirs_text: String,
     pub blocks: Vec<ConflictBlock>,
     pub draft_status: ConflictDraftStatus,
     pub fallback_reason: Option<String>,
@@ -68,8 +81,26 @@ impl ConflictFileView {
     pub fn unresolved_block_count(&self) -> usize {
         self.blocks
             .iter()
-            .filter(|block| block.resolution.is_none())
+            .filter(|block| matches!(block.status, ConflictBlockStatus::Unresolved))
             .count()
+    }
+
+    pub fn ignored_block_count(&self) -> usize {
+        self.blocks
+            .iter()
+            .filter(|block| matches!(block.status, ConflictBlockStatus::Ignored))
+            .count()
+    }
+
+    pub fn handled_block_count(&self) -> usize {
+        self.blocks
+            .iter()
+            .filter(|block| !matches!(block.status, ConflictBlockStatus::Unresolved))
+            .count()
+    }
+
+    pub fn requires_resolution_confirmation(&self) -> bool {
+        self.unresolved_block_count() > 0
     }
 
     pub fn has_manual_blocks(&self) -> bool {
@@ -93,7 +124,21 @@ impl ConflictFileView {
             return;
         };
         let replacement = block.resolved_text(resolution);
-        self.replace_block_text(block_index, replacement, Some(resolution), false);
+        self.replace_block_text(
+            block_index,
+            replacement,
+            ConflictBlockStatus::Resolved(resolution),
+            false,
+        );
+    }
+
+    pub fn ignore_block(&mut self, block_index: usize) {
+        let Some(block) = self.blocks.get_mut(block_index) else {
+            return;
+        };
+        block.status = ConflictBlockStatus::Ignored;
+        block.has_manual_edits = false;
+        self.draft_status = ConflictDraftStatus::Dirty;
     }
 
     pub fn set_draft(&mut self, new_draft: String) {
@@ -123,7 +168,7 @@ impl ConflictFileView {
                 block.start = prefix;
             }
             block.end = add_signed(block.end, delta).max(block.start);
-            block.resolution = None;
+            block.status = ConflictBlockStatus::Unresolved;
         }
 
         self.draft = new_draft;
@@ -134,18 +179,19 @@ impl ConflictFileView {
         &mut self,
         block_index: usize,
         replacement: String,
-        resolution: Option<ConflictBlockResolution>,
+        status: ConflictBlockStatus,
         manual: bool,
     ) {
         let Some(block) = self.blocks.get(block_index).cloned() else {
             return;
         };
 
-        self.draft.replace_range(block.start..block.end, &replacement);
+        self.draft
+            .replace_range(block.start..block.end, &replacement);
         let delta = replacement.len() as isize - (block.end - block.start) as isize;
         if let Some(current) = self.blocks.get_mut(block_index) {
             current.end = current.start + replacement.len();
-            current.resolution = resolution;
+            current.status = status;
             current.has_manual_edits = manual;
         }
         for later in self.blocks.iter_mut().skip(block_index + 1) {
@@ -199,4 +245,3 @@ fn shared_suffix_len(left: &str, right: &str) -> usize {
     }
     suffix
 }
-

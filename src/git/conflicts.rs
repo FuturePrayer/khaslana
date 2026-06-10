@@ -7,7 +7,7 @@ use git2::{ErrorCode, MergeFileOptions, Repository};
 
 use super::{GitService, ensure_worktree_relative_path, path_to_git, remove_worktree_path};
 use crate::{
-    ConflictBlock, ConflictDraftStatus, ConflictFileKind, ConflictFileView,
+    ConflictBlock, ConflictBlockStatus, ConflictDraftStatus, ConflictFileKind, ConflictFileView,
     ConflictResolutionSide, GitError, OperationEvent, RepositorySnapshot, Result,
 };
 
@@ -27,6 +27,8 @@ impl GitService {
                 path: git_path,
                 kind: ConflictFileKind::Unsupported,
                 draft: String::new(),
+                ours_text: String::new(),
+                theirs_text: String::new(),
                 blocks: Vec::new(),
                 draft_status: ConflictDraftStatus::Clean,
                 fallback_reason: Some("该冲突缺少三方文本内容，请使用快捷解决按钮".into()),
@@ -41,6 +43,8 @@ impl GitService {
                 path: git_path,
                 kind: ConflictFileKind::Binary,
                 draft: String::new(),
+                ours_text: String::new(),
+                theirs_text: String::new(),
                 blocks: Vec::new(),
                 draft_status: ConflictDraftStatus::Clean,
                 fallback_reason: Some("该冲突文件不能使用文本合并编辑器".into()),
@@ -57,12 +61,14 @@ impl GitService {
         let merged_text = str::from_utf8(merged.content()).map_err(|_| {
             GitError::Message("该冲突文件不是 UTF-8 文本，暂不能使用可视化编辑器".into())
         })?;
-        let (draft, blocks) = parse_diff3_conflict_text(merged_text)?;
+        let (draft, ours_text, theirs_text, blocks) = parse_diff3_conflict_text(merged_text)?;
 
         Ok(ConflictFileView {
             path: git_path,
             kind: ConflictFileKind::Text,
             draft,
+            ours_text,
+            theirs_text,
             blocks,
             draft_status: ConflictDraftStatus::Clean,
             fallback_reason: None,
@@ -231,16 +237,22 @@ fn blob_is_binary(repo: &Repository, entry: &git2::IndexEntry) -> Result<bool> {
     Ok(blob.content().contains(&0))
 }
 
-fn parse_diff3_conflict_text(content: &str) -> Result<(String, Vec<ConflictBlock>)> {
+fn parse_diff3_conflict_text(
+    content: &str,
+) -> Result<(String, String, String, Vec<ConflictBlock>)> {
     let lines = split_lines_preserve_endings(content);
     let mut index = 0;
     let mut draft = String::new();
+    let mut ours_text = String::new();
+    let mut theirs_text = String::new();
     let mut blocks = Vec::new();
 
     while index < lines.len() {
         let line = lines[index];
         if !line.starts_with("<<<<<<< OURS") {
             draft.push_str(line);
+            ours_text.push_str(line);
+            theirs_text.push_str(line);
             index += 1;
             continue;
         }
@@ -277,7 +289,11 @@ fn parse_diff3_conflict_text(content: &str) -> Result<(String, Vec<ConflictBlock
         index += 1;
 
         let start = draft.len();
+        let ours_start = ours_text.len();
+        let theirs_start = theirs_text.len();
         draft.push_str(&ours);
+        ours_text.push_str(&ours);
+        theirs_text.push_str(&theirs);
         let end = draft.len();
         blocks.push(ConflictBlock {
             base: Some(base),
@@ -285,12 +301,16 @@ fn parse_diff3_conflict_text(content: &str) -> Result<(String, Vec<ConflictBlock
             theirs,
             start,
             end,
-            resolution: None,
+            ours_start,
+            ours_end: ours_text.len(),
+            theirs_start,
+            theirs_end: theirs_text.len(),
+            status: ConflictBlockStatus::Unresolved,
             has_manual_edits: false,
         });
     }
 
-    Ok((draft, blocks))
+    Ok((draft, ours_text, theirs_text, blocks))
 }
 
 fn split_lines_preserve_endings(content: &str) -> Vec<&str> {
@@ -587,6 +607,11 @@ mod tests {
 
         assert_eq!(view.kind, crate::ConflictFileKind::Text);
         assert_eq!(view.blocks.len(), 2);
+        assert_eq!(view.ours_text, "start\nmain-one\nmiddle\nmain-two\nend\n");
+        assert_eq!(
+            view.theirs_text,
+            "start\nfeature-one\nmiddle\nfeature-two\nend\n"
+        );
         assert_eq!(view.blocks[0].ours, "main-one\n");
         assert_eq!(view.blocks[0].theirs, "feature-one\n");
         assert_eq!(view.blocks[0].base.as_deref(), Some("one\n"));
@@ -594,6 +619,8 @@ mod tests {
         assert_eq!(view.blocks[1].theirs, "feature-two\n");
         assert_eq!(view.draft, "start\nmain-one\nmiddle\nmain-two\nend\n");
         assert_eq!(view.draft_status, crate::ConflictDraftStatus::Clean);
+        assert_eq!(view.unresolved_block_count(), 2);
+        assert!(view.requires_resolution_confirmation());
     }
 
     #[test]
@@ -610,12 +637,35 @@ mod tests {
             view.draft,
             "start\nfeature-one\nmiddle\nmain-two\nfeature-two\nend\n"
         );
-        assert_eq!(view.blocks[0].resolution, Some(crate::ConflictBlockResolution::Theirs));
         assert_eq!(
-            view.blocks[1].resolution,
-            Some(crate::ConflictBlockResolution::BothOursFirst)
+            view.blocks[0].status,
+            crate::ConflictBlockStatus::Resolved(crate::ConflictBlockResolution::Theirs)
+        );
+        assert_eq!(
+            view.blocks[1].status,
+            crate::ConflictBlockStatus::Resolved(crate::ConflictBlockResolution::BothOursFirst)
         );
         assert_eq!(view.draft_status, crate::ConflictDraftStatus::Dirty);
+        assert!(!view.requires_resolution_confirmation());
+    }
+
+    #[test]
+    fn ignoring_a_block_preserves_draft_and_marks_it_handled() {
+        let (_dir, repo, service) = create_multi_block_text_conflict();
+
+        let mut view = service
+            .conflict_file_view(&repo, Path::new("same.txt"))
+            .unwrap();
+        let original = view.draft.clone();
+
+        view.ignore_block(0);
+
+        assert_eq!(view.draft, original);
+        assert_eq!(view.unresolved_block_count(), 1);
+        assert_eq!(view.ignored_block_count(), 1);
+        assert_eq!(view.handled_block_count(), 1);
+        assert_eq!(view.blocks[0].status, crate::ConflictBlockStatus::Ignored);
+        assert!(view.requires_resolution_confirmation());
     }
 
     #[test]
@@ -632,7 +682,10 @@ mod tests {
 
         assert_file_text(dir.path(), "same.txt", "feature\n");
         assert_eq!(snapshot.conflicts, vec!["same.txt".to_string()]);
-        assert_eq!(service.conflicts(&repo).unwrap(), vec!["same.txt".to_string()]);
+        assert_eq!(
+            service.conflicts(&repo).unwrap(),
+            vec!["same.txt".to_string()]
+        );
     }
 
     #[test]
