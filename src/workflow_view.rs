@@ -1,17 +1,60 @@
+use std::collections::BTreeMap;
 use std::{fs, thread};
 
 use git2::Repository;
-use gpui::{Context, IntoElement, div, prelude::*, px, rgb};
-use khaslana::{WorkflowExecutor, WorkflowProgressEvent, WorkflowRunOptions, parse_workflow_json5};
+use gpui::{Context, IntoElement, Window, div, prelude::*, px, rgb};
+use khaslana::{
+    WorkflowDefinition, WorkflowExecutor, WorkflowInputDefinition, WorkflowPreview,
+    WorkflowProgressEvent, WorkflowRunOptions, parse_workflow_json5,
+};
 
 use crate::{
-    DialogState, RepositoryLoading, RepositorySnapshot, RepositoryView, ScrollbarMode, UiEvent,
-    placeholder_row, scrollable_frame_when, send_ui_event,
+    DialogState, FieldId, RepositoryLoading, RepositorySnapshot, RepositoryView, ScrollbarMode,
+    TextFieldState, UiEvent, placeholder_row, scrollable_frame_when, send_ui_event,
     ui::{
         components::{dialog_actions, dialog_panel as ui_dialog_panel, section_title},
         theme as ui_theme,
     },
 };
+
+pub(crate) struct WorkflowInputFieldState {
+    key: String,
+    label: String,
+    description: Option<String>,
+    required: bool,
+    field: TextFieldState,
+}
+
+impl WorkflowInputFieldState {
+    fn new(
+        key: String,
+        input: &WorkflowInputDefinition,
+        value: String,
+        cx: &mut Context<RepositoryView>,
+    ) -> Self {
+        let label = input
+            .label
+            .as_ref()
+            .map(|label| label.trim())
+            .filter(|label| !label.is_empty())
+            .unwrap_or(&key)
+            .to_string();
+        let mut field = TextFieldState::new(cx, label.clone());
+        field.set_value(value);
+        Self {
+            key,
+            label,
+            description: input
+                .description
+                .as_ref()
+                .map(|description| description.trim())
+                .filter(|description| !description.is_empty())
+                .map(ToOwned::to_owned),
+            required: input.required,
+            field,
+        }
+    }
+}
 
 impl RepositoryView {
     pub(crate) fn open_workflow_dialog(&mut self) {
@@ -41,11 +84,12 @@ impl RepositoryView {
         self.workflow_definition = None;
         self.workflow_preview = None;
         self.workflow_file_path = None;
+        self.workflow_inputs.clear();
         self.workflow_log.clear();
         self.last_error = None;
     }
 
-    pub(crate) fn load_workflow_file(&mut self, path: std::path::PathBuf) {
+    pub(crate) fn load_workflow_file(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
         let Some(repo_path) = self.repo_path.clone() else {
             self.last_error = Some("请先打开一个仓库".into());
             return;
@@ -64,34 +108,20 @@ impl RepositoryView {
                 return;
             }
         };
-        let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
-            return;
-        };
-        let service = self.service_for_tab(tab_id);
-        let preview = match Repository::open(repo_path)
-            .map_err(khaslana::GitError::from)
-            .and_then(|repo| {
-                WorkflowExecutor::new(&service).preview(
-                    &repo,
-                    &definition,
-                    &WorkflowRunOptions {
-                        default_remote: self.current_remote().unwrap_or_else(|| "origin".into()),
-                    },
-                )
-            }) {
-            Ok(preview) => preview,
+        let inputs = match self.build_workflow_inputs(&definition, &repo_path, cx) {
+            Ok(inputs) => inputs,
             Err(err) => {
                 self.last_error = Some(err.to_string());
                 return;
             }
         };
         self.workflow_definition = Some(definition);
-        self.workflow_preview = Some(preview);
         self.workflow_file_path = Some(path);
+        self.workflow_inputs = inputs;
         self.workflow_log.clear();
         self.status = "工作流已加载".to_string();
         self.last_error = None;
+        self.refresh_workflow_preview();
     }
 
     pub(crate) fn run_workflow(&mut self) {
@@ -116,6 +146,7 @@ impl RepositoryView {
         let tx = self.tx.clone();
         let options = WorkflowRunOptions {
             default_remote: self.current_remote().unwrap_or_else(|| "origin".into()),
+            input_vars: self.workflow_input_values(),
         };
         self.apply_status_event(Some(tab_id), |this| {
             this.repository_load_id = this.repository_load_id.wrapping_add(1);
@@ -173,7 +204,11 @@ impl RepositoryView {
         });
     }
 
-    pub(crate) fn render_workflow_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_workflow_dialog(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let file_label = self
             .workflow_file_path
             .as_ref()
@@ -227,6 +262,7 @@ impl RepositoryView {
                             .child(workflow_name),
                     ),
             )
+            .child(self.render_workflow_inputs(window, cx))
             .child(self.render_workflow_preview(cx))
             .child(self.render_workflow_log(cx))
             .child(
@@ -239,6 +275,170 @@ impl RepositoryView {
                         cx,
                     )),
             )
+    }
+
+    pub(crate) fn workflow_input_field(&self, index: usize) -> &TextFieldState {
+        &self.workflow_inputs[index].field
+    }
+
+    pub(crate) fn workflow_input_field_mut(&mut self, index: usize) -> &mut TextFieldState {
+        &mut self.workflow_inputs[index].field
+    }
+
+    pub(crate) fn focused_workflow_input(&self, window: &Window) -> Option<FieldId> {
+        self.workflow_inputs
+            .iter()
+            .enumerate()
+            .find_map(|(index, input)| {
+                input
+                    .field
+                    .focus
+                    .is_focused(window)
+                    .then_some(FieldId::WorkflowInput(index))
+            })
+    }
+
+    pub(crate) fn workflow_input_changed(&mut self) {
+        if self.workflow_definition.is_some() {
+            self.refresh_workflow_preview();
+        }
+    }
+
+    fn build_workflow_inputs(
+        &self,
+        definition: &WorkflowDefinition,
+        repo_path: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) -> khaslana::Result<Vec<WorkflowInputFieldState>> {
+        let mut fields = Vec::new();
+        let tab_id = self
+            .active_tab_id()
+            .ok_or_else(|| khaslana::GitError::Message("请先打开一个仓库".into()))?;
+        let service = self.service_for_tab(tab_id);
+        let repo = Repository::open(repo_path)?;
+        let base_options = WorkflowRunOptions {
+            default_remote: self.current_remote().unwrap_or_else(|| "origin".into()),
+            input_vars: BTreeMap::new(),
+        };
+        for (key, input) in &definition.inputs {
+            let value = match input.default.as_ref() {
+                Some(default) => WorkflowExecutor::new(&service).resolve_template(
+                    &repo,
+                    definition,
+                    &base_options,
+                    default,
+                )?,
+                None => String::new(),
+            };
+            fields.push(WorkflowInputFieldState::new(key.clone(), input, value, cx));
+        }
+        Ok(fields)
+    }
+
+    fn workflow_input_values(&self) -> BTreeMap<String, String> {
+        self.workflow_inputs
+            .iter()
+            .map(|input| (input.key.clone(), input.field.value.clone()))
+            .collect()
+    }
+
+    fn workflow_run_options(&self) -> WorkflowRunOptions {
+        WorkflowRunOptions {
+            default_remote: self.current_remote().unwrap_or_else(|| "origin".into()),
+            input_vars: self.workflow_input_values(),
+        }
+    }
+
+    pub(crate) fn refresh_workflow_preview(&mut self) {
+        let Some(definition) = self.workflow_definition.as_ref() else {
+            self.workflow_preview = None;
+            return;
+        };
+        let Some(repo_path) = self.repo_path.clone() else {
+            self.workflow_preview = None;
+            return;
+        };
+        let Some(tab_id) = self.active_tab_id() else {
+            self.workflow_preview = None;
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        };
+        match self.preview_workflow(&repo_path, definition, self.workflow_run_options(), tab_id) {
+            Ok(preview) => {
+                self.workflow_preview = Some(preview);
+                self.last_error = None;
+            }
+            Err(err) => {
+                self.workflow_preview = None;
+                self.last_error = Some(err.to_string());
+            }
+        }
+    }
+
+    fn preview_workflow(
+        &self,
+        repo_path: &std::path::Path,
+        definition: &WorkflowDefinition,
+        options: WorkflowRunOptions,
+        tab_id: crate::RepoTabId,
+    ) -> khaslana::Result<WorkflowPreview> {
+        let service = self.service_for_tab(tab_id);
+        let repo = Repository::open(repo_path)?;
+        WorkflowExecutor::new(&service).preview(&repo, definition, &options)
+    }
+
+    fn render_workflow_inputs(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.workflow_inputs.is_empty() {
+            return div().into_any_element();
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .border_1()
+            .border_color(rgb(ui_theme::BORDER))
+            .rounded_sm()
+            .p_3()
+            .child(section_title("变量输入"))
+            .children(
+                self.workflow_inputs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, input)| {
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(ui_theme::TEXT_MUTED))
+                                    .child(input.label.clone())
+                                    .when(input.required, |this| {
+                                        this.child(
+                                            div()
+                                                .text_color(rgb(ui_theme::DANGER_STRONG))
+                                                .child("*"),
+                                        )
+                                    }),
+                            )
+                            .child(self.input(FieldId::WorkflowInput(index), false, window, cx))
+                            .when_some(input.description.clone(), |this, description| {
+                                this.child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .text_color(rgb(ui_theme::TEXT_FAINT))
+                                        .child(description),
+                                )
+                            })
+                            .into_any_element()
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .into_any_element()
     }
 
     fn render_workflow_preview(&self, cx: &mut Context<Self>) -> impl IntoElement {

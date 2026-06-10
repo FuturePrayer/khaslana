@@ -18,6 +18,8 @@ pub struct WorkflowDefinition {
     #[serde(default)]
     pub defaults: WorkflowDefaults,
     #[serde(default)]
+    pub inputs: BTreeMap<String, WorkflowInputDefinition>,
+    #[serde(default)]
     pub vars: BTreeMap<String, String>,
     pub steps: Vec<WorkflowStep>,
 }
@@ -29,6 +31,19 @@ impl WorkflowDefinition {
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| "未命名工作流".to_string())
     }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowInputDefinition {
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub default: Option<String>,
+    #[serde(default = "default_workflow_input_required")]
+    pub required: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -87,12 +102,14 @@ pub enum WorkflowStep {
 #[derive(Clone, Debug)]
 pub struct WorkflowRunOptions {
     pub default_remote: String,
+    pub input_vars: BTreeMap<String, String>,
 }
 
 impl Default for WorkflowRunOptions {
     fn default() -> Self {
         Self {
             default_remote: "origin".to_string(),
+            input_vars: BTreeMap::new(),
         }
     }
 }
@@ -155,6 +172,7 @@ impl<'a> WorkflowExecutor<'a> {
         options: &WorkflowRunOptions,
     ) -> Result<WorkflowPreview> {
         validate_definition(definition)?;
+        validate_input_values(definition, options)?;
         let context = WorkflowEvalContext::new(self.service, repo);
         let mut resolver = WorkflowResolver::new(self.service, repo, definition, options, &context);
         let steps = definition
@@ -175,6 +193,19 @@ impl<'a> WorkflowExecutor<'a> {
         })
     }
 
+    pub fn resolve_template(
+        &self,
+        repo: &Repository,
+        definition: &WorkflowDefinition,
+        options: &WorkflowRunOptions,
+        template: &str,
+    ) -> Result<String> {
+        validate_definition(definition)?;
+        let context = WorkflowEvalContext::new(self.service, repo);
+        let mut resolver = WorkflowResolver::new(self.service, repo, definition, options, &context);
+        resolver.interpolate(template)
+    }
+
     pub fn run<F>(
         &self,
         repo: &mut Repository,
@@ -186,6 +217,7 @@ impl<'a> WorkflowExecutor<'a> {
         F: FnMut(WorkflowProgressEvent),
     {
         validate_definition(definition)?;
+        validate_input_values(definition, &options)?;
         if definition.defaults.require_clean_worktree {
             ensure_clean_worktree(self.service, repo)?;
         }
@@ -432,6 +464,53 @@ fn validate_definition(definition: &WorkflowDefinition) -> Result<()> {
     if definition.steps.is_empty() {
         return Err(GitError::Message("工作流至少需要一个步骤".into()));
     }
+    for key in definition.inputs.keys() {
+        validate_input_name(key)?;
+    }
+    Ok(())
+}
+
+fn validate_input_name(name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(GitError::Message("工作流输入变量名不能为空".into()));
+    }
+    if name == "run.id"
+        || name == "git.initialBranch"
+        || name == "git.currentBranch"
+        || name == "git.head"
+        || name == "git.repoName"
+        || name.starts_with("date:")
+        || name.starts_with("run.startedAt:")
+        || name.starts_with("git.")
+        || name.starts_with("run.")
+    {
+        return Err(GitError::Message(format!(
+            "工作流输入变量不能使用内置变量名：{name}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_input_values(
+    definition: &WorkflowDefinition,
+    options: &WorkflowRunOptions,
+) -> Result<()> {
+    for (name, input) in &definition.inputs {
+        if input.required
+            && options
+                .input_vars
+                .get(name)
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            let label = input
+                .label
+                .as_deref()
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or(name);
+            return Err(GitError::Message(format!("请填写工作流变量：{label}")));
+        }
+    }
     Ok(())
 }
 
@@ -592,9 +671,16 @@ impl<'a, 'repo> WorkflowResolver<'a, 'repo> {
                     "工作流变量存在循环引用：{expression}"
                 )));
             }
+            if let Some(input) = self.options.input_vars.get(expression) {
+                stack.remove(expression);
+                return Ok(input.clone());
+            }
             let resolved = self.interpolate_with_stack(value, stack);
             stack.remove(expression);
             return resolved;
+        }
+        if let Some(value) = self.options.input_vars.get(expression) {
+            return Ok(value.clone());
         }
 
         Err(GitError::Message(format!("未知工作流变量：{expression}")))
@@ -611,6 +697,10 @@ fn repo_display_name(repo: &Repository) -> String {
 }
 
 fn default_require_clean_worktree() -> bool {
+    true
+}
+
+fn default_workflow_input_required() -> bool {
     true
 }
 
@@ -719,10 +809,52 @@ mod tests {
     }
 
     #[test]
+    fn parses_workflow_inputs() {
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              inputs: {
+                target: {
+                  label: "目标分支",
+                  description: "运行前填写",
+                  default: "feature/${date:%Y%m%d}",
+                },
+                optionalName: { required: false },
+              },
+              steps: [{ op: "createBranch", name: "${target}" }],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let target = definition.inputs.get("target").unwrap();
+        assert_eq!(target.label.as_deref(), Some("目标分支"));
+        assert_eq!(target.description.as_deref(), Some("运行前填写"));
+        assert!(target.required);
+        assert!(!definition.inputs.get("optionalName").unwrap().required);
+    }
+
+    #[test]
     fn rejects_unknown_version() {
         let err =
             parse_workflow_json5("{ version: 99, steps: [{ op: \"ensureClean\" }] }").unwrap_err();
         assert!(err.to_string().contains("不支持的工作流版本"));
+    }
+
+    #[test]
+    fn rejects_builtin_input_names() {
+        let err = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              inputs: { "git.currentBranch": { default: "main" } },
+              steps: [{ op: "ensureClean" }],
+            }
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("内置变量名"));
     }
 
     #[test]
@@ -745,6 +877,88 @@ mod tests {
             .preview(&repo, &definition, &WorkflowRunOptions::default())
             .unwrap_err();
         assert!(err.to_string().contains("循环引用"));
+    }
+
+    #[test]
+    fn input_values_override_vars() {
+        let (dir, repo, service) = init_repo();
+        write_file(dir.path(), "README.md", "hello\n");
+        commit_all(&repo, "initial");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              inputs: { target: { default: "from-input" } },
+              vars: { target: "from-vars" },
+              steps: [{ op: "createBranch", name: "${target}" }],
+            }
+            "#,
+        )
+        .unwrap();
+        let options = WorkflowRunOptions {
+            input_vars: BTreeMap::from([("target".to_string(), "chosen".to_string())]),
+            ..WorkflowRunOptions::default()
+        };
+
+        let preview = WorkflowExecutor::new(&service)
+            .preview(&repo, &definition, &options)
+            .unwrap();
+
+        assert_eq!(
+            preview.steps[0].summary,
+            "基于 当前 HEAD 创建分支 chosen并切换"
+        );
+    }
+
+    #[test]
+    fn required_input_values_must_not_be_empty() {
+        let (dir, repo, service) = init_repo();
+        write_file(dir.path(), "README.md", "hello\n");
+        commit_all(&repo, "initial");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              inputs: { target: { label: "目标分支" } },
+              steps: [{ op: "createBranch", name: "${target}" }],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = WorkflowExecutor::new(&service)
+            .preview(&repo, &definition, &WorkflowRunOptions::default())
+            .unwrap_err();
+
+        assert!(err.to_string().contains("请填写工作流变量：目标分支"));
+    }
+
+    #[test]
+    fn resolves_input_defaults_with_existing_variables() {
+        let (dir, repo, service) = init_repo();
+        write_file(dir.path(), "README.md", "hello\n");
+        commit_all(&repo, "initial");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              vars: { prefix: "feature" },
+              inputs: { target: { default: "${prefix}/${git.initialBranch}" } },
+              steps: [{ op: "createBranch", name: "${target}" }],
+            }
+            "#,
+        )
+        .unwrap();
+        let default = WorkflowExecutor::new(&service)
+            .resolve_template(
+                &repo,
+                &definition,
+                &WorkflowRunOptions::default(),
+                definition.inputs["target"].default.as_deref().unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(default, "feature/main");
     }
 
     #[test]

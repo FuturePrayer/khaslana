@@ -7,9 +7,10 @@ Khaslana 工作流用于把一组 Git 操作按顺序自动执行，例如：基
 1. 打开目标仓库。
 2. 点击顶部工具栏的“工作流”。
 3. 点击“选择文件”，选择 `.json5` 或 `.jsonc` 工作流文件。
-4. 在“步骤预览”中确认变量展开后的步骤。
-5. 点击“运行”。
-6. 在“运行日志”中查看每一步执行状态。
+4. 如果工作流声明了运行前输入变量，在“变量输入”区域填写这些字符串变量。
+5. 在“步骤预览”中确认变量展开后的步骤。
+6. 点击“运行”。
+7. 在“运行日志”中查看每一步执行状态。
 
 工作流始终作用于当前激活仓库。涉及远端认证时，继续使用 Khaslana 现有凭据机制和认证弹窗。
 
@@ -27,11 +28,22 @@ Khaslana 工作流用于把一组 Git 操作按顺序自动执行，例如：基
     requireCleanWorktree: true,
   },
 
+  inputs: {
+    target: {
+      label: "目标分支",
+      default: "A-${date:%Y%m%d}",
+      required: true,
+    },
+    source: {
+      label: "要合并的分支",
+      default: "B",
+      required: true,
+    },
+  },
+
   vars: {
     remote: "origin",
     base: "master",
-    target: "A-${date:%Y%m%d}",
-    source: "B",
   },
 
   steps: [
@@ -51,6 +63,7 @@ Khaslana 工作流用于把一组 Git 操作按顺序自动执行，例如：基
 | `version` | 是 | 当前只支持 `1`。 |
 | `name` | 否 | 工作流显示名称。为空时显示“未命名工作流”。 |
 | `defaults` | 否 | 默认行为设置。 |
+| `inputs` | 否 | 运行前让用户在页面填写的字符串变量表。 |
 | `vars` | 否 | 用户自定义变量表，值必须是字符串。 |
 | `steps` | 是 | 要顺序执行的步骤数组，至少需要一个步骤。 |
 
@@ -59,6 +72,36 @@ Khaslana 工作流用于把一组 Git 操作按顺序自动执行，例如：基
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `requireCleanWorktree` | `true` | 运行前检查工作区是否干净。若存在未提交更改，工作流会拒绝运行。 |
+
+### inputs
+
+`inputs` 用来声明运行工作流前需要用户填写的字符串变量。每个 key 会成为同名变量，可直接用 `${变量名}` 引用。
+
+```json5
+inputs: {
+  target: {
+    label: "目标分支",
+    description: "例如 feature/demo",
+    default: "feature/${date:%Y%m%d}",
+    required: true,
+  },
+  source: {
+    label: "来源分支",
+    default: "B",
+  },
+}
+```
+
+字段：
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `label` | 变量名 | 输入框显示名称。 |
+| `description` | 无 | 输入框下方的说明文字。 |
+| `default` | 空字符串 | 输入框初始值，支持 `${...}` 插值。 |
+| `required` | `true` | 是否必填；必填项为空时无法预览和运行。 |
+
+页面输入的值只在本次预览和运行中生效，不会写回工作流文件或用户配置。输入值会覆盖同名 `vars` 值；如果没有同名 `vars`，输入值本身也可以直接作为变量使用。
 
 ## 支持的步骤
 
@@ -215,6 +258,26 @@ vars: {
 
 用户变量可以引用其他变量或内置变量。循环引用会报错并停止解析，例如 `a -> b -> a`。
 
+如果同名变量同时出现在 `inputs` 和 `vars` 中，页面输入值优先：
+
+```json5
+{
+  inputs: {
+    target: { label: "目标分支", default: "feature/demo" },
+  },
+  vars: {
+    target: "fallback",
+  },
+  steps: [
+    { op: "createBranch", name: "${target}" },
+  ],
+}
+```
+
+上例中 `${target}` 会使用用户在页面输入的值，而不是 `fallback`。
+
+`inputs` 不能使用内置变量命名空间，例如 `git.currentBranch`、`git.repoName`、`run.id`、`run.startedAt:*` 或 `date:*`。
+
 ### 日期变量
 
 | 写法 | 说明 | 示例结果 |
@@ -280,11 +343,13 @@ vars: {
 {
   version: 1,
   name: "创建 A 并合并 B",
+  inputs: {
+    target: { label: "目标分支", default: "A" },
+    source: { label: "要合并的分支", default: "B" },
+  },
   vars: {
     remote: "origin",
     base: "master",
-    target: "A",
-    source: "B",
   },
   steps: [
     { op: "checkout", branch: "${base}" },

@@ -52,6 +52,7 @@ use ui::{
     theme as ui_theme,
 };
 use ui_helpers::*;
+use workflow_view::WorkflowInputFieldState;
 use yororen_ui::{
     assets::UiAsset,
     component::init as init_yororen_components,
@@ -128,6 +129,7 @@ enum FieldId {
     CredentialRemoteUrl,
     CredentialDisplayName,
     ConflictEditor,
+    WorkflowInput(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -1208,6 +1210,7 @@ pub(crate) struct RepositoryView {
     pub(crate) workflow_definition: Option<WorkflowDefinition>,
     pub(crate) workflow_preview: Option<WorkflowPreview>,
     pub(crate) workflow_file_path: Option<PathBuf>,
+    pub(crate) workflow_inputs: Vec<WorkflowInputFieldState>,
     pub(crate) workflow_log: Vec<String>,
     diff_encoding_preferences: DiffEncodingPreferences,
     tabs: Vec<RepoTabState>,
@@ -1282,6 +1285,7 @@ impl RepositoryView {
             workflow_definition: None,
             workflow_preview: None,
             workflow_file_path: None,
+            workflow_inputs: Vec::new(),
             workflow_log: Vec::new(),
             diff_encoding_preferences: Self::load_diff_encoding_preferences(),
             tabs: Vec::new(),
@@ -2320,7 +2324,7 @@ impl RepositoryView {
             }
             UiEvent::WorkflowFileSelected { path } => {
                 if let Some(path) = path {
-                    self.load_workflow_file(path);
+                    self.load_workflow_file(path, cx);
                 } else {
                     self.status = "已取消选择工作流文件".to_string();
                     self.last_error = None;
@@ -2563,11 +2567,7 @@ impl RepositoryView {
         };
         self.with_repo(label, move |service, repo| {
             if resolve {
-                service.apply_conflict_draft_and_resolve(
-                    repo,
-                    Path::new(&path_for_op),
-                    &draft,
-                )
+                service.apply_conflict_draft_and_resolve(repo, Path::new(&path_for_op), &draft)
             } else {
                 service.apply_conflict_draft(repo, Path::new(&path_for_op), &draft)
             }
@@ -2636,6 +2636,8 @@ impl RepositoryView {
             if let Some(DialogState::RemoteForm { editing }) = self.active_dialog.clone() {
                 self.save_remote(editing);
             }
+        } else if matches!(field, FieldId::WorkflowInput(_)) {
+            self.refresh_workflow_preview();
         } else if matches!(
             field,
             FieldId::CredentialSecret
@@ -2653,6 +2655,12 @@ impl RepositoryView {
         }
     }
 
+    fn notify_text_field_changed(&mut self, field: FieldId) {
+        if matches!(field, FieldId::WorkflowInput(_)) {
+            self.workflow_input_changed();
+        }
+    }
+
     fn focused_text_field(&self, window: &Window, cx: &App) -> Option<FieldId> {
         self.focused_field(window, cx)
     }
@@ -2660,6 +2668,7 @@ impl RepositoryView {
     fn text_backspace(&mut self, _: &TextBackspace, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(field) = self.focused_text_field(window, cx) {
             self.field_mut(field).delete_backward();
+            self.notify_text_field_changed(field);
             cx.notify();
         }
     }
@@ -2667,6 +2676,7 @@ impl RepositoryView {
     fn text_delete(&mut self, _: &TextDelete, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(field) = self.focused_text_field(window, cx) {
             self.field_mut(field).delete_forward();
+            self.notify_text_field_changed(field);
             cx.notify();
         }
     }
@@ -2790,6 +2800,7 @@ impl RepositoryView {
                 &text,
                 Self::is_multiline_field(field),
             );
+            self.notify_text_field_changed(field);
             cx.notify();
         }
     }
@@ -2810,6 +2821,7 @@ impl RepositoryView {
         if let Some(text) = self.field(field).copyable_selected_text() {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
             self.field_mut(field).delete_selection();
+            self.notify_text_field_changed(field);
             cx.notify();
         }
     }
@@ -2848,6 +2860,7 @@ impl RepositoryView {
         ]
         .into_iter()
         .find_map(|(id, field)| field.focus.is_focused(window).then_some(id))
+        .or_else(|| self.focused_workflow_input(window))
     }
 
     fn field(&self, id: FieldId) -> &TextFieldState {
@@ -2866,6 +2879,7 @@ impl RepositoryView {
             FieldId::CredentialRemoteUrl => &self.credential_remote_url,
             FieldId::CredentialDisplayName => &self.credential_display_name,
             FieldId::ConflictEditor => &self.conflict_editor,
+            FieldId::WorkflowInput(index) => self.workflow_input_field(index),
         }
     }
 
@@ -2885,6 +2899,7 @@ impl RepositoryView {
             FieldId::CredentialRemoteUrl => &mut self.credential_remote_url,
             FieldId::CredentialDisplayName => &mut self.credential_display_name,
             FieldId::ConflictEditor => &mut self.conflict_editor,
+            FieldId::WorkflowInput(index) => self.workflow_input_field_mut(index),
         }
     }
 
@@ -6997,7 +7012,9 @@ impl RepositoryView {
 
         let content = match dialog {
             DialogState::CloneRepo => self.render_clone_dialog(window, cx).into_any_element(),
-            DialogState::WorkflowRunner => self.render_workflow_dialog(cx).into_any_element(),
+            DialogState::WorkflowRunner => {
+                self.render_workflow_dialog(window, cx).into_any_element()
+            }
             DialogState::CreateBranch => self
                 .render_create_branch_dialog(window, cx)
                 .into_any_element(),
@@ -8370,9 +8387,9 @@ impl Render for RepositoryView {
                             .child(self.render_column_splitter(ResizeTarget::Changes, cx))
                             .child(self.render_diff_and_commit(window, cx))
                             .into_any_element(),
-                        MainMode::Conflict => {
-                            self.render_conflict_workbench(window, cx).into_any_element()
-                        }
+                        MainMode::Conflict => self
+                            .render_conflict_workbench(window, cx)
+                            .into_any_element(),
                         MainMode::History => self.render_history_view(cx).into_any_element(),
                     }),
             )
@@ -8456,6 +8473,7 @@ impl gpui::EntityInputHandler for RepositoryView {
                 text,
                 field == FieldId::CommitMessage,
             );
+            self.notify_text_field_changed(field);
             cx.notify();
         }
     }
@@ -8476,6 +8494,7 @@ impl gpui::EntityInputHandler for RepositoryView {
                     new_selected_range_utf16,
                     field == FieldId::CommitMessage,
                 );
+            self.notify_text_field_changed(field);
             cx.notify();
         }
     }
