@@ -277,31 +277,29 @@ impl RepositoryView {
             .flex_1()
             .min_w(px(0.0))
             .min_h(px(0.0))
-            .child(
-                section_header_action(
-                    "工作流详情",
-                    Some(
-                        div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .gap_1()
-                            .child(self.button(
-                                "选择文件",
-                                !self.busy,
-                                |this, _, _| this.browse_workflow_file(),
-                                cx,
-                            ))
-                            .child(self.button(
-                                "清空",
-                                self.workflow_state.definition.is_some() && !self.busy,
-                                |this, _, _| this.clear_workflow_file(),
-                                cx,
-                            ))
-                            .into_any_element(),
-                    ),
+            .child(section_header_action(
+                "工作流详情",
+                Some(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap_1()
+                        .child(self.button(
+                            "选择文件",
+                            !self.busy,
+                            |this, _, _| this.browse_workflow_file(),
+                            cx,
+                        ))
+                        .child(self.button(
+                            "清空",
+                            self.workflow_state.definition.is_some() && !self.busy,
+                            |this, _, _| this.clear_workflow_file(),
+                            cx,
+                        ))
+                        .into_any_element(),
                 ),
-            )
+            ))
             .child(
                 div()
                     .flex_none()
@@ -338,14 +336,16 @@ impl RepositoryView {
                     .child(self.render_workflow_log(cx)),
             )
             .child(
-                div().flex_none().px_3().pb_3().child(
-                    dialog_actions().child(self.primary_button(
+                div()
+                    .flex_none()
+                    .px_3()
+                    .pb_3()
+                    .child(dialog_actions().child(self.primary_button(
                         if self.busy { "运行中..." } else { "运行" },
                         self.workflow_state.definition.is_some() && !self.busy,
                         |this, _, _| this.run_workflow(),
                         cx,
-                    )),
-                ),
+                    ))),
             )
     }
 

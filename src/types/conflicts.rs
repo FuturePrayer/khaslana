@@ -141,7 +141,8 @@ impl ConflictFileView {
             return;
         };
 
-        self.draft.replace_range(block.start..block.end, &replacement);
+        self.draft
+            .replace_range(block.start..block.end, &replacement);
         let delta = replacement.len() as isize - (block.end - block.start) as isize;
         if let Some(current) = self.blocks.get_mut(block_index) {
             current.end = current.start + replacement.len();
@@ -199,4 +200,3 @@ fn shared_suffix_len(left: &str, right: &str) -> usize {
     }
     suffix
 }
-

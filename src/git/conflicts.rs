@@ -7,8 +7,8 @@ use git2::{ErrorCode, MergeFileOptions, Repository};
 
 use super::{GitService, ensure_worktree_relative_path, path_to_git, remove_worktree_path};
 use crate::{
-    ConflictBlock, ConflictDraftStatus, ConflictFileKind, ConflictFileView,
-    ConflictResolutionSide, GitError, OperationEvent, RepositorySnapshot, Result,
+    ConflictBlock, ConflictDraftStatus, ConflictFileKind, ConflictFileView, ConflictResolutionSide,
+    GitError, OperationEvent, RepositorySnapshot, Result,
 };
 
 impl GitService {
@@ -610,7 +610,10 @@ mod tests {
             view.draft,
             "start\nfeature-one\nmiddle\nmain-two\nfeature-two\nend\n"
         );
-        assert_eq!(view.blocks[0].resolution, Some(crate::ConflictBlockResolution::Theirs));
+        assert_eq!(
+            view.blocks[0].resolution,
+            Some(crate::ConflictBlockResolution::Theirs)
+        );
         assert_eq!(
             view.blocks[1].resolution,
             Some(crate::ConflictBlockResolution::BothOursFirst)
@@ -632,7 +635,10 @@ mod tests {
 
         assert_file_text(dir.path(), "same.txt", "feature\n");
         assert_eq!(snapshot.conflicts, vec!["same.txt".to_string()]);
-        assert_eq!(service.conflicts(&repo).unwrap(), vec!["same.txt".to_string()]);
+        assert_eq!(
+            service.conflicts(&repo).unwrap(),
+            vec!["same.txt".to_string()]
+        );
     }
 
     #[test]

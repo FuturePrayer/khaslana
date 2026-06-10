@@ -1,8 +1,6 @@
 use std::path::Path;
 
-use gpui::{
-    Context, IntoElement, MouseButton, MouseDownEvent, Window, div, prelude::*, px, rgb,
-};
+use gpui::{Context, IntoElement, MouseButton, MouseDownEvent, Window, div, prelude::*, px, rgb};
 use khaslana::{
     ConflictBlockResolution, ConflictFileKind, ConflictFileView, ConflictResolutionSide,
     RepositorySnapshot,
@@ -125,12 +123,12 @@ impl RepositoryView {
         let unresolved = view
             .map(ConflictFileView::unresolved_block_count)
             .unwrap_or_default();
-        let dirty = view.map(|view| view.draft_status).is_some_and(|status| {
-            matches!(status, khaslana::ConflictDraftStatus::Dirty)
-        });
-        let applied = view.map(|view| view.draft_status).is_some_and(|status| {
-            matches!(status, khaslana::ConflictDraftStatus::Applied)
-        });
+        let dirty = view
+            .map(|view| view.draft_status)
+            .is_some_and(|status| matches!(status, khaslana::ConflictDraftStatus::Dirty));
+        let applied = view
+            .map(|view| view.draft_status)
+            .is_some_and(|status| matches!(status, khaslana::ConflictDraftStatus::Applied));
         let path_for_select = path.clone();
 
         crate::ui::components::list_row_surface(format!("conflict-workbench-{path}"), selected)
@@ -206,10 +204,12 @@ impl RepositoryView {
             .h_full()
             .child(self.render_conflict_header(title, selected_view, cx))
             .child(match selected_view {
-                Some(view) if view.kind == ConflictFileKind::Text => {
-                    self.render_text_conflict_detail(window, view, cx).into_any_element()
-                }
-                Some(view) => self.render_fallback_conflict_detail(view, cx).into_any_element(),
+                Some(view) if view.kind == ConflictFileKind::Text => self
+                    .render_text_conflict_detail(window, view, cx)
+                    .into_any_element(),
+                Some(view) => self
+                    .render_fallback_conflict_detail(view, cx)
+                    .into_any_element(),
                 None => div()
                     .flex()
                     .flex_1()
@@ -228,7 +228,10 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let block_count = view.map(|view| view.blocks.len()).unwrap_or_default();
-        let selected_block = self.conflict_workbench.selected_block.min(block_count.saturating_sub(1));
+        let selected_block = self
+            .conflict_workbench
+            .selected_block
+            .min(block_count.saturating_sub(1));
         let progress = if block_count == 0 {
             "无文本冲突块".to_string()
         } else {
@@ -236,7 +239,8 @@ impl RepositoryView {
                 "块 {}/{}，未处理 {}",
                 selected_block + 1,
                 block_count,
-                view.map(ConflictFileView::unresolved_block_count).unwrap_or_default()
+                view.map(ConflictFileView::unresolved_block_count)
+                    .unwrap_or_default()
             )
         };
 
@@ -323,9 +327,11 @@ impl RepositoryView {
         view: &ConflictFileView,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let block = view
-            .blocks
-            .get(self.conflict_workbench.selected_block.min(view.blocks.len().saturating_sub(1)));
+        let block = view.blocks.get(
+            self.conflict_workbench
+                .selected_block
+                .min(view.blocks.len().saturating_sub(1)),
+        );
         let warning = (view.has_manual_blocks() || view.unresolved_block_count() > 0).then(|| {
             "仍有未显式接受或手工改写的冲突块；你仍然可以直接应用并标记解决。".to_string()
         });
@@ -459,9 +465,7 @@ impl RepositoryView {
                                     .child("Base"),
                             )
                             .child(self.render_conflict_text_lines(
-                                block
-                                    .and_then(|block| block.base.as_deref())
-                                    .unwrap_or(""),
+                                block.and_then(|block| block.base.as_deref()).unwrap_or(""),
                             )),
                     )
                 },
@@ -603,7 +607,11 @@ impl RepositoryView {
                 div()
                     .min_h(px(18.0))
                     .text_color(rgb(ui_theme::TEXT))
-                    .child(if line.is_empty() { " ".to_string() } else { line })
+                    .child(if line.is_empty() {
+                        " ".to_string()
+                    } else {
+                        line
+                    })
             }))
     }
 

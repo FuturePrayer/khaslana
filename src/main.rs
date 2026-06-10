@@ -2,6 +2,7 @@
 
 mod conflicts;
 mod history_view;
+mod remote_branch_operation;
 mod sidebar_view;
 mod text_input;
 mod ui;
@@ -37,6 +38,10 @@ use khaslana::{
     credential_key_filename, credential_kind_label, credential_record_is_compatible_with_url,
     credential_record_label, credential_record_matches_remote_url, credential_scope_label,
     test_credential_connection,
+};
+use remote_branch_operation::{
+    RemoteBranchOperationKind, RemoteBranchOperationState, default_remote_branch_for,
+    remote_branch_dialog_defaults, remote_branch_exists,
 };
 use serde::{Deserialize, Serialize};
 use text_input::{MultiLineInputElement, SingleLineInputElement, TextFieldState};
@@ -128,6 +133,8 @@ enum FieldId {
     CredentialRemoteUrl,
     CredentialDisplayName,
     ConflictEditor,
+    RemoteBranchName,
+    RemoteBranchSearch,
     WorkflowInput(usize),
 }
 
@@ -200,6 +207,9 @@ pub(crate) enum DialogState {
     ConfirmDeleteCredential {
         record_id: String,
         label: String,
+    },
+    RemoteBranchOperation {
+        kind: RemoteBranchOperationKind,
     },
 }
 
@@ -1276,6 +1286,9 @@ pub(crate) struct RepositoryView {
     remote_name: TextFieldState,
     remote_url: TextFieldState,
     remote_credential_policy: RemoteCredentialPolicy,
+    pub(crate) remote_branch_name: TextFieldState,
+    pub(crate) remote_branch_search: TextFieldState,
+    pub(crate) remote_branch_operation: RemoteBranchOperationState,
 }
 
 impl RepositoryView {
@@ -1350,6 +1363,9 @@ impl RepositoryView {
             remote_name: TextFieldState::new(cx, "远端名称"),
             remote_url: TextFieldState::new(cx, "远端地址"),
             remote_credential_policy: RemoteCredentialPolicy::AutoMatch,
+            remote_branch_name: TextFieldState::new(cx, "远程分支"),
+            remote_branch_search: TextFieldState::new(cx, "搜索远端分支"),
+            remote_branch_operation: RemoteBranchOperationState::default(),
         }
     }
 
@@ -2034,6 +2050,7 @@ impl RepositoryView {
                 let mut sync_request = None;
                 self.apply_status_event(tab_id, |this| {
                     this.busy = false;
+                    this.remote_branch_operation.refreshing = false;
                     this.operation_kind = OperationKind::Local;
                     this.loading = RepositoryLoading::default();
                     this.status = message;
@@ -2252,6 +2269,7 @@ impl RepositoryView {
                 let toast_message = error.clone();
                 self.apply_status_event(tab_id, |this| {
                     this.busy = false;
+                    this.remote_branch_operation.refreshing = false;
                     this.operation_kind = OperationKind::Local;
                     this.loading = RepositoryLoading::default();
                     this.status = "操作失败".to_string();
@@ -2647,6 +2665,12 @@ impl RepositoryView {
             if let Some(DialogState::RemoteForm { editing }) = self.active_dialog.clone() {
                 self.save_remote(editing);
             }
+        } else if matches!(field, FieldId::RemoteBranchName) {
+            if let Some(DialogState::RemoteBranchOperation { kind }) = self.active_dialog.clone() {
+                self.confirm_remote_branch_operation(kind);
+            }
+        } else if matches!(field, FieldId::RemoteBranchSearch) {
+            self.remote_branch_operation.branch_dropdown_open = false;
         } else if matches!(
             field,
             FieldId::CredentialSecret
@@ -2866,6 +2890,8 @@ impl RepositoryView {
                 &self.credential_display_name,
             ),
             (FieldId::ConflictEditor, &self.conflict_editor),
+            (FieldId::RemoteBranchName, &self.remote_branch_name),
+            (FieldId::RemoteBranchSearch, &self.remote_branch_search),
         ]
         .into_iter()
         .find_map(|(id, field)| field.focus.is_focused(window).then_some(id))
@@ -2888,6 +2914,8 @@ impl RepositoryView {
             FieldId::CredentialRemoteUrl => &self.credential_remote_url,
             FieldId::CredentialDisplayName => &self.credential_display_name,
             FieldId::ConflictEditor => &self.conflict_editor,
+            FieldId::RemoteBranchName => &self.remote_branch_name,
+            FieldId::RemoteBranchSearch => &self.remote_branch_search,
             FieldId::WorkflowInput(index) => self.workflow_input_field(index),
         }
     }
@@ -2908,6 +2936,8 @@ impl RepositoryView {
             FieldId::CredentialRemoteUrl => &mut self.credential_remote_url,
             FieldId::CredentialDisplayName => &mut self.credential_display_name,
             FieldId::ConflictEditor => &mut self.conflict_editor,
+            FieldId::RemoteBranchName => &mut self.remote_branch_name,
+            FieldId::RemoteBranchSearch => &mut self.remote_branch_search,
             FieldId::WorkflowInput(index) => self.workflow_input_field_mut(index),
         }
     }
@@ -2962,6 +2992,8 @@ impl RepositoryView {
 
     pub(crate) fn close_popups(&mut self) {
         self.active_dialog = None;
+        self.remote_branch_operation.branch_dropdown_open = false;
+        self.remote_branch_search.clear();
         self.branch_context_menu = None;
         self.change_context_menu = None;
         self.credential_context_menu = None;
@@ -2979,6 +3011,8 @@ impl RepositoryView {
 
     pub(crate) fn close_dialog(&mut self) {
         self.active_dialog = None;
+        self.remote_branch_operation.branch_dropdown_open = false;
+        self.remote_branch_search.clear();
         self.credential_context_menu = None;
         self.last_error = None;
     }
@@ -3917,6 +3951,67 @@ impl RepositoryView {
         });
     }
 
+    fn with_repo_keep_dialog<F>(&mut self, label: &'static str, f: F)
+    where
+        F: FnOnce(GitService, &mut Repository) -> khaslana::Result<RepositorySnapshot>
+            + Send
+            + 'static,
+    {
+        let Some(tab_id) = self.active_tab_id() else {
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        };
+        let Some(path) = self.repo_path.clone() else {
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        };
+        if self.busy {
+            self.last_error = Some("已有操作正在运行".into());
+            return;
+        }
+        let service = self.service_for_tab(tab_id);
+        let started = started_message_for_label(label).to_string();
+        self.apply_status_event(Some(tab_id), |this| {
+            this.repository_load_id = this.repository_load_id.wrapping_add(1);
+            this.loading = RepositoryLoading::default();
+            this.busy = true;
+            this.operation_kind = OperationKind::from_message(&started);
+            this.status = started.clone();
+            this.last_error = None;
+        });
+        let tx = self.tx.clone();
+        send_ui_event(
+            &tx,
+            UiEvent::OperationStarted {
+                tab_id: Some(tab_id),
+                message: started,
+            },
+        );
+        thread::spawn(move || {
+            match Repository::open(path)
+                .map_err(khaslana::GitError::from)
+                .and_then(|mut repo| f(service, &mut repo))
+            {
+                Ok(snapshot) => send_ui_event(
+                    &tx,
+                    UiEvent::OperationFinished {
+                        tab_id: Some(tab_id),
+                        message: label.to_string(),
+                        snapshot: Some(snapshot),
+                        diff: None,
+                    },
+                ),
+                Err(err) => send_ui_event(
+                    &tx,
+                    UiEvent::OperationFailed {
+                        tab_id: Some(tab_id),
+                        error: err.to_string(),
+                    },
+                ),
+            }
+        });
+    }
+
     pub(crate) fn current_remote(&self) -> Option<String> {
         let snapshot = self.snapshot.as_ref()?;
         self.selected_remote
@@ -3965,24 +4060,106 @@ impl RepositoryView {
         });
     }
 
-    fn pull(&mut self) {
-        let Some(remote) = self.current_remote() else {
+    fn open_remote_branch_operation(&mut self, kind: RemoteBranchOperationKind) {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        };
+        let defaults = match remote_branch_dialog_defaults(snapshot, self.current_remote()) {
+            Ok(defaults) => defaults,
+            Err(message) => {
+                self.last_error = Some(message);
+                return;
+            }
+        };
+        self.close_popups();
+        self.remote_branch_operation.clear();
+        self.remote_branch_operation.selected_remote = Some(defaults.remote);
+        self.remote_branch_name.set_value(defaults.remote_branch);
+        self.remote_branch_search.clear();
+        self.active_dialog = Some(DialogState::RemoteBranchOperation { kind });
+        self.last_error = None;
+    }
+
+    pub(crate) fn select_remote_branch_operation_remote(&mut self, remote: String) {
+        self.remote_branch_operation.selected_remote = Some(remote.clone());
+        self.remote_branch_operation.branch_dropdown_open = false;
+        self.remote_branch_search.clear();
+        let default_branch = self
+            .snapshot
+            .as_ref()
+            .and_then(remote_branch_operation::current_local_branch)
+            .map(|local_branch| default_remote_branch_for(local_branch, &remote));
+        if let Some(default_branch) = default_branch {
+            self.remote_branch_name.set_value(default_branch);
+        }
+        self.last_error = None;
+    }
+
+    pub(crate) fn refresh_remote_branch_operation(&mut self) {
+        let Some(remote) = self.remote_branch_operation.selected_remote.clone() else {
             self.last_error = Some("当前仓库没有远端".into());
             return;
         };
-        self.with_repo("拉取完成", move |service, repo| {
-            service.pull(repo, &RemoteName::new(remote))
+        self.remote_branch_operation.branch_dropdown_open = false;
+        self.remote_branch_operation.refreshing = true;
+        self.with_repo_keep_dialog("拉取远程引用完成", move |service, repo| {
+            service.fetch(repo, &RemoteName::new(remote))
         });
     }
 
-    fn push(&mut self) {
-        let Some(remote) = self.current_remote() else {
+    pub(crate) fn confirm_remote_branch_operation(&mut self, kind: RemoteBranchOperationKind) {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        };
+        let Some(local_branch) = remote_branch_operation::current_local_branch(snapshot)
+            .map(|branch| branch.name.clone())
+        else {
+            self.last_error = Some("当前不是本地分支，无法拉取或推送".into());
+            return;
+        };
+        let Some(remote) = self.remote_branch_operation.selected_remote.clone() else {
             self.last_error = Some("当前仓库没有远端".into());
             return;
         };
-        self.with_repo("推送完成", move |service, repo| {
-            service.push(repo, &RemoteName::new(remote))
-        });
+        let remote_branch = self.remote_branch_name.value.trim().to_string();
+        if remote_branch.is_empty() {
+            self.last_error = Some("需要填写远程分支".into());
+            return;
+        }
+        if kind == RemoteBranchOperationKind::Pull
+            && !remote_branch_exists(snapshot, &remote, &remote_branch)
+        {
+            self.last_error = Some("远端分支不存在，请点击刷新或选择已有分支".into());
+            return;
+        }
+
+        self.active_dialog = None;
+        self.remote_branch_operation.refreshing = false;
+        self.remote_branch_operation.branch_dropdown_open = false;
+        match kind {
+            RemoteBranchOperationKind::Pull => {
+                self.with_repo("拉取完成", move |service, repo| {
+                    service.pull_branch(
+                        repo,
+                        &RemoteName::new(remote),
+                        &BranchName::new(remote_branch),
+                    )
+                });
+            }
+            RemoteBranchOperationKind::Push => {
+                self.with_repo("推送完成", move |service, repo| {
+                    service.push_branch_to(
+                        repo,
+                        &RemoteName::new(remote),
+                        &BranchName::new(local_branch),
+                        &BranchName::new(remote_branch),
+                        true,
+                    )
+                });
+            }
+        }
     }
 
     pub(crate) fn checkout(&mut self, name: String) {
@@ -5529,14 +5706,18 @@ impl RepositoryView {
                         "拉取",
                         pull_badge,
                         repo_open && remote_open && !self.busy,
-                        |this, _, _| this.pull(),
+                        |this, _, _| {
+                            this.open_remote_branch_operation(RemoteBranchOperationKind::Pull)
+                        },
                         cx,
                     ))
                     .child(self.button_with_badge(
                         "推送",
                         push_badge,
                         repo_open && remote_open && !self.busy,
-                        |this, _, _| this.push(),
+                        |this, _, _| {
+                            this.open_remote_branch_operation(RemoteBranchOperationKind::Push)
+                        },
                         cx,
                     ))
                     .child(self.button(
@@ -7073,6 +7254,9 @@ impl RepositoryView {
                 .into_any_element(),
             DialogState::ConfirmDeleteCredential { record_id, label } => self
                 .render_confirm_delete_credential_dialog(record_id, label, cx)
+                .into_any_element(),
+            DialogState::RemoteBranchOperation { kind } => self
+                .render_remote_branch_operation_dialog(kind, window, cx)
                 .into_any_element(),
         };
 

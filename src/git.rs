@@ -444,6 +444,36 @@ impl GitService {
         self.snapshot_after_operation(repo)
     }
 
+    pub fn pull_branch(
+        &self,
+        repo: &mut Repository,
+        remote: &RemoteName,
+        remote_branch: &BranchName,
+    ) -> Result<RepositorySnapshot> {
+        validate_branch_name(&remote_branch.0)?;
+        self.progress.emit(OperationEvent::Started(format!(
+            "正在拉取 {}/{}",
+            remote.0, remote_branch.0
+        )));
+        self.fetch_remote_refs(repo, remote)?;
+
+        let remote_ref = self.remote_ref_for_remote_branch(repo, remote, &remote_branch.0)?;
+        let annotated = repo.reference_to_annotated_commit(&remote_ref)?;
+        self.merge_annotated(
+            repo,
+            &annotated,
+            &format!("{}/{}", remote.0, remote_branch.0),
+        )?;
+        drop(annotated);
+        drop(remote_ref);
+
+        self.progress.emit(OperationEvent::Finished(format!(
+            "已拉取 {}/{}",
+            remote.0, remote_branch.0
+        )));
+        self.snapshot_after_operation(repo)
+    }
+
     pub fn push(&self, repo: &mut Repository, remote: &RemoteName) -> Result<RepositorySnapshot> {
         let head = repo.head()?;
         let branch = head.shorthand().map_err(GitError::from)?.to_string();
@@ -458,29 +488,55 @@ impl GitService {
         branch: &BranchName,
         set_upstream: bool,
     ) -> Result<RepositorySnapshot> {
-        validate_branch_name(&branch.0)?;
-        if repo.find_branch(&branch.0, BranchType::Local).is_err() {
-            return Err(GitError::Message(format!("本地分支不存在：{}", branch.0)));
+        self.push_branch_to(repo, remote, branch, branch, set_upstream)
+    }
+
+    pub fn push_branch_to(
+        &self,
+        repo: &mut Repository,
+        remote: &RemoteName,
+        local_branch: &BranchName,
+        remote_branch: &BranchName,
+        set_upstream: bool,
+    ) -> Result<RepositorySnapshot> {
+        validate_branch_name(&local_branch.0)?;
+        validate_branch_name(&remote_branch.0)?;
+        if repo
+            .find_branch(&local_branch.0, BranchType::Local)
+            .is_err()
+        {
+            return Err(GitError::Message(format!(
+                "本地分支不存在：{}",
+                local_branch.0
+            )));
         }
-        self.progress
-            .emit(OperationEvent::Started(format!("正在推送 {}", branch.0)));
+        self.progress.emit(OperationEvent::Started(format!(
+            "正在推送 {} 到 {}/{}",
+            local_branch.0, remote.0, remote_branch.0
+        )));
         let _remote_context = self.set_remote_context(repo, remote);
         let mut remote_handle = repo.find_remote(&remote.0)?;
         let mut options = PushOptions::new();
         options.remote_callbacks(self.remote_callbacks(Some(repo)));
-        let refspec = format!("refs/heads/{}:refs/heads/{}", branch.0, branch.0);
+        let refspec = format!(
+            "refs/heads/{}:refs/heads/{}",
+            local_branch.0, remote_branch.0
+        );
         let result = remote_handle.push(&[refspec.as_str()], Some(&mut options));
         drop(remote_handle);
         drop(options);
         result?;
 
-        if set_upstream && let Ok(mut local) = repo.find_branch(&branch.0, BranchType::Local) {
-            let upstream = format!("{}/{}", remote.0, branch.0);
+        if set_upstream && let Ok(mut local) = repo.find_branch(&local_branch.0, BranchType::Local)
+        {
+            let upstream = format!("{}/{}", remote.0, remote_branch.0);
             let _ = local.set_upstream(Some(&upstream));
         }
 
-        self.progress
-            .emit(OperationEvent::Finished(format!("已推送 {}", branch.0)));
+        self.progress.emit(OperationEvent::Finished(format!(
+            "已推送 {} 到 {}/{}",
+            local_branch.0, remote.0, remote_branch.0
+        )));
         self.snapshot_after_operation(repo)
     }
 
@@ -1424,6 +1480,22 @@ impl GitService {
             }
             Err(err) => Err(err.into()),
         }
+    }
+
+    fn remote_ref_for_remote_branch<'repo>(
+        &self,
+        repo: &'repo Repository,
+        remote: &RemoteName,
+        branch: &str,
+    ) -> Result<Reference<'repo>> {
+        repo.find_reference(&format!("refs/remotes/{}/{}", remote.0, branch))
+            .map_err(|err| {
+                if matches!(err.code(), ErrorCode::NotFound | ErrorCode::InvalidSpec) {
+                    GitError::Message(format!("远端分支不存在：{}/{}", remote.0, branch))
+                } else {
+                    GitError::from(err)
+                }
+            })
     }
 
     fn remote_ref_for_branch<'repo>(
@@ -2941,6 +3013,81 @@ mod tests {
         );
         assert!(snapshot.changes.is_empty());
         assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn pull_branch_fetches_and_merges_selected_remote_branch() {
+        let (remote_dir, _clone_dir, _clone_path, mut repo, service) =
+            clone_repo_with_remote_feature();
+        advance_remote_feature(remote_dir.path(), &service);
+
+        let snapshot = service
+            .pull_branch(
+                &mut repo,
+                &RemoteName::new("origin"),
+                &BranchName::new("feature"),
+            )
+            .unwrap();
+
+        assert_eq!(snapshot.head.as_deref(), Some("main"));
+        assert!(
+            fs::read_to_string(repo.workdir().unwrap().join("feature.txt"))
+                .unwrap()
+                .contains("remote update")
+        );
+        assert!(snapshot.changes.is_empty());
+        assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn pull_branch_reports_missing_remote_branch_in_chinese() {
+        let (_remote_dir, _clone_dir, _clone_path, mut repo, service) =
+            clone_repo_with_remote_feature();
+
+        let err = service
+            .pull_branch(
+                &mut repo,
+                &RemoteName::new("origin"),
+                &BranchName::new("missing"),
+            )
+            .unwrap_err();
+
+        assert!(err.to_string().contains("远端分支不存在"));
+    }
+
+    #[test]
+    fn push_branch_to_creates_different_remote_branch_and_sets_upstream() {
+        let (remote_dir, clone_dir, _clone_path, mut repo, service) =
+            clone_repo_with_remote_feature();
+        write_file(
+            clone_dir.path().join("clone").as_path(),
+            "local.txt",
+            "local\n",
+        );
+        commit_all(&repo, "local branch content");
+
+        let snapshot = service
+            .push_branch_to(
+                &mut repo,
+                &RemoteName::new("origin"),
+                &BranchName::new("main"),
+                &BranchName::new("published/main"),
+                true,
+            )
+            .unwrap();
+
+        assert!(snapshot.changes.is_empty());
+        let branch = repo.find_branch("main", BranchType::Local).unwrap();
+        assert_eq!(
+            branch.upstream().unwrap().name().unwrap(),
+            Some("origin/published/main")
+        );
+        let remote_repo = Repository::open_bare(remote_dir.path()).unwrap();
+        assert!(
+            remote_repo
+                .find_reference("refs/heads/published/main")
+                .is_ok()
+        );
     }
 
     #[test]
