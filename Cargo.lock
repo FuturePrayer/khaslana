@@ -3628,6 +3628,7 @@ dependencies = [
  "keyring",
  "keyring-core",
  "rfd",
+ "rust-embed",
  "serde",
  "serde_json",
  "tempfile",

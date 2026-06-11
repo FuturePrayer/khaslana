@@ -804,6 +804,7 @@ pub(crate) fn diff_header_toggle(
         .id(match target {
             DiffHeaderTarget::Worktree => "diff-header-toggle",
             DiffHeaderTarget::History => "history-diff-header-toggle",
+            DiffHeaderTarget::Stash => "stash-diff-header-toggle",
         })
         .flex()
         .w_full()
@@ -823,6 +824,7 @@ pub(crate) fn diff_header_toggle(
             match target {
                 DiffHeaderTarget::Worktree => this.toggle_diff_headers(),
                 DiffHeaderTarget::History => this.toggle_history_diff_headers(),
+                DiffHeaderTarget::Stash => this.toggle_stash_diff_headers(),
             }
             cx.notify();
         }))

@@ -12,8 +12,7 @@ use git2::build::{CheckoutBuilder, RepoBuilder};
 use git2::{
     AnnotatedCommit, BranchType, Cred, CredentialType, Delta, DiffFormat, DiffOptions, ErrorCode,
     FetchOptions, FetchPrune, IndexAddOption, MergeAnalysis, MergeOptions, PushOptions, Reference,
-    RemoteCallbacks, Repository, ResetType, Signature, Sort, StashApplyOptions, Status,
-    StatusOptions,
+    RemoteCallbacks, Repository, ResetType, Signature, Sort, Status, StatusOptions,
 };
 
 use crate::credentials::{CredentialProvider, CredentialRequest, to_git_credential};
@@ -26,8 +25,9 @@ use crate::types::{
 };
 
 mod conflicts;
+mod stash;
 
-const DIFF_CONTEXT_LINES: u32 = 3;
+pub(crate) const DIFF_CONTEXT_LINES: u32 = 3;
 
 pub trait ProgressEmitter: Send + Sync {
     fn emit(&self, event: OperationEvent);
@@ -974,30 +974,6 @@ impl GitService {
         }
     }
 
-    pub fn apply_stash(&self, repo: &mut Repository, index: usize) -> Result<RepositorySnapshot> {
-        self.progress.emit(OperationEvent::Started(format!(
-            "正在应用贮藏 stash@{{{index}}}"
-        )));
-        let mut options = StashApplyOptions::new();
-        repo.stash_apply(index, Some(&mut options))?;
-        self.progress.emit(OperationEvent::Finished(format!(
-            "已应用贮藏 stash@{{{index}}}"
-        )));
-        self.snapshot_after_operation(repo)
-    }
-
-    pub fn pop_stash(&self, repo: &mut Repository, index: usize) -> Result<RepositorySnapshot> {
-        self.progress.emit(OperationEvent::Started(format!(
-            "正在弹出贮藏 stash@{{{index}}}"
-        )));
-        let mut options = StashApplyOptions::new();
-        repo.stash_pop(index, Some(&mut options))?;
-        self.progress.emit(OperationEvent::Finished(format!(
-            "已弹出贮藏 stash@{{{index}}}"
-        )));
-        self.snapshot_after_operation(repo)
-    }
-
     pub fn diff_for_path(
         &self,
         repo: &Repository,
@@ -1381,7 +1357,7 @@ impl GitService {
         self.file_diff_from_diff(diff, path_to_git(path), DiffScope::Staged, encoding)
     }
 
-    fn find_commit_by_oid<'repo>(
+    pub(crate) fn find_commit_by_oid<'repo>(
         &self,
         repo: &'repo Repository,
         commit_oid: &str,
@@ -1411,7 +1387,7 @@ impl GitService {
         Ok(repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut options))?)
     }
 
-    fn file_diff_from_diff(
+    pub(crate) fn file_diff_from_diff(
         &self,
         diff: git2::Diff<'_>,
         path: String,
@@ -1800,7 +1776,7 @@ fn unstaged_state(status: Status) -> Option<ChangeState> {
     }
 }
 
-fn change_state_from_delta(delta: Delta) -> ChangeState {
+pub(crate) fn change_state_from_delta(delta: Delta) -> ChangeState {
     match delta {
         Delta::Added => ChangeState::Added,
         Delta::Deleted => ChangeState::Deleted,
@@ -1886,7 +1862,7 @@ fn decode_diff_line(bytes: &[u8], encoding: &'static Encoding) -> (String, bool)
     (decoded.into_owned(), had_errors)
 }
 
-fn signature(repo: &Repository) -> Result<Signature<'static>> {
+pub(crate) fn signature(repo: &Repository) -> Result<Signature<'static>> {
     repo.signature()
         .or_else(|_| Signature::now("Khaslana", "khaslana@example.invalid"))
         .map_err(GitError::from)
@@ -1937,7 +1913,7 @@ fn credential_for_remote(
     }
 }
 
-fn path_to_git(path: &Path) -> String {
+pub(crate) fn path_to_git(path: &Path) -> String {
     path.components()
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
@@ -4141,5 +4117,122 @@ mod tests {
             "popped\n"
         );
         assert!(pop_service.stashes(&mut pop_repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn save_stash_stashes_tracked_changes_and_lists_diff_files() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "file.txt", "base\n");
+        commit_all(&repo, "initial");
+
+        write_file(dir.path(), "file.txt", "changed\n");
+        let snapshot = service
+            .save_stash(&mut repo, "tracked work", false, false)
+            .unwrap();
+
+        assert!(snapshot.changes.is_empty());
+        assert_file_text(dir.path(), "file.txt", "base\n");
+        assert_eq!(snapshot.stashes.len(), 1);
+        assert!(snapshot.stashes[0].message.contains("tracked work"));
+
+        let files = service
+            .stash_files(&repo, &snapshot.stashes[0].oid)
+            .unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "file.txt");
+        assert_eq!(files[0].status, ChangeState::Modified);
+
+        let diff = service
+            .stash_file_diff(
+                &repo,
+                &snapshot.stashes[0].oid,
+                Path::new("file.txt"),
+                DiffEncodingChoice::Auto,
+            )
+            .unwrap();
+        assert!(
+            diff.lines
+                .iter()
+                .any(|line| line.content.contains("changed"))
+        );
+    }
+
+    #[test]
+    fn save_stash_include_untracked_records_untracked_files() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "base.txt", "base\n");
+        commit_all(&repo, "initial");
+        write_file(dir.path(), "new.txt", "new\n");
+
+        let err = service
+            .save_stash(&mut repo, "skip untracked", false, false)
+            .unwrap_err();
+        assert!(err.to_string().contains("包含未跟踪文件"));
+        assert!(dir.path().join("new.txt").exists());
+
+        let snapshot = service
+            .save_stash(&mut repo, "with untracked", true, false)
+            .unwrap();
+        assert!(!dir.path().join("new.txt").exists());
+        let files = service
+            .stash_files(&repo, &snapshot.stashes[0].oid)
+            .unwrap();
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path == "new.txt" && file.status == ChangeState::Untracked)
+        );
+
+        let diff = service
+            .stash_file_diff(
+                &repo,
+                &snapshot.stashes[0].oid,
+                Path::new("new.txt"),
+                DiffEncodingChoice::Auto,
+            )
+            .unwrap();
+        assert!(diff.lines.iter().any(|line| line.content.contains("new")));
+    }
+
+    #[test]
+    fn save_stash_keep_index_preserves_staged_content() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "file.txt", "base\n");
+        commit_all(&repo, "initial");
+        write_file(dir.path(), "file.txt", "staged\n");
+        service
+            .stage_path(&mut repo, Path::new("file.txt"))
+            .unwrap();
+        write_file(dir.path(), "file.txt", "worktree\n");
+
+        service
+            .save_stash(&mut repo, "keep staged", false, true)
+            .unwrap();
+
+        assert_file_text(dir.path(), "file.txt", "staged\n");
+        let changes = service.status_full(&repo).unwrap();
+        let change = changes
+            .iter()
+            .find(|change| change.path == "file.txt")
+            .unwrap();
+        assert_eq!(change.staged, Some(ChangeState::Modified));
+        assert_eq!(change.unstaged, None);
+    }
+
+    #[test]
+    fn drop_stash_removes_entry() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "file.txt", "base\n");
+        commit_all(&repo, "initial");
+        write_file(dir.path(), "file.txt", "changed\n");
+
+        service
+            .save_stash(&mut repo, "to drop", false, false)
+            .unwrap();
+        assert_eq!(service.stashes(&mut repo).unwrap().len(), 1);
+
+        let snapshot = service.drop_stash(&mut repo, 0).unwrap();
+        assert!(snapshot.stashes.is_empty());
+        assert!(service.stashes(&mut repo).unwrap().is_empty());
     }
 }

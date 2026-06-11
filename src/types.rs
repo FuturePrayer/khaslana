@@ -95,6 +95,13 @@ pub struct StashInfo {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StashFileChange {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: ChangeState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChangeState {
     Added,
     Modified,

@@ -1,9 +1,11 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod assets;
 mod conflicts;
 mod history_view;
 mod remote_branch_operation;
 mod sidebar_view;
+mod stash_view;
 mod text_input;
 mod ui;
 mod ui_helpers;
@@ -44,6 +46,7 @@ use remote_branch_operation::{
     local_branch_by_name, remote_branch_dialog_defaults, remote_branch_exists,
 };
 use serde::{Deserialize, Serialize};
+use stash_view::StashPreviewState;
 use text_input::{MultiLineInputElement, SingleLineInputElement, TextFieldState};
 use ui::{
     components::{
@@ -53,12 +56,12 @@ use ui::{
         inline_error_bubble, input_frame, list_row_surface, operation_loading_bar,
         segmented_button, status_pill, toggle_box,
     },
+    icons::ToolbarIcon,
     theme as ui_theme,
 };
 use ui_helpers::*;
 use workflow_view::{WorkflowInputFieldState, WorkflowTemplateItem};
 use yororen_ui::{
-    assets::UiAsset,
     component::init as init_yororen_components,
     i18n::{I18n, Locale},
     theme::GlobalTheme,
@@ -108,7 +111,7 @@ const CREDENTIAL_MENU_HEIGHT: f32 = 150.0;
 pub(crate) const TAG_MENU_WIDTH: f32 = 170.0;
 pub(crate) const TAG_MENU_HEIGHT: f32 = 80.0;
 pub(crate) const STASH_MENU_WIDTH: f32 = 170.0;
-pub(crate) const STASH_MENU_HEIGHT: f32 = 110.0;
+pub(crate) const STASH_MENU_HEIGHT: f32 = 170.0;
 const COMMIT_MENU_WIDTH: f32 = 230.0;
 const COMMIT_MENU_HEIGHT: f32 = 230.0;
 const COMMIT_UNPUSHED_MENU_HEIGHT: f32 = 265.0;
@@ -138,6 +141,7 @@ enum FieldId {
     ConflictEditor,
     RemoteBranchName,
     RemoteBranchSearch,
+    StashMessage,
     WorkflowInput(usize),
 }
 
@@ -214,6 +218,11 @@ pub(crate) enum DialogState {
     ConfirmDeleteCredential {
         record_id: String,
         label: String,
+    },
+    StashForm,
+    ConfirmDropStash {
+        index: usize,
+        message: String,
     },
     RemoteBranchOperation {
         kind: RemoteBranchOperationKind,
@@ -360,6 +369,7 @@ enum DiscardTarget {
 pub(crate) enum EncodingMenuTarget {
     Worktree,
     History,
+    Stash,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -590,6 +600,7 @@ struct RepoTabState {
     pub(crate) history_loading: HistoryLoading,
     pub(crate) history_scope: HistoryScope,
     pub(crate) history_graph_rows: Vec<history_view::CommitGraphRow>,
+    pub(crate) stash_preview: StashPreviewState,
     pub(crate) branch_sync_status: Option<BranchSyncStatus>,
     pub(crate) branch_sync_loading: bool,
     pub(crate) branch_sync_request_id: u64,
@@ -627,6 +638,7 @@ impl RepoTabState {
             history_loading: HistoryLoading::default(),
             history_scope: HistoryScope::default(),
             history_graph_rows: Vec::new(),
+            stash_preview: StashPreviewState::default(),
             branch_sync_status: None,
             branch_sync_loading: false,
             branch_sync_request_id: 0,
@@ -749,6 +761,7 @@ pub(crate) enum MainMode {
     Conflict,
     History,
     Workflow,
+    Stash,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -807,6 +820,7 @@ impl SidebarSectionState {
 pub(crate) enum DiffHeaderTarget {
     Worktree,
     History,
+    Stash,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -911,6 +925,19 @@ pub(crate) enum UiEvent {
     HistoryDiffLoaded {
         tab_id: RepoTabId,
         commit_oid: String,
+        path: String,
+        diff: FileDiff,
+        load_id: u64,
+    },
+    StashFilesLoaded {
+        tab_id: RepoTabId,
+        stash_oid: String,
+        files: Vec<khaslana::StashFileChange>,
+        load_id: u64,
+    },
+    StashDiffLoaded {
+        tab_id: RepoTabId,
+        stash_oid: String,
         path: String,
         diff: FileDiff,
         load_id: u64,
@@ -1280,7 +1307,7 @@ pub(crate) fn send_ui_event(tx: &Sender<UiEvent>, event: UiEvent) {
     let _ = tx.try_send(event);
 }
 
-fn perf_log(stage: &'static str, started: Instant, details: impl AsRef<str>) {
+pub(crate) fn perf_log(stage: &'static str, started: Instant, details: impl AsRef<str>) {
     if std::env::var_os("KHASLANA_PERF_LOG").is_some() {
         tracing::info!(
             target: "khaslana::perf",
@@ -1378,6 +1405,9 @@ pub(crate) struct RepositoryView {
     create_branch_checkout: bool,
     branch_rename: TextFieldState,
     commit_message: TextFieldState,
+    stash_message: TextFieldState,
+    stash_include_untracked: bool,
+    stash_keep_index: bool,
     credential_username: TextFieldState,
     credential_secret: TextFieldState,
     credential_key_path: TextFieldState,
@@ -1455,6 +1485,9 @@ impl RepositoryView {
             create_branch_checkout: true,
             branch_rename: TextFieldState::new(cx, "重命名为"),
             commit_message: TextFieldState::new(cx, "提交信息"),
+            stash_message: TextFieldState::new(cx, "贮藏说明（可选）"),
+            stash_include_untracked: false,
+            stash_keep_index: false,
             credential_username: TextFieldState::new(cx, "用户名"),
             credential_secret: TextFieldState::new(cx, "密码或 PAT").secret(),
             credential_key_path: TextFieldState::new(cx, "SSH 私钥路径"),
@@ -1551,7 +1584,7 @@ impl RepositoryView {
             .clone()
     }
 
-    fn reset_uniform_scroll(&self, id: &'static str) {
+    pub(crate) fn reset_uniform_scroll(&self, id: &'static str) {
         let handle = self.uniform_scroll_handle(id);
         handle
             .0
@@ -1720,7 +1753,7 @@ impl RepositoryView {
         save_remote_credential_bindings_to_disk(&bindings);
     }
 
-    fn diff_encoding_choice_for_path(&self, path: &Path) -> DiffEncodingChoice {
+    pub(crate) fn diff_encoding_choice_for_path(&self, path: &Path) -> DiffEncodingChoice {
         self.diff_encoding_preferences
             .repositories
             .get(&normalize_repo_path(path))
@@ -1735,7 +1768,7 @@ impl RepositoryView {
             .unwrap_or_default()
     }
 
-    fn set_current_diff_encoding(&mut self, encoding: DiffEncodingChoice) {
+    pub(crate) fn set_current_diff_encoding(&mut self, encoding: DiffEncodingChoice) {
         let Some(repo_path) = self.repo_path.clone() else {
             self.last_error = Some("请先打开一个仓库".into());
             return;
@@ -1761,6 +1794,11 @@ impl RepositoryView {
             && let Some(path) = self.history_selected_file.clone()
         {
             self.select_history_file_with_reload(path, true);
+        }
+        if self.main_mode == MainMode::Stash
+            && let Some(path) = self.stash_preview.selected_file.clone()
+        {
+            self.select_stash_file(path, true);
         }
     }
 
@@ -1868,11 +1906,11 @@ impl RepositoryView {
         self.save_session();
     }
 
-    fn active_tab_state(&self) -> &RepoTabState {
+    pub(crate) fn active_tab_state(&self) -> &RepoTabState {
         self.active_tab().unwrap_or_else(|| &self.fallback_tab)
     }
 
-    fn active_tab_state_mut(&mut self) -> &mut RepoTabState {
+    pub(crate) fn active_tab_state_mut(&mut self) -> &mut RepoTabState {
         let id = self.active_tab;
         if let Some(id) = id
             && let Some(index) = self.tabs.iter().position(|tab| tab.id == id)
@@ -1897,7 +1935,7 @@ impl RepositoryView {
         )
     }
 
-    fn with_tab_context<R>(
+    pub(crate) fn with_tab_context<R>(
         &mut self,
         tab_id: RepoTabId,
         f: impl FnOnce(&mut Self) -> R,
@@ -2168,6 +2206,7 @@ impl RepositoryView {
                             this.reset_uniform_scroll("diff-scroll");
                         }
                         this.snapshot = Some(snapshot);
+                        this.prune_stash_preview();
                         this.prune_change_selection();
                         this.sync_conflict_mode_with_snapshot();
                         this.clear_history();
@@ -2219,6 +2258,7 @@ impl RepositoryView {
                         this.sync_selected_remote(&snapshot);
                         this.change_indexes = ChangeListIndexes::rebuild(&snapshot.changes);
                         this.snapshot = Some(snapshot);
+                        this.prune_stash_preview();
                         this.sync_conflict_mode_with_snapshot();
                         this.replace_changes(changes);
                         this.diff = None;
@@ -2323,6 +2363,58 @@ impl RepositoryView {
                     }
                 });
             }
+            UiEvent::StashFilesLoaded {
+                tab_id,
+                stash_oid,
+                files,
+                load_id,
+            } => {
+                let mut first_path = None;
+                self.with_tab_context(tab_id, |this| {
+                    if load_id == this.repository_load_id
+                        && this.stash_preview.stash_oid.as_deref() == Some(stash_oid.as_str())
+                    {
+                        this.stash_preview.loading_files = false;
+                        this.stash_preview.files = files;
+                        this.stash_preview.selected_file = None;
+                        this.stash_preview.diff = None;
+                        this.stash_preview.diff_headers_expanded = false;
+                        first_path = this
+                            .stash_preview
+                            .files
+                            .first()
+                            .map(|file| file.path.clone());
+                        if first_path.is_none() {
+                            this.status = "该贮藏没有文件变更".to_string();
+                        }
+                    }
+                });
+                if let Some(path) = first_path
+                    && self.active_tab == Some(tab_id)
+                {
+                    self.select_stash_file(path, false);
+                }
+            }
+            UiEvent::StashDiffLoaded {
+                tab_id,
+                stash_oid,
+                path,
+                diff,
+                load_id,
+            } => {
+                self.with_tab_context(tab_id, |this| {
+                    if load_id == this.repository_load_id
+                        && this.stash_preview.stash_oid.as_deref() == Some(stash_oid.as_str())
+                        && this.stash_preview.selected_file.as_deref() == Some(path.as_str())
+                    {
+                        this.stash_preview.loading_diff = false;
+                        this.stash_preview.diff = Some(Arc::new(diff));
+                        this.stash_preview.diff_headers_expanded = false;
+                        this.reset_uniform_scroll("stash-diff-scroll");
+                        this.status = "贮藏差异已加载".to_string();
+                    }
+                });
+            }
             UiEvent::HistoryLoadFailed {
                 tab_id,
                 error,
@@ -2331,7 +2423,13 @@ impl RepositoryView {
                 self.with_tab_context(tab_id, |this| {
                     if load_id == this.repository_load_id {
                         this.history_loading = HistoryLoading::default();
-                        this.status = "提交记录加载失败".to_string();
+                        this.stash_preview.loading_files = false;
+                        this.stash_preview.loading_diff = false;
+                        this.status = if this.main_mode == MainMode::Stash {
+                            "贮藏预览加载失败".to_string()
+                        } else {
+                            "提交记录加载失败".to_string()
+                        };
                         this.last_error = Some(error);
                     }
                 });
@@ -2429,6 +2527,7 @@ impl RepositoryView {
                     this.sync_selected_remote(&snapshot);
                     this.change_indexes = ChangeListIndexes::rebuild(&snapshot.changes);
                     this.snapshot = Some(snapshot);
+                    this.prune_stash_preview();
                     this.sync_conflict_mode_with_snapshot();
                     this.prune_change_selection();
                     this.diff = None;
@@ -2830,6 +2929,10 @@ impl RepositoryView {
             if let Some(DialogState::RenameBranch { branch }) = self.active_dialog.clone() {
                 self.rename_branch(branch);
             }
+        } else if matches!(field, FieldId::StashMessage) {
+            if self.active_dialog == Some(DialogState::StashForm) {
+                self.save_stash();
+            }
         } else if matches!(field, FieldId::RemoteName | FieldId::RemoteUrl) {
             if let Some(DialogState::RemoteForm { editing }) = self.active_dialog.clone() {
                 self.save_remote(editing);
@@ -3049,6 +3152,7 @@ impl RepositoryView {
             (FieldId::RemoteName, &self.remote_name),
             (FieldId::RemoteUrl, &self.remote_url),
             (FieldId::CommitMessage, &self.commit_message),
+            (FieldId::StashMessage, &self.stash_message),
             (FieldId::CredentialUsername, &self.credential_username),
             (FieldId::CredentialSecret, &self.credential_secret),
             (FieldId::CredentialKeyPath, &self.credential_key_path),
@@ -3076,6 +3180,7 @@ impl RepositoryView {
             FieldId::RemoteName => &self.remote_name,
             FieldId::RemoteUrl => &self.remote_url,
             FieldId::CommitMessage => &self.commit_message,
+            FieldId::StashMessage => &self.stash_message,
             FieldId::CredentialUsername => &self.credential_username,
             FieldId::CredentialSecret => &self.credential_secret,
             FieldId::CredentialKeyPath => &self.credential_key_path,
@@ -3098,6 +3203,7 @@ impl RepositoryView {
             FieldId::RemoteName => &mut self.remote_name,
             FieldId::RemoteUrl => &mut self.remote_url,
             FieldId::CommitMessage => &mut self.commit_message,
+            FieldId::StashMessage => &mut self.stash_message,
             FieldId::CredentialUsername => &mut self.credential_username,
             FieldId::CredentialSecret => &mut self.credential_secret,
             FieldId::CredentialKeyPath => &mut self.credential_key_path,
@@ -4102,7 +4208,7 @@ impl RepositoryView {
         });
     }
 
-    fn with_repo<F>(&mut self, label: &'static str, f: F)
+    pub(crate) fn with_repo<F>(&mut self, label: &'static str, f: F)
     where
         F: FnOnce(GitService, &mut Repository) -> khaslana::Result<RepositorySnapshot>
             + Send
@@ -5090,7 +5196,9 @@ impl RepositoryView {
         if self.main_mode == MainMode::Workflow {
             self.refresh_workflow_templates();
         }
-        self.ensure_history_loaded();
+        if self.main_mode == MainMode::History {
+            self.ensure_history_loaded();
+        }
     }
 
     fn clear_history(&mut self) {
@@ -5632,13 +5740,37 @@ impl RepositoryView {
         mode: MainMode,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        self.mode_button_with_icon(label, mode, None, cx)
+    }
+
+    fn mode_button_with_icon(
+        &self,
+        label: &'static str,
+        mode: MainMode,
+        icon: Option<ToolbarIcon>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let selected = self.main_mode == mode;
+        let icon_color = if selected {
+            ui_theme::SEGMENT_SELECTED_TEXT
+        } else {
+            ui_theme::TEXT_MUTED
+        };
         segmented_button(format!("mode-{label}"), selected, true)
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 this.set_main_mode(mode);
                 cx.notify();
             }))
-            .child(label)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .when_some(icon, |this, icon| {
+                        this.child(ui::icons::toolbar_icon(icon, icon_color))
+                    })
+                    .child(label),
+            )
     }
 
     fn credential_scope_button(
@@ -5674,7 +5806,7 @@ impl RepositoryView {
             .child(label)
     }
 
-    fn toggle_row(
+    pub(crate) fn toggle_row(
         &self,
         id: &'static str,
         label: &'static str,
@@ -5701,7 +5833,7 @@ impl RepositoryView {
             )
     }
 
-    fn input(
+    pub(crate) fn input(
         &self,
         id: FieldId,
         compact: bool,
@@ -6057,27 +6189,37 @@ impl RepositoryView {
                     .items_center()
                     .gap_2()
                     .relative()
-                    .child(self.button("打开仓库", !self.busy, |this, _, _| this.browse_open(), cx))
-                    .child(self.button(
+                    .child(self.toolbar_button(
+                        "打开仓库",
+                        ToolbarIcon::Open,
+                        !self.busy,
+                        |this, _, _| this.browse_open(),
+                        cx,
+                    ))
+                    .child(self.toolbar_button(
                         "克隆仓库",
+                        ToolbarIcon::Clone,
                         !self.busy,
                         |this, window, _| this.open_clone_dialog(window),
                         cx,
                     ))
-                    .child(self.button(
+                    .child(self.toolbar_button(
                         "刷新",
+                        ToolbarIcon::Refresh,
                         repo_open && !self.busy,
                         |this, _, _| this.refresh(),
                         cx,
                     ))
-                    .child(self.button(
+                    .child(self.toolbar_button(
                         "获取",
+                        ToolbarIcon::Fetch,
                         repo_open && remote_open && !self.busy,
                         |this, _, _| this.fetch(),
                         cx,
                     ))
-                    .child(self.button_with_badge(
+                    .child(self.toolbar_button_with_badge(
                         "拉取",
+                        ToolbarIcon::Pull,
                         pull_badge,
                         repo_open && remote_open && !self.busy,
                         |this, _, _| {
@@ -6085,8 +6227,9 @@ impl RepositoryView {
                         },
                         cx,
                     ))
-                    .child(self.button_with_badge(
+                    .child(self.toolbar_button_with_badge(
                         "推送",
+                        ToolbarIcon::Push,
                         push_badge,
                         repo_open && remote_open && !self.busy,
                         |this, _, _| {
@@ -6094,8 +6237,16 @@ impl RepositoryView {
                         },
                         cx,
                     ))
-                    .child(self.button(
+                    .child(self.toolbar_button(
+                        "贮藏",
+                        ToolbarIcon::Stash,
+                        repo_open && !self.busy,
+                        |this, _, _| this.open_stash_dialog(),
+                        cx,
+                    ))
+                    .child(self.toolbar_button(
                         "凭据管理",
+                        ToolbarIcon::Credentials,
                         !self.busy,
                         |this, _, _| this.open_credential_manager(),
                         cx,
@@ -6135,7 +6286,12 @@ impl RepositoryView {
                         |this| this.child(self.mode_button("冲突处理", MainMode::Conflict, cx)),
                     )
                     .child(self.mode_button("提交记录", MainMode::History, cx))
-                    .child(self.mode_button("工作流", MainMode::Workflow, cx)),
+                    .child(self.mode_button_with_icon(
+                        "工作流",
+                        MainMode::Workflow,
+                        Some(ToolbarIcon::Workflow),
+                        cx,
+                    )),
             )
     }
 
@@ -6292,24 +6448,7 @@ impl RepositoryView {
             .left(px(menu.x))
             .top(px(menu.y))
             .w(px(STASH_MENU_WIDTH))
-            .child(context_menu_item(
-                "应用贮藏",
-                !self.busy,
-                {
-                    let index = menu.index;
-                    move |this| this.apply_stash(index)
-                },
-                cx,
-            ))
-            .child(context_menu_item(
-                "弹出贮藏",
-                !self.busy,
-                {
-                    let index = menu.index;
-                    move |this| this.pop_stash(index)
-                },
-                cx,
-            ))
+            .child(self.render_stash_context_menu_content(menu.index, cx))
             .into_any_element()
     }
 
@@ -6705,6 +6844,7 @@ impl RepositoryView {
         let title = match target {
             EncodingMenuTarget::Worktree => "工作区差异编码",
             EncodingMenuTarget::History => "提交差异编码",
+            EncodingMenuTarget::Stash => "贮藏差异编码",
         };
 
         glass_menu()
@@ -7165,7 +7305,7 @@ impl RepositoryView {
             .child(self.render_encoding_dropdown(EncodingMenuTarget::Worktree, cx))
     }
 
-    fn render_virtual_diff(
+    pub(crate) fn render_virtual_diff(
         &self,
         scroll_id: &'static str,
         diff: Option<Arc<FileDiff>>,
@@ -7294,6 +7434,7 @@ impl RepositoryView {
         let diff = match target {
             EncodingMenuTarget::Worktree => self.diff.as_deref(),
             EncodingMenuTarget::History => self.history_diff.as_deref(),
+            EncodingMenuTarget::Stash => self.stash_preview.diff.as_deref(),
         };
         div()
             .flex_none()
@@ -7332,6 +7473,7 @@ impl RepositoryView {
             .id(match target {
                 EncodingMenuTarget::Worktree => "worktree-diff-encoding",
                 EncodingMenuTarget::History => "history-diff-encoding",
+                EncodingMenuTarget::Stash => "stash-diff-encoding",
             })
             .relative()
             .flex_none()
@@ -7631,6 +7773,10 @@ impl RepositoryView {
                 .into_any_element(),
             DialogState::ConfirmDeleteCredential { record_id, label } => self
                 .render_confirm_delete_credential_dialog(record_id, label, cx)
+                .into_any_element(),
+            DialogState::StashForm => self.render_stash_form_dialog(window, cx).into_any_element(),
+            DialogState::ConfirmDropStash { index, message } => self
+                .render_confirm_drop_stash_dialog(index, message, cx)
                 .into_any_element(),
             DialogState::RemoteBranchOperation { kind } => self
                 .render_remote_branch_operation_dialog(kind, window, cx)
@@ -8975,7 +9121,7 @@ impl RepositoryView {
             )
     }
 
-    fn dialog_panel(
+    pub(crate) fn dialog_panel(
         &self,
         title: &'static str,
         _cx: &mut Context<Self>,
@@ -9059,6 +9205,7 @@ impl Render for RepositoryView {
                         MainMode::Workflow => {
                             self.render_workflow_view(window, cx).into_any_element()
                         }
+                        MainMode::Stash => self.render_stash_preview_view(cx).into_any_element(),
                     }),
             )
             .child(self.render_status())
@@ -9965,53 +10112,55 @@ fn main() {
         .try_init()
         .ok();
 
-    Application::new().with_assets(UiAsset).run(|cx: &mut App| {
-        init_yororen_components(cx);
-        cx.set_global(GlobalTheme::new(cx.window_appearance()));
-        cx.set_global(I18n::with_embedded(
-            Locale::new("zh-CN").expect("zh-CN locale is valid"),
-        ));
-        let bounds = Bounds::centered(None, size(px(1280.0), px(820.0)), cx);
-        cx.bind_keys([
-            KeyBinding::new("backspace", TextBackspace, Some("TextInput")),
-            KeyBinding::new("delete", TextDelete, Some("TextInput")),
-            KeyBinding::new("left", TextLeft, Some("TextInput")),
-            KeyBinding::new("right", TextRight, Some("TextInput")),
-            KeyBinding::new("up", TextUp, Some("TextInput")),
-            KeyBinding::new("down", TextDown, Some("TextInput")),
-            KeyBinding::new("shift-left", TextSelectLeft, Some("TextInput")),
-            KeyBinding::new("shift-right", TextSelectRight, Some("TextInput")),
-            KeyBinding::new("shift-up", TextSelectUp, Some("TextInput")),
-            KeyBinding::new("shift-down", TextSelectDown, Some("TextInput")),
-            KeyBinding::new("home", TextHome, Some("TextInput")),
-            KeyBinding::new("end", TextEnd, Some("TextInput")),
-            KeyBinding::new("cmd-enter", TextSubmit, Some("TextInput")),
-            KeyBinding::new("ctrl-enter", TextSubmit, Some("TextInput")),
-            KeyBinding::new("cmd-a", TextSelectAll, Some("TextInput")),
-            KeyBinding::new("cmd-c", TextCopy, Some("TextInput")),
-            KeyBinding::new("cmd-v", TextPaste, Some("TextInput")),
-            KeyBinding::new("cmd-x", TextCut, Some("TextInput")),
-            KeyBinding::new("ctrl-a", TextSelectAll, Some("TextInput")),
-            KeyBinding::new("ctrl-c", TextCopy, Some("TextInput")),
-            KeyBinding::new("ctrl-v", TextPaste, Some("TextInput")),
-            KeyBinding::new("ctrl-x", TextCut, Some("TextInput")),
-        ]);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Khaslana".into()),
+    Application::new()
+        .with_assets(assets::AppAssets::new())
+        .run(|cx: &mut App| {
+            init_yororen_components(cx);
+            cx.set_global(GlobalTheme::new(cx.window_appearance()));
+            cx.set_global(I18n::with_embedded(
+                Locale::new("zh-CN").expect("zh-CN locale is valid"),
+            ));
+            let bounds = Bounds::centered(None, size(px(1280.0), px(820.0)), cx);
+            cx.bind_keys([
+                KeyBinding::new("backspace", TextBackspace, Some("TextInput")),
+                KeyBinding::new("delete", TextDelete, Some("TextInput")),
+                KeyBinding::new("left", TextLeft, Some("TextInput")),
+                KeyBinding::new("right", TextRight, Some("TextInput")),
+                KeyBinding::new("up", TextUp, Some("TextInput")),
+                KeyBinding::new("down", TextDown, Some("TextInput")),
+                KeyBinding::new("shift-left", TextSelectLeft, Some("TextInput")),
+                KeyBinding::new("shift-right", TextSelectRight, Some("TextInput")),
+                KeyBinding::new("shift-up", TextSelectUp, Some("TextInput")),
+                KeyBinding::new("shift-down", TextSelectDown, Some("TextInput")),
+                KeyBinding::new("home", TextHome, Some("TextInput")),
+                KeyBinding::new("end", TextEnd, Some("TextInput")),
+                KeyBinding::new("cmd-enter", TextSubmit, Some("TextInput")),
+                KeyBinding::new("ctrl-enter", TextSubmit, Some("TextInput")),
+                KeyBinding::new("cmd-a", TextSelectAll, Some("TextInput")),
+                KeyBinding::new("cmd-c", TextCopy, Some("TextInput")),
+                KeyBinding::new("cmd-v", TextPaste, Some("TextInput")),
+                KeyBinding::new("cmd-x", TextCut, Some("TextInput")),
+                KeyBinding::new("ctrl-a", TextSelectAll, Some("TextInput")),
+                KeyBinding::new("ctrl-c", TextCopy, Some("TextInput")),
+                KeyBinding::new("ctrl-v", TextPaste, Some("TextInput")),
+                KeyBinding::new("ctrl-x", TextCut, Some("TextInput")),
+            ]);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("Khaslana".into()),
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| {
-                let view = cx.new(RepositoryView::new_with_session);
-                window.focus(&view.read(cx).focus_handle(cx));
-                view
-            },
-        )
-        .unwrap();
-        cx.activate(true);
-    });
+                },
+                |window, cx| {
+                    let view = cx.new(RepositoryView::new_with_session);
+                    window.focus(&view.read(cx).focus_handle(cx));
+                    view
+                },
+            )
+            .unwrap();
+            cx.activate(true);
+        });
 }

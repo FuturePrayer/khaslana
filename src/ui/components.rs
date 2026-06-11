@@ -6,7 +6,10 @@ use gpui::{
 };
 use yororen_ui::component::{IconName, icon};
 
-use crate::{RepositoryView, ui::theme};
+use crate::{
+    RepositoryView,
+    ui::{icons::ToolbarIcon, icons::toolbar_icon, theme},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AppToastKind {
@@ -777,18 +780,54 @@ impl RepositoryView {
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.app_button(label, None, ButtonTone::Neutral, enabled, on_click, cx)
+        self.app_button(
+            label,
+            None,
+            None,
+            ButtonTone::Neutral,
+            enabled,
+            on_click,
+            cx,
+        )
     }
 
-    pub(crate) fn button_with_badge(
+    pub(crate) fn toolbar_button(
         &self,
         label: &'static str,
+        icon: ToolbarIcon,
+        enabled: bool,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        self.app_button(
+            label,
+            Some(icon),
+            None,
+            ButtonTone::Neutral,
+            enabled,
+            on_click,
+            cx,
+        )
+    }
+
+    pub(crate) fn toolbar_button_with_badge(
+        &self,
+        label: &'static str,
+        icon: ToolbarIcon,
         badge: Option<usize>,
         enabled: bool,
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.app_button(label, badge, ButtonTone::Neutral, enabled, on_click, cx)
+        self.app_button(
+            label,
+            Some(icon),
+            badge,
+            ButtonTone::Neutral,
+            enabled,
+            on_click,
+            cx,
+        )
     }
 
     pub(crate) fn primary_button(
@@ -798,7 +837,15 @@ impl RepositoryView {
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.app_button(label, None, ButtonTone::Primary, enabled, on_click, cx)
+        self.app_button(
+            label,
+            None,
+            None,
+            ButtonTone::Primary,
+            enabled,
+            on_click,
+            cx,
+        )
     }
 
     pub(crate) fn danger_button(
@@ -808,12 +855,13 @@ impl RepositoryView {
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.app_button(label, None, ButtonTone::Danger, enabled, on_click, cx)
+        self.app_button(label, None, None, ButtonTone::Danger, enabled, on_click, cx)
     }
 
     fn app_button(
         &self,
         label: &'static str,
+        icon: Option<ToolbarIcon>,
         badge: Option<usize>,
         tone: ButtonTone,
         enabled: bool,
@@ -889,6 +937,9 @@ impl RepositoryView {
                     .items_center()
                     .justify_center()
                     .gap_1()
+                    .when_some(icon, |this, icon| {
+                        this.child(toolbar_icon(icon, text_color))
+                    })
                     .child(label)
                     .when_some(badge.filter(|count| *count > 0), |this, count| {
                         this.child(button_badge(count))

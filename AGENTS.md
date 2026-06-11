@@ -38,14 +38,17 @@ Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中
 - `Cargo.toml`：包元信息、依赖和构建依赖。
 - `build.rs`：Windows 下嵌入应用图标资源。
 - `assets/app.ico`：应用图标。
+- `assets/icons/`：应用内自绘矢量图标，当前用于顶部操作栏和工作流入口，通过 `src/assets.rs` 嵌入到 GPUI asset source。
 - `assets/windows/app.rc`：Windows 资源脚本。
 - `logo.png`：项目 logo，目前未被源码直接引用。
 - `src/lib.rs`：库入口，重新导出 Git、凭据和类型模块，供 `main.rs` 使用。
+- `src/assets.rs`：应用自有静态资源入口，将 `assets/icons/` 与 Yororen 内置资源合并注册给 GPUI。
 - `src/types.rs`：领域类型和错误类型的汇总入口；较独立的领域类型放到 `src/types/` 子目录，例如冲突解决类型在 `src/types/conflicts.rs`。
-- `src/git.rs`：核心 Git 服务层的汇总入口；大型或独立 Git 能力放到 `src/git/` 子目录，例如冲突解决服务在 `src/git/conflicts.rs`。
+- `src/git.rs`：核心 Git 服务层的汇总入口；大型或独立 Git 能力放到 `src/git/` 子目录，例如冲突解决服务在 `src/git/conflicts.rs`，贮藏服务在 `src/git/stash.rs`。
 - `src/credentials.rs`：凭据存储、匹配、Keyring 读写、凭据测试、旧存储兼容迁移和单元测试。
 - `src/main.rs`：应用入口与主要 UI 状态机。包含 `RepositoryView`、多标签页状态、对话框、文本输入、事件泵、异步 Git 任务、工作区视图、diff、提交框、凭据/远端弹窗等。
 - `src/conflicts/`：冲突解决相关 UI、交互动作和轻量状态 helper，作为 `main.rs` 的子模块实现 `RepositoryView` 的冲突区域。
+- `src/stash_view.rs`：贮藏完整工作流 UI，包括创建贮藏、查看贮藏文件、加载贮藏 diff 和删除确认。
 - `src/ui/`：前端设计系统适配层。`theme.rs` 定义 Khaslana 语义色值和状态 token，`components.rs` 封装按钮、toast、tooltip、section header 等项目级 UI helper，`mod.rs` 统一导出。
 - `src/sidebar_view.rs`：侧边栏 UI，包括本地分支、远端、远端分支、标签、贮藏和相关右键菜单。
 - `src/history_view.rs`：提交历史 UI、提交图渲染、提交文件列表、历史 diff。
@@ -76,7 +79,7 @@ Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中
 - 分支：创建、删除、重命名、checkout、远端分支 checkout、merge
 - 远端：列表、添加、更新、删除、fetch、pull、push
 - 标签：列表、checkout tag
-- 贮藏：列表、apply、pop
+- 贮藏：列表、save、apply、pop、drop、文件列表和 diff 预览
 - 变更：stage、unstage、discard unstaged、discard all
 - 提交：commit、commit history、commit graph、commit files、commit file diff
 - 历史操作：reset、revert
@@ -162,7 +165,7 @@ UI 线程通过 `async-channel` 接收后台线程发回的 `UiEvent`。重型 G
 - 设置/修改本地分支 upstream
 - 删除远端分支，右键复制远端分支名称和 checkout 命令
 - tag 列表和 checkout tag
-- stash 列表、apply、pop
+- stash 列表、创建、apply、pop、drop、文件列表和 diff 预览
 
 ### 5.4 历史
 
@@ -260,19 +263,15 @@ cargo build
 
 底层能识别 `conflicts`，部分危险操作会拒绝冲突文件，但 UI 还缺少完整冲突解决流程。这会限制 pull/merge/revert 后的用户闭环。
 
-### 9.3 贮藏能力不完整
-
-当前有 stash list/apply/pop，但未看到创建 stash、drop stash 或查看 stash diff 的完整 UI 闭环。
-
-### 9.4 历史探索能力仍偏基础
+### 9.3 历史探索能力仍偏基础
 
 已有提交图、分页、文件 diff，但缺少搜索、过滤、按文件历史、按作者过滤、提交详情等高频能力。
 
-### 9.5 大仓库性能需要持续关注
+### 9.4 大仓库性能需要持续关注
 
 已经有 `open_fast`、加载队列、分页历史和大 diff 缓存保护。新增功能时要避免一次性扫描所有 refs、所有文件或完整历史。
 
-### 9.6 UI 自动化测试缺失
+### 9.5 UI 自动化测试缺失
 
 当前测试主要是单元层。GPUI 桌面 UI 的端到端自动化较难，但新增复杂交互时至少应把状态计算逻辑拆出来测。
 
@@ -312,23 +311,6 @@ cargo build
 - 在 `GitService` 增加按 path 过滤的 revwalk/diff 查询。
 - UI 可复用 `HistoryScope` 思路扩展为 `HistoryFilter`。
 - 注意 rename 跟踪可以后续迭代，第一版先做当前路径历史。
-
-### P1：stash 完整工作流
-
-理由：现有 stash apply/pop 已有一半基础，补齐创建、删除和查看能快速提升日常可用性。
-
-建议范围：
-
-- “贮藏当前修改”对话框，支持输入 message。
-- 支持 stash keep staged 或 include untracked。
-- stash 右键增加 drop。
-- stash diff 预览。
-
-实现提示：
-
-- `GitService` 增加 `stash_save`、`drop_stash`、`stash_diff`。
-- UI 可复用确认弹窗和 diff 渲染。
-- drop stash 是破坏性操作，需要确认。
 
 ### P2：提交历史搜索和过滤
 
