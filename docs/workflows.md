@@ -184,6 +184,40 @@ inputs: {
 | `from` | 否 | 当前 `HEAD` | 起点分支或引用。 |
 | `checkout` | 否 | `true` | 创建后是否切换到新分支。 |
 
+如果创建的新分支后续会推送到远端，建议先用 `guardRemoteBranch` 检查远端同名分支是否已存在：
+
+```json5
+steps: [
+  { op: "fetch", remote: "${remote}" },
+  { op: "guardRemoteBranch", remote: "${remote}", branch: "${target}", fetch: false },
+  { op: "createBranch", name: "${target}", from: "${base}", checkout: true },
+]
+```
+
+### guardRemoteBranch
+
+检查远端分支是否存在，可用于在创建本地分支或推送前提前停止工作流。
+
+```json5
+{ op: "guardRemoteBranch", remote: "origin", branch: "feature/demo" }
+```
+
+字段：
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `remote` | 否 | 当前选中远端或 `origin` | 要检查的远端。 |
+| `branch` | 是 | 无 | 远端分支名，不带 `origin/` 这类远端名前缀。 |
+| `fetch` | 否 | `true` | 检查前是否先获取该远端。 |
+| `onExists` | 否 | `"fail"` | 远端分支存在时的行为，可选 `"fail"` 或 `"continue"`。 |
+| `onMissing` | 否 | `"continue"` | 远端分支不存在时的行为，可选 `"fail"` 或 `"continue"`。 |
+
+默认行为是：远端已有同名分支时停止，远端没有该分支时继续。若要检查远端分支必须存在，可写：
+
+```json5
+{ op: "guardRemoteBranch", remote: "origin", branch: "release/demo", onExists: "continue", onMissing: "fail" }
+```
+
 ### merge
 
 把指定分支合并到当前分支。
@@ -393,6 +427,7 @@ vars: {
   steps: [
     { op: "checkout", branch: "${base}" },
     { op: "pull", remote: "${remote}" },
+    { op: "guardRemoteBranch", remote: "${remote}", branch: "${release}", fetch: false },
     { op: "createBranch", name: "${release}", from: "${base}", checkout: true },
     { op: "push", remote: "${remote}", branch: "${release}", setUpstream: true },
   ],
@@ -415,6 +450,7 @@ vars: {
   },
   steps: [
     { op: "checkout", branch: "${base}" },
+    { op: "guardRemoteBranch", remote: "${remote}", branch: "${target}" },
     { op: "createBranch", name: "${target}", from: "${base}", checkout: true },
     { op: "merge", branch: "${source}" },
     { op: "assertBranch", branch: "${target}" },
