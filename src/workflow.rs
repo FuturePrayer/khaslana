@@ -9,6 +9,16 @@ use crate::{
     BranchName, GitError, GitService, RemoteName, RepositorySnapshot, Result, WorktreeChange,
 };
 
+mod expressions;
+mod remote_branch_guard;
+
+use expressions::evaluate_workflow_expression;
+pub use remote_branch_guard::RemoteBranchGuardAction;
+use remote_branch_guard::{
+    default_guard_fetch, default_on_exists, default_on_missing, guard_remote_branch, guard_summary,
+    validate_remote_branch_name,
+};
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowDefinition {
@@ -92,6 +102,17 @@ pub enum WorkflowStep {
         branch: Option<String>,
         #[serde(default = "default_set_upstream")]
         set_upstream: bool,
+    },
+    GuardRemoteBranch {
+        #[serde(default)]
+        remote: Option<String>,
+        branch: String,
+        #[serde(default = "default_guard_fetch")]
+        fetch: bool,
+        #[serde(default = "default_on_exists", rename = "onExists")]
+        on_exists: RemoteBranchGuardAction,
+        #[serde(default = "default_on_missing", rename = "onMissing")]
+        on_missing: RemoteBranchGuardAction,
     },
     EnsureClean,
     AssertBranch {
@@ -301,6 +322,13 @@ enum ResolvedWorkflowStep {
         branch: String,
         set_upstream: bool,
     },
+    GuardRemoteBranch {
+        remote: String,
+        branch: String,
+        fetch: bool,
+        on_exists: RemoteBranchGuardAction,
+        on_missing: RemoteBranchGuardAction,
+    },
     EnsureClean,
     AssertBranch {
         branch: String,
@@ -335,6 +363,7 @@ impl WorkflowStep {
             WorkflowStep::CreateBranch { .. } => "createBranch",
             WorkflowStep::Merge { .. } => "merge",
             WorkflowStep::Push { .. } => "push",
+            WorkflowStep::GuardRemoteBranch { .. } => "guardRemoteBranch",
             WorkflowStep::EnsureClean => "ensureClean",
             WorkflowStep::AssertBranch { .. } => "assertBranch",
         }
@@ -378,6 +407,24 @@ impl WorkflowStep {
                 branch: resolver.branch_or_current(branch)?,
                 set_upstream: *set_upstream,
             }),
+            WorkflowStep::GuardRemoteBranch {
+                remote,
+                branch,
+                fetch,
+                on_exists,
+                on_missing,
+            } => {
+                let remote = resolver.remote_name(remote)?;
+                let branch = resolver.interpolate(branch)?;
+                validate_remote_branch_name(&remote, &branch)?;
+                Ok(ResolvedWorkflowStep::GuardRemoteBranch {
+                    remote,
+                    branch,
+                    fetch: *fetch,
+                    on_exists: *on_exists,
+                    on_missing: *on_missing,
+                })
+            }
             WorkflowStep::EnsureClean => Ok(ResolvedWorkflowStep::EnsureClean),
             WorkflowStep::AssertBranch { branch } => Ok(ResolvedWorkflowStep::AssertBranch {
                 branch: resolver.interpolate(branch)?,
@@ -405,6 +452,13 @@ impl ResolvedWorkflowStep {
             ResolvedWorkflowStep::Push { remote, branch, .. } => {
                 format!("推送分支 {branch} 到 {remote}")
             }
+            ResolvedWorkflowStep::GuardRemoteBranch {
+                remote,
+                branch,
+                fetch,
+                on_exists,
+                on_missing,
+            } => guard_summary(remote, branch, *fetch, *on_exists, *on_missing),
             ResolvedWorkflowStep::EnsureClean => "检查工作区干净".to_string(),
             ResolvedWorkflowStep::AssertBranch { branch } => {
                 format!("确认当前分支是 {branch}")
@@ -448,6 +502,19 @@ impl ResolvedWorkflowStep {
                 &BranchName::new(branch.clone()),
                 *set_upstream,
             ),
+            ResolvedWorkflowStep::GuardRemoteBranch {
+                remote,
+                branch,
+                fetch,
+                on_exists,
+                on_missing,
+            } => {
+                if *fetch {
+                    service.fetch(repo, &RemoteName::new(remote.clone()))?;
+                }
+                guard_remote_branch(repo, remote, branch, *on_exists, *on_missing)?;
+                service.snapshot_after_operation(repo)
+            }
             ResolvedWorkflowStep::EnsureClean => {
                 ensure_clean_worktree(service, repo)?;
                 service.snapshot_after_operation(repo)
@@ -674,6 +741,17 @@ impl<'a, 'repo> WorkflowResolver<'a, 'repo> {
         expression: &str,
         stack: &mut BTreeSet<String>,
     ) -> Result<String> {
+        evaluate_workflow_expression(expression, |primary| {
+            self.resolve_primary_expression(primary, stack)
+        })?
+        .into_string(expression)
+    }
+
+    fn resolve_primary_expression(
+        &mut self,
+        expression: &str,
+        stack: &mut BTreeSet<String>,
+    ) -> Result<String> {
         if let Some(format) = expression.strip_prefix("date:") {
             return Ok(self.context.started_at.format(format).to_string());
         }
@@ -811,6 +889,97 @@ mod tests {
             &parent_refs,
         )
         .unwrap()
+    }
+
+    fn path_url(path: &Path) -> String {
+        let normalized = path.display().to_string().replace('\\', "/");
+        if cfg!(windows) {
+            format!("file:///{normalized}")
+        } else {
+            format!("file://{normalized}")
+        }
+    }
+
+    fn init_remote_workflow_repo() -> (TempDir, TempDir, Repository, GitService) {
+        let remote_dir = TempDir::new().unwrap();
+        let mut bare_opts = RepositoryInitOptions::new();
+        bare_opts.bare(true).initial_head("main");
+        Repository::init_opts(remote_dir.path(), &bare_opts).unwrap();
+
+        let (source_dir, mut source, service) = init_repo();
+        write_file(source_dir.path(), "README.md", "hello\n");
+        commit_all(&source, "initial");
+        source
+            .remote("origin", &path_url(remote_dir.path()))
+            .unwrap();
+        service
+            .push_branch(
+                &mut source,
+                &RemoteName::new("origin"),
+                &BranchName::new("main"),
+                true,
+            )
+            .unwrap();
+        service
+            .create_branch_from(
+                &mut source,
+                &BranchName::new("existing"),
+                Some(&BranchName::new("main")),
+                true,
+            )
+            .unwrap();
+        service
+            .push_branch(
+                &mut source,
+                &RemoteName::new("origin"),
+                &BranchName::new("existing"),
+                true,
+            )
+            .unwrap();
+
+        let clone_dir = TempDir::new().unwrap();
+        let clone_path = clone_dir.path().join("clone");
+        service
+            .clone_repo(
+                &path_url(remote_dir.path()),
+                &crate::RepoPath::new(&clone_path),
+            )
+            .unwrap();
+        let mut clone = Repository::open(&clone_path).unwrap();
+        configure_user(&clone);
+        service
+            .fetch(&mut clone, &RemoteName::new("origin"))
+            .unwrap();
+        (remote_dir, clone_dir, clone, service)
+    }
+
+    fn create_remote_branch(remote_dir: &Path, branch: &str) {
+        let service = service();
+        let work_dir = TempDir::new().unwrap();
+        let work_path = work_dir.path().join("work");
+        service
+            .clone_repo(&path_url(remote_dir), &crate::RepoPath::new(&work_path))
+            .unwrap();
+        let mut repo = Repository::open(&work_path).unwrap();
+        configure_user(&repo);
+        service
+            .create_branch_from(
+                &mut repo,
+                &BranchName::new(branch),
+                Some(&BranchName::new("main")),
+                true,
+            )
+            .unwrap();
+        write_file(&work_path, "branch.txt", branch);
+        commit_all(&repo, "remote branch");
+        service
+            .push_branch(
+                &mut repo,
+                &RemoteName::new("origin"),
+                &BranchName::new(branch),
+                true,
+            )
+            .unwrap();
     }
 
     #[test]
@@ -988,6 +1157,342 @@ mod tests {
             .unwrap();
 
         assert_eq!(default, "feature/main");
+    }
+
+    #[test]
+    fn workflow_methods_can_build_branch_names_from_variables() {
+        let (dir, repo, service) = init_repo();
+        write_file(dir.path(), "README.md", "hello\n");
+        commit_all(&repo, "initial");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              vars: {
+                rawBranch: "feature/User Story_123",
+                target: "tmp/${rawBranch | split:'/' | last | slug | truncate:12}",
+              },
+              steps: [{ op: "createBranch", name: "${target}" }],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let preview = WorkflowExecutor::new(&service)
+            .preview(&repo, &definition, &WorkflowRunOptions::default())
+            .unwrap();
+
+        assert_eq!(
+            preview.steps[0].summary,
+            "基于 当前 HEAD 创建分支 tmp/user-story-1并切换"
+        );
+    }
+
+    #[test]
+    fn workflow_methods_work_in_input_defaults() {
+        let (dir, repo, service) = init_repo();
+        write_file(dir.path(), "README.md", "hello\n");
+        commit_all(&repo, "initial");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              inputs: {
+                target: { default: "feature/${git.initialBranch | split:'/' | last | slug}" },
+              },
+              steps: [{ op: "assertBranch", branch: "${target}" }],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let default = WorkflowExecutor::new(&service)
+            .resolve_template(
+                &repo,
+                &definition,
+                &WorkflowRunOptions::default(),
+                definition.inputs["target"].default.as_deref().unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(default, "feature/main");
+    }
+
+    #[test]
+    fn guard_remote_branch_defaults_are_fail_on_exists_and_continue_on_missing() {
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              steps: [{ op: "guardRemoteBranch", branch: "target" }],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let WorkflowStep::GuardRemoteBranch {
+            remote,
+            branch,
+            fetch,
+            on_exists,
+            on_missing,
+        } = &definition.steps[0]
+        else {
+            panic!("expected guardRemoteBranch");
+        };
+
+        assert!(remote.is_none());
+        assert_eq!(branch, "target");
+        assert!(*fetch);
+        assert_eq!(*on_exists, RemoteBranchGuardAction::Fail);
+        assert_eq!(*on_missing, RemoteBranchGuardAction::Continue);
+    }
+
+    #[test]
+    fn guard_remote_branch_preview_shows_policy_and_does_not_change_current_branch() {
+        let (dir, repo, service) = init_repo();
+        write_file(dir.path(), "README.md", "hello\n");
+        commit_all(&repo, "initial");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              steps: [
+                { op: "guardRemoteBranch", remote: "origin", branch: "target", fetch: false },
+                { op: "push", remote: "origin" },
+              ],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let preview = WorkflowExecutor::new(&service)
+            .preview(&repo, &definition, &WorkflowRunOptions::default())
+            .unwrap();
+
+        assert_eq!(
+            preview.steps[0].summary,
+            "检查远端分支 origin/target（基于本地引用，存在则停止，不存在则继续）"
+        );
+        assert_eq!(preview.steps[1].summary, "推送分支 main 到 origin");
+    }
+
+    #[test]
+    fn guard_remote_branch_fails_when_remote_branch_exists_by_default() {
+        let (_remote_dir, _clone_dir, mut repo, service) = init_remote_workflow_repo();
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              steps: [{ op: "guardRemoteBranch", remote: "origin", branch: "existing", fetch: false }],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = WorkflowExecutor::new(&service)
+            .run(
+                &mut repo,
+                &definition,
+                WorkflowRunOptions::default(),
+                |_| {},
+            )
+            .unwrap_err();
+
+        assert!(err.to_string().contains("远端分支已存在：origin/existing"));
+    }
+
+    #[test]
+    fn guard_remote_branch_can_continue_when_remote_branch_exists() {
+        let (_remote_dir, _clone_dir, mut repo, service) = init_remote_workflow_repo();
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              steps: [
+                {
+                  op: "guardRemoteBranch",
+                  remote: "origin",
+                  branch: "existing",
+                  fetch: false,
+                  onExists: "continue",
+                },
+                { op: "assertBranch", branch: "main" },
+              ],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let result = WorkflowExecutor::new(&service)
+            .run(
+                &mut repo,
+                &definition,
+                WorkflowRunOptions::default(),
+                |_| {},
+            )
+            .unwrap();
+
+        assert_eq!(result.steps_run, 2);
+    }
+
+    #[test]
+    fn guard_remote_branch_can_fail_when_remote_branch_is_missing() {
+        let (_remote_dir, _clone_dir, mut repo, service) = init_remote_workflow_repo();
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              steps: [
+                {
+                  op: "guardRemoteBranch",
+                  remote: "origin",
+                  branch: "missing",
+                  fetch: false,
+                  onExists: "continue",
+                  onMissing: "fail",
+                },
+              ],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = WorkflowExecutor::new(&service)
+            .run(
+                &mut repo,
+                &definition,
+                WorkflowRunOptions::default(),
+                |_| {},
+            )
+            .unwrap_err();
+
+        assert!(err.to_string().contains("远端分支不存在：origin/missing"));
+    }
+
+    #[test]
+    fn guard_remote_branch_fetch_true_refreshes_remote_refs_before_checking() {
+        let (remote_dir, _clone_dir, mut repo, service) = init_remote_workflow_repo();
+        create_remote_branch(remote_dir.path(), "fresh");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              steps: [{ op: "guardRemoteBranch", remote: "origin", branch: "fresh" }],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = WorkflowExecutor::new(&service)
+            .run(
+                &mut repo,
+                &definition,
+                WorkflowRunOptions::default(),
+                |_| {},
+            )
+            .unwrap_err();
+
+        assert!(err.to_string().contains("远端分支已存在：origin/fresh"));
+    }
+
+    #[test]
+    fn guard_remote_branch_fetch_false_uses_local_remote_refs_only() {
+        let (remote_dir, _clone_dir, mut repo, service) = init_remote_workflow_repo();
+        create_remote_branch(remote_dir.path(), "fresh");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              steps: [{ op: "guardRemoteBranch", remote: "origin", branch: "fresh", fetch: false }],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let result = WorkflowExecutor::new(&service)
+            .run(
+                &mut repo,
+                &definition,
+                WorkflowRunOptions::default(),
+                |_| {},
+            )
+            .unwrap();
+
+        assert_eq!(result.steps_run, 1);
+    }
+
+    #[test]
+    fn guard_remote_branch_rejects_branch_with_remote_prefix() {
+        let (dir, repo, service) = init_repo();
+        write_file(dir.path(), "README.md", "hello\n");
+        commit_all(&repo, "initial");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              steps: [{ op: "guardRemoteBranch", remote: "origin", branch: "origin/target" }],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = WorkflowExecutor::new(&service)
+            .preview(&repo, &definition, &WorkflowRunOptions::default())
+            .unwrap_err();
+
+        assert!(err.to_string().contains("不要带远端名前缀"));
+    }
+
+    #[test]
+    fn guard_remote_branch_branch_supports_expression_methods() {
+        let (dir, repo, service) = init_repo();
+        write_file(dir.path(), "README.md", "hello\n");
+        commit_all(&repo, "initial");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              vars: { target: "feature/demo" },
+              steps: [
+                { op: "guardRemoteBranch", remote: "origin", branch: "${target | split:'/' | last}", fetch: false },
+              ],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let preview = WorkflowExecutor::new(&service)
+            .preview(&repo, &definition, &WorkflowRunOptions::default())
+            .unwrap();
+
+        assert_eq!(
+            preview.steps[0].summary,
+            "检查远端分支 origin/demo（基于本地引用，存在则停止，不存在则继续）"
+        );
+    }
+
+    #[test]
+    fn final_array_workflow_expression_is_rejected() {
+        let (dir, repo, service) = init_repo();
+        write_file(dir.path(), "README.md", "hello\n");
+        commit_all(&repo, "initial");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              vars: { target: "${git.initialBranch | split:'/'}" },
+              steps: [{ op: "createBranch", name: "${target}" }],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = WorkflowExecutor::new(&service)
+            .preview(&repo, &definition, &WorkflowRunOptions::default())
+            .unwrap_err();
+
+        assert!(err.to_string().contains("最终结果是数组"));
     }
 
     #[test]

@@ -184,6 +184,40 @@ inputs: {
 | `from` | 否 | 当前 `HEAD` | 起点分支或引用。 |
 | `checkout` | 否 | `true` | 创建后是否切换到新分支。 |
 
+如果创建的新分支后续会推送到远端，建议先用 `guardRemoteBranch` 检查远端同名分支是否已存在：
+
+```json5
+steps: [
+  { op: "fetch", remote: "${remote}" },
+  { op: "guardRemoteBranch", remote: "${remote}", branch: "${target}", fetch: false },
+  { op: "createBranch", name: "${target}", from: "${base}", checkout: true },
+]
+```
+
+### guardRemoteBranch
+
+检查远端分支是否存在，可用于在创建本地分支或推送前提前停止工作流。
+
+```json5
+{ op: "guardRemoteBranch", remote: "origin", branch: "feature/demo" }
+```
+
+字段：
+
+| 字段 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `remote` | 否 | 当前选中远端或 `origin` | 要检查的远端。 |
+| `branch` | 是 | 无 | 远端分支名，不带 `origin/` 这类远端名前缀。 |
+| `fetch` | 否 | `true` | 检查前是否先获取该远端。 |
+| `onExists` | 否 | `"fail"` | 远端分支存在时的行为，可选 `"fail"` 或 `"continue"`。 |
+| `onMissing` | 否 | `"continue"` | 远端分支不存在时的行为，可选 `"fail"` 或 `"continue"`。 |
+
+默认行为是：远端已有同名分支时停止，远端没有该分支时继续。若要检查远端分支必须存在，可写：
+
+```json5
+{ op: "guardRemoteBranch", remote: "origin", branch: "release/demo", onExists: "continue", onMissing: "fail" }
+```
+
 ### merge
 
 把指定分支合并到当前分支。
@@ -338,6 +372,45 @@ vars: {
 
 步骤预览会基于前置 `checkout` 和 `createBranch checkout: true` 推断 `${git.currentBranch}`，但不会模拟 fetch、pull 或 merge 的真实 Git 结果。
 
+### 内置方法
+
+`${...}` 表达式支持管道方法，用来对变量结果做简单处理：
+
+```json5
+vars: {
+  shortHead: "${git.head | truncate:7}",
+  sourceName: "${git.initialBranch | split:'/' | last}",
+  target: "feature/${git.initialBranch | split:'/' | last | slug | truncate:24}",
+}
+```
+
+管道从左到右执行。方法参数用 `:` 分隔；如果参数中包含 `:` 或 `|`，请用单引号或双引号包裹，例如 `replace:'|':'-'`。
+
+字符串方法：
+
+| 方法 | 说明 |
+| --- | --- |
+| `trim` | 去掉首尾空白。 |
+| `lower` / `upper` | 转为小写 / 大写。 |
+| `replace:from:to` | 字面量替换所有 `from` 为 `to`。 |
+| `truncate:n` | 保留前 `n` 个字符。 |
+| `suffix:n` | 保留后 `n` 个字符。 |
+| `default:value` | 当前值为空白时使用 `value`。 |
+| `slug` | 转小写，将非 ASCII 字母数字替换为 `-`，并合并连续 `-`。 |
+| `split:delimiter` | 按字面量分隔符拆成数组。 |
+
+数组方法：
+
+| 方法 | 说明 |
+| --- | --- |
+| `compact` | 移除空白元素。 |
+| `first[:default]` | 取第一个元素，数组为空时可使用默认值。 |
+| `last[:default]` | 取最后一个元素，数组为空时可使用默认值。 |
+| `nth:index[:default]` | 取第 `index` 个元素，`index` 从 0 开始。 |
+| `join:delimiter` | 用分隔符把数组拼回字符串。 |
+
+`split` 产生的数组只能在管道中临时使用，最终必须通过 `first`、`last`、`nth` 或 `join` 转回字符串。第一版不支持循环、条件、正则或方法参数里的 `${...}` 嵌套插值。
+
 ## 完整示例
 
 ### 示例 1：从 master 拉取后创建发布分支
@@ -354,6 +427,7 @@ vars: {
   steps: [
     { op: "checkout", branch: "${base}" },
     { op: "pull", remote: "${remote}" },
+    { op: "guardRemoteBranch", remote: "${remote}", branch: "${release}", fetch: false },
     { op: "createBranch", name: "${release}", from: "${base}", checkout: true },
     { op: "push", remote: "${remote}", branch: "${release}", setUpstream: true },
   ],
@@ -376,6 +450,7 @@ vars: {
   },
   steps: [
     { op: "checkout", branch: "${base}" },
+    { op: "guardRemoteBranch", remote: "${remote}", branch: "${target}" },
     { op: "createBranch", name: "${target}", from: "${base}", checkout: true },
     { op: "merge", branch: "${source}" },
     { op: "assertBranch", branch: "${target}" },
@@ -406,6 +481,7 @@ vars: {
 - 不支持执行 shell、JavaScript、Python 等脚本。
 - 不支持跨仓库编排；工作流只作用于当前激活仓库。
 - 不支持行级别或 hunk 级别操作。
+- 内置方法只支持字符串处理和临时数组取值，不支持循环、条件或正则表达式。
 - 取消运行目前只在步骤之间有意义；正在执行的 Git 远程操作不会被强制中断。
 - 用户模板目录会自动发现 `.json5` / `.jsonc` 文件；仓库内工作流不会自动扫描，需要通过“选择文件”手动选择。
 

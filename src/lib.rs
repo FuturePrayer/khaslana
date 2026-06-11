@@ -14,7 +14,7 @@ pub use credentials::{
 pub use git::{GitService, NoopProgress, ProgressEmitter};
 pub use types::*;
 pub use workflow::{
-    WorkflowDefinition, WorkflowExecutor, WorkflowInputDefinition, WorkflowPreview,
-    WorkflowPreviewStep, WorkflowProgressEvent, WorkflowRunOptions, WorkflowRunResult,
-    WorkflowStep, parse_workflow_json5,
+    RemoteBranchGuardAction, WorkflowDefinition, WorkflowExecutor, WorkflowInputDefinition,
+    WorkflowPreview, WorkflowPreviewStep, WorkflowProgressEvent, WorkflowRunOptions,
+    WorkflowRunResult, WorkflowStep, parse_workflow_json5,
 };
