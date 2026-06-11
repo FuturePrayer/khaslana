@@ -721,9 +721,10 @@ impl GitService {
     where
         I: IntoIterator<Item = &'a Path>,
     {
-        let object = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
+        // reset_default 需要 commit-ish；传 tree 会被 libgit2 再 peel 成 commit 而失败。
+        let object = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
         let paths = paths.into_iter().collect::<Vec<_>>();
-        repo.reset_default(object.as_ref().map(|tree| tree.as_object()), paths)?;
+        repo.reset_default(object.as_ref().map(|commit| commit.as_object()), paths)?;
         drop(object);
         self.snapshot_after_operation(repo)
     }
@@ -2123,6 +2124,37 @@ mod tests {
         assert!(changes.iter().any(|change| {
             change.path == "two.txt" && change.unstaged == Some(ChangeState::Untracked)
         }));
+    }
+
+    #[test]
+    fn unstage_tracked_change_after_commit_keeps_worktree_change() {
+        let (dir, mut repo, service) = init_repo();
+        write_file(dir.path(), "file.txt", "initial\n");
+        commit_all(&repo, "initial");
+        write_file(dir.path(), "file.txt", "changed\n");
+
+        service
+            .stage_path(&mut repo, Path::new("file.txt"))
+            .unwrap();
+        let changes = service.status(&repo).unwrap();
+        let change = changes
+            .iter()
+            .find(|change| change.path == "file.txt")
+            .unwrap();
+        assert_eq!(change.staged, Some(ChangeState::Modified));
+        assert_eq!(change.unstaged, None);
+
+        service
+            .unstage_path(&mut repo, Path::new("file.txt"))
+            .unwrap();
+        let changes = service.status(&repo).unwrap();
+        let change = changes
+            .iter()
+            .find(|change| change.path == "file.txt")
+            .unwrap();
+        assert_eq!(change.staged, None);
+        assert_eq!(change.unstaged, Some(ChangeState::Modified));
+        assert_file_text(dir.path(), "file.txt", "changed\n");
     }
 
     #[test]
