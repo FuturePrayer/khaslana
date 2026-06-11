@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Context, CursorStyle, Div, IntoElement, Render, Stateful, Window, div, prelude::*, px,
-    rgb, rgba,
+    App, Context, CursorStyle, Div, IntoElement, MouseButton, Render, Stateful, Window, div,
+    prelude::*, px, rgb, rgba,
 };
 use yororen_ui::component::{IconName, icon};
 
@@ -313,7 +313,7 @@ pub(crate) fn dialog_panel(title: &'static str) -> Stateful<Div> {
         .gap_3()
         .cursor(CursorStyle::Arrow)
         .occlude()
-        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+        .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
             cx.stop_propagation();
         })
         .child(

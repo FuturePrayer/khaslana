@@ -12,6 +12,7 @@ pub(crate) enum ToolbarIcon {
     Proxy,
     Workflow,
     Stash,
+    Submodule,
 }
 
 impl ToolbarIcon {
@@ -27,6 +28,7 @@ impl ToolbarIcon {
             Self::Proxy => "icons/proxy.svg",
             Self::Workflow => "icons/workflow.svg",
             Self::Stash => "icons/stash.svg",
+            Self::Submodule => "icons/submodule.svg",
         }
     }
 }
@@ -73,6 +75,7 @@ mod tests {
             ToolbarIcon::Proxy,
             ToolbarIcon::Workflow,
             ToolbarIcon::Stash,
+            ToolbarIcon::Submodule,
         ] {
             let asset_path = format!("assets/{}", icon.path());
             let svg = fs::read_to_string(&asset_path).unwrap_or_else(|err| {

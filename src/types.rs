@@ -87,6 +87,66 @@ pub struct RemoteInfo {
     pub credential_record_id: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CloneOptions {
+    pub recursive_submodules: bool,
+}
+
+impl Default for CloneOptions {
+    fn default() -> Self {
+        Self {
+            recursive_submodules: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubmoduleInfo {
+    pub name: String,
+    pub path: PathBuf,
+    pub url: Option<String>,
+    pub branch: Option<String>,
+    pub head_id: Option<String>,
+    pub index_id: Option<String>,
+    pub workdir_id: Option<String>,
+    pub status: SubmoduleState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubmoduleState {
+    pub initialized: bool,
+    pub checked_out: bool,
+    pub head_matches_index: bool,
+    pub workdir_modified: bool,
+    pub workdir_untracked: bool,
+}
+
+impl SubmoduleState {
+    pub fn is_ready(&self) -> bool {
+        self.initialized
+            && self.checked_out
+            && self.head_matches_index
+            && !self.workdir_modified
+            && !self.workdir_untracked
+    }
+
+    pub fn label(&self) -> &'static str {
+        if !self.initialized {
+            "未初始化"
+        } else if !self.checked_out {
+            "未检出"
+        } else if self.workdir_modified {
+            "有改动"
+        } else if self.workdir_untracked {
+            "有未跟踪文件"
+        } else if !self.head_matches_index {
+            "需更新"
+        } else {
+            "已同步"
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StashInfo {
     pub index: usize,

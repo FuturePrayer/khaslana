@@ -38,7 +38,7 @@ use khaslana::{
     GitService, HistoryScope, KeyringCredentialStore, NetworkProxyMode, NetworkProxySettings,
     OperationEvent, ProgressEmitter, RemoteCredentialBinding, RemoteCredentialBindings,
     RemoteCredentialPolicy, RemoteInfo, RemoteName, RepoPath, RepositorySnapshot, ResetMode,
-    SessionState, TagName, credential_display_target, credential_key_filename,
+    SessionState, SubmoduleInfo, TagName, credential_display_target, credential_key_filename,
     credential_kind_label, credential_record_is_compatible_with_url, credential_record_label,
     credential_record_matches_remote_url, credential_scope_label, test_credential_connection,
 };
@@ -195,6 +195,7 @@ pub(crate) enum DialogState {
     CredentialForm {
         editing: Option<String>,
     },
+    SubmoduleManager,
     RemoteManager,
     RemoteForm {
         editing: Option<String>,
@@ -473,6 +474,36 @@ fn conflict_editor_should_store_draft(kind: ConflictFileKind) -> bool {
     kind == ConflictFileKind::Text && conflict_result_pane_uses_editor()
 }
 
+fn default_clone_recursive_submodules() -> bool {
+    true
+}
+
+fn submodule_toolbar_enabled(repo_open: bool, busy: bool) -> bool {
+    repo_open && !busy
+}
+
+fn submodule_request_matches(
+    state: &SubmoduleDialogState,
+    repository_load_id: u64,
+    load_id: u64,
+    request_id: u64,
+) -> bool {
+    load_id == repository_load_id && request_id == state.request_id
+}
+
+fn column_splitter_accepts_mouse_events(active_dialog: bool) -> bool {
+    !active_dialog
+}
+
+fn column_splitter_should_clear_resize(active_dialog: bool, resizing: bool) -> bool {
+    active_dialog && resizing
+}
+
+#[cfg(test)]
+fn dialog_parent_should_stop_mouse_event(event_name: &str) -> bool {
+    event_name == "mouse_down"
+}
+
 fn multiline_input_should_scroll(id: FieldId, value: &str) -> bool {
     id == FieldId::ConflictEditor || visual_line_count(value) > 4
 }
@@ -602,6 +633,7 @@ struct RepoTabState {
     pub(crate) branch_sync_status: Option<BranchSyncStatus>,
     pub(crate) branch_sync_loading: bool,
     pub(crate) branch_sync_request_id: u64,
+    pub(crate) submodule_dialog: SubmoduleDialogState,
     pub(crate) conflict_workbench: ConflictWorkbenchState,
     pub(crate) sidebar_sections: SidebarSectionState,
     pub(crate) busy: bool,
@@ -640,6 +672,7 @@ impl RepoTabState {
             branch_sync_status: None,
             branch_sync_loading: false,
             branch_sync_request_id: 0,
+            submodule_dialog: SubmoduleDialogState::default(),
             conflict_workbench: ConflictWorkbenchState::default(),
             sidebar_sections: SidebarSectionState::default(),
             busy: false,
@@ -683,6 +716,25 @@ impl RepoTabState {
             self.history_diff = None;
             self.history_diff_headers_expanded = false;
         }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SubmoduleDialogState {
+    pub(crate) items: Vec<SubmoduleInfo>,
+    pub(crate) loading: bool,
+    pub(crate) loaded: bool,
+    pub(crate) request_id: u64,
+    pub(crate) error: Option<String>,
+}
+
+impl SubmoduleDialogState {
+    fn invalidate(&mut self) {
+        self.items.clear();
+        self.loading = false;
+        self.loaded = false;
+        self.request_id = self.request_id.wrapping_add(1).max(1);
+        self.error = None;
     }
 }
 
@@ -946,6 +998,18 @@ pub(crate) enum UiEvent {
         request_id: u64,
     },
     BranchSyncStatusFailed {
+        tab_id: RepoTabId,
+        error: String,
+        load_id: u64,
+        request_id: u64,
+    },
+    SubmodulesLoaded {
+        tab_id: RepoTabId,
+        items: Vec<SubmoduleInfo>,
+        load_id: u64,
+        request_id: u64,
+    },
+    SubmodulesLoadFailed {
         tab_id: RepoTabId,
         error: String,
         load_id: u64,
@@ -1386,6 +1450,7 @@ pub(crate) struct RepositoryView {
     credential_use_ssh_agent: bool,
     clone_url: TextFieldState,
     clone_path: TextFieldState,
+    clone_recursive_submodules: bool,
     branch_name: TextFieldState,
     create_branch_checkout: bool,
     branch_rename: TextFieldState,
@@ -1483,6 +1548,7 @@ impl RepositoryView {
             credential_use_ssh_agent: false,
             clone_url: TextFieldState::new(cx, "远程仓库 URL"),
             clone_path: TextFieldState::new(cx, "克隆到父文件夹"),
+            clone_recursive_submodules: default_clone_recursive_submodules(),
             branch_name: TextFieldState::new(cx, "新分支名称"),
             create_branch_checkout: true,
             branch_rename: TextFieldState::new(cx, "重命名为"),
@@ -1643,11 +1709,15 @@ impl RepositoryView {
         if self.active_tab == Some(tab_id) || self.tab(tab_id).is_none() {
             return;
         }
+        if self.active_dialog == Some(DialogState::SubmoduleManager) {
+            self.close_dialog();
+        }
         self.close_popups();
         if let Some(active) = self.active_tab
             && let Some(tab) = self.tab_mut(active)
         {
             tab.release_large_diff_caches();
+            tab.submodule_dialog.invalidate();
         }
         self.active_tab = Some(tab_id);
         self.ensure_history_loaded();
@@ -1659,6 +1729,11 @@ impl RepositoryView {
         let Some(index) = self.tabs.iter().position(|tab| tab.id == tab_id) else {
             return;
         };
+        if self.active_tab == Some(tab_id)
+            && self.active_dialog == Some(DialogState::SubmoduleManager)
+        {
+            self.close_dialog();
+        }
         self.close_popups();
         self.tabs.remove(index);
         let mut retained = VecDeque::new();
@@ -2196,6 +2271,8 @@ impl RepositoryView {
                 diff,
             } => {
                 let toast_message = message.clone();
+                let should_refresh_submodules = message == "子模块已更新"
+                    && self.active_dialog == Some(DialogState::SubmoduleManager);
                 let has_snapshot = snapshot.is_some();
                 let has_diff = diff.is_some();
                 let mut full_status_request = None;
@@ -2247,6 +2324,9 @@ impl RepositoryView {
                 }
                 if should_notify_operation_finished(&toast_message, has_snapshot, has_diff) {
                     self.notify_completion(&toast_message, cx);
+                }
+                if should_refresh_submodules {
+                    self.load_submodules();
                 }
             }
             UiEvent::DiscardChangeFinished {
@@ -2474,6 +2554,49 @@ impl RepositoryView {
                         this.branch_sync_loading = false;
                         this.branch_sync_status = None;
                         tracing::warn!("branch sync status skipped: {error}");
+                    }
+                });
+            }
+            UiEvent::SubmodulesLoaded {
+                tab_id,
+                items,
+                load_id,
+                request_id,
+            } => {
+                self.with_tab_context(tab_id, |this| {
+                    if submodule_request_matches(
+                        &this.submodule_dialog,
+                        this.repository_load_id,
+                        load_id,
+                        request_id,
+                    ) {
+                        this.submodule_dialog.items = items;
+                        this.submodule_dialog.loading = false;
+                        this.submodule_dialog.loaded = true;
+                        this.submodule_dialog.error = None;
+                        this.status = "子模块列表已加载".to_string();
+                    }
+                });
+            }
+            UiEvent::SubmodulesLoadFailed {
+                tab_id,
+                error,
+                load_id,
+                request_id,
+            } => {
+                self.with_tab_context(tab_id, |this| {
+                    if submodule_request_matches(
+                        &this.submodule_dialog,
+                        this.repository_load_id,
+                        load_id,
+                        request_id,
+                    ) {
+                        this.submodule_dialog.items.clear();
+                        this.submodule_dialog.loading = false;
+                        this.submodule_dialog.loaded = false;
+                        this.submodule_dialog.error = Some(error.clone());
+                        this.status = "子模块列表加载失败".to_string();
+                        this.last_error = Some(error);
                     }
                 });
             }
@@ -3311,6 +3434,7 @@ impl RepositoryView {
         self.close_popups();
         self.clone_url.clear();
         self.clone_path.clear();
+        self.clone_recursive_submodules = default_clone_recursive_submodules();
         self.active_dialog = Some(DialogState::CloneRepo);
         self.last_error = None;
         window.focus(&self.clone_url.focus);
@@ -3356,10 +3480,14 @@ impl RepositoryView {
     }
 
     pub(crate) fn close_dialog(&mut self) {
+        let closing_submodule_manager = self.active_dialog == Some(DialogState::SubmoduleManager);
         self.active_dialog = None;
         self.remote_branch_operation.branch_dropdown_open = false;
         self.remote_branch_search.clear();
         self.credential_context_menu = None;
+        if closing_submodule_manager {
+            self.submodule_dialog.invalidate();
+        }
         self.last_error = None;
     }
 
@@ -3382,6 +3510,69 @@ impl RepositoryView {
         self.active_dialog = Some(DialogState::NetworkProxySettings);
         self.status = "代理设置已打开".into();
         self.last_error = None;
+    }
+
+    fn open_submodule_manager(&mut self) {
+        if self.repo_path.is_none() {
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        }
+        self.close_popups();
+        self.active_dialog = Some(DialogState::SubmoduleManager);
+        self.status = "子模块已打开".into();
+        self.last_error = None;
+        if !self.submodule_dialog.loaded && !self.submodule_dialog.loading {
+            self.load_submodules();
+        }
+    }
+
+    fn load_submodules(&mut self) {
+        let Some(tab_id) = self.active_tab_id() else {
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        };
+        let Some(repo_path) = self.repo_path.clone() else {
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        };
+        let service = self.service_for_tab(tab_id);
+        let tx = self.tx.clone();
+        let load_id = self.repository_load_id;
+        let request_id = {
+            let state = &mut self.submodule_dialog;
+            state.request_id = state.request_id.wrapping_add(1).max(1);
+            state.loading = true;
+            state.error = None;
+            state.request_id
+        };
+        self.status = "正在加载子模块列表".into();
+
+        thread::spawn(move || {
+            let result = (|| -> khaslana::Result<Vec<SubmoduleInfo>> {
+                let repo = Repository::open(repo_path)?;
+                service.submodules(&repo)
+            })();
+            match result {
+                Ok(items) => send_ui_event(
+                    &tx,
+                    UiEvent::SubmodulesLoaded {
+                        tab_id,
+                        items,
+                        load_id,
+                        request_id,
+                    },
+                ),
+                Err(err) => send_ui_event(
+                    &tx,
+                    UiEvent::SubmodulesLoadFailed {
+                        tab_id,
+                        error: err.to_string(),
+                        load_id,
+                        request_id,
+                    },
+                ),
+            }
+        });
     }
 
     pub(crate) fn reset_proxy_form_from_settings(&mut self) {
@@ -3994,9 +4185,12 @@ impl RepositoryView {
 
         let tab_id = self.ensure_tab_for_path(path.clone());
         let service = self.service_for_tab(tab_id);
+        let options = khaslana::CloneOptions {
+            recursive_submodules: self.clone_recursive_submodules,
+        };
         self.spawn_operation_for_tab(Some(tab_id), "正在克隆仓库", move || {
             service
-                .clone_repo(&url, &RepoPath::new(path))
+                .clone_repo_with_options(&url, &RepoPath::new(path), options)
                 .map(|snapshot| UiEvent::OperationFinished {
                     tab_id: Some(tab_id),
                     message: "克隆完成".to_string(),
@@ -4016,6 +4210,16 @@ impl RepositoryView {
             return;
         };
         self.queue_repository_load(tab_id, path, "正在刷新仓库", "已刷新", LoadPriority::User);
+    }
+
+    fn update_submodules(&mut self) {
+        if self.repo_path.is_none() {
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        }
+        self.with_repo_keep_dialog("子模块已更新", move |service, repo| {
+            service.update_submodules(repo)
+        });
     }
 
     fn queue_repository_load(
@@ -4039,6 +4243,7 @@ impl RepositoryView {
             tab.branch_sync_status = None;
             tab.branch_sync_loading = false;
             tab.branch_sync_request_id = tab.branch_sync_request_id.wrapping_add(1).max(1);
+            tab.submodule_dialog.invalidate();
             tab.status = started.to_string();
             tab.last_error = None;
             load_id
@@ -6427,6 +6632,13 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.toolbar_button(
+                        "子模块",
+                        ToolbarIcon::Submodule,
+                        submodule_toolbar_enabled(repo_open, self.busy),
+                        |this, _, _| this.open_submodule_manager(),
+                        cx,
+                    ))
+                    .child(self.toolbar_button(
                         "凭据管理",
                         ToolbarIcon::Credentials,
                         !self.busy,
@@ -7346,6 +7558,13 @@ impl RepositoryView {
                                     return;
                                 }
                                 entity.update(cx, |this, cx| {
+                                    if !column_splitter_accepts_mouse_events(
+                                        this.active_dialog.is_some(),
+                                    ) {
+                                        this.finish_resize_column(target);
+                                        cx.notify();
+                                        return;
+                                    }
                                     if event.click_count >= 2 {
                                         this.reset_resize_target(target);
                                     } else {
@@ -7358,8 +7577,24 @@ impl RepositoryView {
                         window.on_mouse_event({
                             let entity = entity.clone();
                             move |event: &MouseMoveEvent, _, _, cx| {
-                                let resizing = entity.read(cx).resize_state(target).is_some();
-                                if !resizing || !event.dragging() {
+                                let (resizing, active_dialog) = {
+                                    let view = entity.read(cx);
+                                    (
+                                        view.resize_state(target).is_some(),
+                                        view.active_dialog.is_some(),
+                                    )
+                                };
+                                if column_splitter_should_clear_resize(active_dialog, resizing) {
+                                    entity.update(cx, |this, cx| {
+                                        this.finish_resize_column(target);
+                                        cx.notify();
+                                    });
+                                    return;
+                                }
+                                if !resizing
+                                    || !event.dragging()
+                                    || !column_splitter_accepts_mouse_events(active_dialog)
+                                {
                                     return;
                                 }
                                 entity.update(cx, |this, cx| {
@@ -7369,8 +7604,19 @@ impl RepositoryView {
                             }
                         });
                         window.on_mouse_event(move |_: &MouseUpEvent, _, _, cx| {
-                            let resizing = entity.read(cx).resize_state(target).is_some();
+                            let (resizing, active_dialog) = {
+                                let view = entity.read(cx);
+                                (
+                                    view.resize_state(target).is_some(),
+                                    view.active_dialog.is_some(),
+                                )
+                            };
                             if !resizing {
+                                return;
+                            }
+                            if !column_splitter_accepts_mouse_events(active_dialog)
+                                && !column_splitter_should_clear_resize(active_dialog, resizing)
+                            {
                                 return;
                             }
                             entity.update(cx, |this, cx| {
@@ -7950,6 +8196,9 @@ impl RepositoryView {
             DialogState::CredentialForm { editing } => self
                 .render_credential_form_dialog(editing, window, cx)
                 .into_any_element(),
+            DialogState::SubmoduleManager => {
+                self.render_submodule_manager_dialog(cx).into_any_element()
+            }
             DialogState::RemoteManager => self.render_remote_manager_dialog(cx).into_any_element(),
             DialogState::RemoteForm { editing } => self
                 .render_remote_form_dialog(editing, window, cx)
@@ -7996,6 +8245,13 @@ impl RepositoryView {
         self.dialog_panel("克隆仓库", cx)
             .child(self.input(FieldId::CloneUrl, false, window, cx))
             .child(self.input(FieldId::ClonePath, false, window, cx))
+            .child(self.toggle_row(
+                "clone-recursive-submodules",
+                "递归克隆子模块",
+                self.clone_recursive_submodules,
+                |this, _, _| this.clone_recursive_submodules = !this.clone_recursive_submodules,
+                cx,
+            ))
             .child(
                 div()
                     .px_2()
@@ -8315,6 +8571,226 @@ impl RepositoryView {
                         |this, _, _| this.confirm_pending_conflict_resolve(),
                         cx,
                     )),
+            )
+    }
+
+    fn render_submodule_manager_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = &self.submodule_dialog;
+        let rows = if state.loading && !state.loaded {
+            vec![placeholder_row("正在加载子模块列表...").into_any_element()]
+        } else if let Some(error) = state.error.as_ref() {
+            vec![self.submodule_dialog_placeholder(format!("子模块列表加载失败：{error}"))]
+        } else if state.loaded && state.items.is_empty() {
+            vec![placeholder_row("当前仓库没有子模块").into_any_element()]
+        } else {
+            state
+                .items
+                .iter()
+                .map(|module| self.submodule_dialog_row(module).into_any_element())
+                .collect::<Vec<_>>()
+        };
+        let can_update = state.loaded && !state.items.is_empty() && !self.busy && !state.loading;
+
+        div()
+            .id("dialog-子模块")
+            .w(px(860.0))
+            .max_h(px(640.0))
+            .p_4()
+            .rounded_sm()
+            .border_1()
+            .border_color(rgb(ui_theme::GLASS_BORDER))
+            .bg(rgba(ui_theme::GLASS_BG_STRONG))
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .cursor(CursorStyle::Arrow)
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(rgb(ui_theme::TEXT))
+                            .child("子模块"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(self.button(
+                                "刷新",
+                                !self.busy && !state.loading,
+                                |this, _, _| this.load_submodules(),
+                                cx,
+                            ))
+                            .child(self.primary_button(
+                                "更新全部",
+                                can_update,
+                                |this, _, _| this.update_submodules(),
+                                cx,
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(ui_theme::TEXT_MUTED))
+                    .child("列表仅在打开弹窗时读取；更新会复用当前凭据和代理设置。"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_h(px(0.0))
+                    .max_h(px(430.0))
+                    .border_1()
+                    .border_color(rgb(ui_theme::BORDER))
+                    .rounded_sm()
+                    .child(self.submodule_dialog_header())
+                    .child({
+                        let handle = self.scroll_handle("submodule-manager-list");
+                        let content = div()
+                            .id("submodule-manager-list")
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .gap_0()
+                            .min_w(px(0.0))
+                            .min_h(px(0.0))
+                            .overflow_y_scroll()
+                            .track_scroll(&handle)
+                            .children(rows)
+                            .into_any_element();
+                        scrollable_frame_when(
+                            "submodule-manager-list",
+                            ScrollbarMode::Vertical,
+                            content,
+                            handle,
+                            !state.items.is_empty(),
+                            cx,
+                        )
+                    }),
+            )
+            .child(div().flex().justify_end().child(self.button(
+                "关闭",
+                !self.busy,
+                |this, _, _| this.close_dialog(),
+                cx,
+            )))
+    }
+
+    fn submodule_dialog_placeholder(&self, text: String) -> gpui::AnyElement {
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .px_3()
+            .py_4()
+            .text_size(px(12.0))
+            .text_color(rgb(ui_theme::TEXT_MUTED))
+            .child(text)
+            .into_any_element()
+    }
+
+    fn submodule_dialog_header(&self) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_2()
+            .border_b_1()
+            .border_color(rgb(ui_theme::BORDER))
+            .bg(rgb(ui_theme::HEADER_BG))
+            .text_size(px(11.0))
+            .font_weight(gpui::FontWeight::BOLD)
+            .text_color(rgb(ui_theme::TEXT_MUTED))
+            .child(div().flex_1().min_w(px(0.0)).child("路径"))
+            .child(div().flex_none().w(px(92.0)).child("状态"))
+            .child(div().flex_none().w(px(86.0)).child("目标"))
+            .child(div().flex_none().w(px(86.0)).child("当前"))
+            .child(div().flex_1().min_w(px(0.0)).child("URL"))
+    }
+
+    fn submodule_dialog_row(&self, module: &SubmoduleInfo) -> impl IntoElement {
+        let target = module.index_id.as_deref().map(short_oid).unwrap_or("-");
+        let current = module.workdir_id.as_deref().map(short_oid).unwrap_or("-");
+        let url = module.url.as_deref().unwrap_or("未配置 URL");
+        div()
+            .id(format!("submodule-manager-row-{}", module.path.display()))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_2()
+            .border_b_1()
+            .border_color(rgb(ui_theme::BORDER))
+            .text_size(px(12.0))
+            .bg(rgba(ui_theme::GLASS_BG))
+            .hover(|this| this.bg(rgb(ui_theme::ACCENT_VIVID_SOFT)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .truncate()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(rgb(ui_theme::TEXT))
+                            .child(module.path.display().to_string()),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(11.0))
+                            .text_color(rgb(ui_theme::TEXT_MUTED))
+                            .child(module.name.clone()),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(92.0))
+                    .child(status_pill(module.status.label(), module.status.is_ready())),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(86.0))
+                    .truncate()
+                    .text_color(rgb(ui_theme::TEXT_MUTED))
+                    .child(target.to_string()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(86.0))
+                    .truncate()
+                    .text_color(rgb(ui_theme::TEXT_MUTED))
+                    .child(current.to_string()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_color(rgb(ui_theme::TEXT_MUTED))
+                    .child(url.to_string()),
             )
     }
 
@@ -9784,6 +10260,75 @@ mod app_tests {
             paths,
             vec![PathBuf::from("C:/work/a"), PathBuf::from("C:/work/b")]
         );
+    }
+
+    #[test]
+    fn clone_dialog_defaults_to_recursive_submodules() {
+        assert!(default_clone_recursive_submodules());
+    }
+
+    #[test]
+    fn submodule_toolbar_is_enabled_for_open_repo_without_loaded_list() {
+        assert!(submodule_toolbar_enabled(true, false));
+        assert!(!submodule_toolbar_enabled(false, false));
+        assert!(!submodule_toolbar_enabled(true, true));
+    }
+
+    #[test]
+    fn stale_submodule_requests_do_not_match_current_state() {
+        let mut state = SubmoduleDialogState::default();
+        state.request_id = 8;
+
+        assert!(submodule_request_matches(&state, 3, 3, 8));
+        assert!(!submodule_request_matches(&state, 3, 2, 8));
+        assert!(!submodule_request_matches(&state, 3, 3, 7));
+    }
+
+    #[test]
+    fn column_splitter_mouse_events_are_blocked_while_dialog_is_open() {
+        assert!(column_splitter_accepts_mouse_events(false));
+        assert!(!column_splitter_accepts_mouse_events(true));
+    }
+
+    #[test]
+    fn column_splitter_clears_active_resize_when_dialog_opens() {
+        assert!(column_splitter_should_clear_resize(true, true));
+        assert!(!column_splitter_should_clear_resize(true, false));
+        assert!(!column_splitter_should_clear_resize(false, true));
+    }
+
+    #[test]
+    fn dialog_parent_only_stops_mouse_down() {
+        assert!(dialog_parent_should_stop_mouse_event("mouse_down"));
+        assert!(!dialog_parent_should_stop_mouse_event("mouse_move"));
+        assert!(!dialog_parent_should_stop_mouse_event("mouse_up"));
+        assert!(!dialog_parent_should_stop_mouse_event("mouse_up_out"));
+    }
+
+    #[test]
+    fn submodule_state_labels_cover_common_states() {
+        let ready = khaslana::SubmoduleState {
+            initialized: true,
+            checked_out: true,
+            head_matches_index: true,
+            workdir_modified: false,
+            workdir_untracked: false,
+        };
+        let dirty = khaslana::SubmoduleState {
+            workdir_modified: true,
+            ..ready.clone()
+        };
+        let missing = khaslana::SubmoduleState {
+            initialized: false,
+            checked_out: false,
+            head_matches_index: false,
+            workdir_modified: false,
+            workdir_untracked: false,
+        };
+
+        assert_eq!(ready.label(), "已同步");
+        assert_eq!(dirty.label(), "有改动");
+        assert_eq!(missing.label(), "未初始化");
     }
 
     #[test]
