@@ -128,14 +128,15 @@ UI 线程通过 `async-channel` 接收后台线程发回的 `UiEvent`。重型 G
 
 ### 4.5 持久化数据
 
-应用使用 `directories::ProjectDirs::from("", "", "Khaslana")` 生成配置目录。持久化内容包括：
+应用使用 `directories::ProjectDirs::from("", "", "Khaslana")` 生成配置目录，主程序持久化数据统一写入 `khaslana.sqlite3`。当前数据库保存：
 
-- `session.json`：打开过的仓库路径和当前激活仓库。
-- `diff-encoding.json`：每个仓库的 diff 编码偏好。
-- `remote-credential-bindings.json`：仓库远端到凭据策略的绑定。
-- `network-proxy.json`：全局网络代理设置，只保存模式和代理 URL，不拆分存储代理密文。
+- 打开过的仓库路径和当前激活仓库。
+- 每个仓库的 diff 编码偏好。
+- 仓库远端到凭据策略的绑定。
+- 全局网络代理设置，只保存模式和代理 URL，不拆分存储代理密文。
+- 凭据记录索引等非密元数据。
 
-凭据密文不写入这些 JSON 文件，而是通过系统 Keyring 保存。`credentials.rs` 中的记录索引和密钥服务名需要保持兼容，改动时必须加迁移或回归测试。
+凭据密文不写入 SQLite，而是通过系统 Keyring 保存。`credentials.rs` 中的密钥服务名需要保持兼容，改动时必须加迁移或回归测试。旧版 JSON 文件不由主程序兼容读取，需要迁移时使用 `cargo run --bin migrate_storage` 一次性导入。
 
 ## 5. 当前用户可见功能
 

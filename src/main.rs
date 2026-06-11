@@ -22,7 +22,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use async_channel::{Receiver, Sender};
-use directories::ProjectDirs;
 use git2::Repository;
 use gpui::{
     App, Application, Bounds, ClipboardItem, Context, CursorStyle, FocusHandle, Focusable,
@@ -35,18 +34,18 @@ use khaslana::{
     BranchKind, BranchName, BranchSyncStatus, CommitFileChange, CommitInfo, CommitMessage,
     ConflictBlockResolution, ConflictFileKind, ConflictFileView, CredentialProvider,
     CredentialRecord, CredentialRequest, CredentialScope, CredentialStore, CustomProxySettings,
-    DiffEncodingChoice, DiffLineKind, DiffScope, FileDiff, GitCredential, GitService, HistoryScope,
-    KeyringCredentialStore, NetworkProxyMode, NetworkProxySettings, OperationEvent,
-    ProgressEmitter, RemoteCredentialPolicy, RemoteInfo, RemoteName, RepoPath, RepositorySnapshot,
-    ResetMode, TagName, credential_display_target, credential_key_filename, credential_kind_label,
-    credential_record_is_compatible_with_url, credential_record_label,
+    DiffEncodingChoice, DiffEncodingPreferences, DiffLineKind, DiffScope, FileDiff, GitCredential,
+    GitService, HistoryScope, KeyringCredentialStore, NetworkProxyMode, NetworkProxySettings,
+    OperationEvent, ProgressEmitter, RemoteCredentialBinding, RemoteCredentialBindings,
+    RemoteCredentialPolicy, RemoteInfo, RemoteName, RepoPath, RepositorySnapshot, ResetMode,
+    SessionState, TagName, credential_display_target, credential_key_filename,
+    credential_kind_label, credential_record_is_compatible_with_url, credential_record_label,
     credential_record_matches_remote_url, credential_scope_label, test_credential_connection,
 };
 use remote_branch_operation::{
     RemoteBranchOperationKind, RemoteBranchOperationState, default_remote_branch_for,
     local_branch_by_name, remote_branch_dialog_defaults, remote_branch_exists,
 };
-use serde::{Deserialize, Serialize};
 use stash_view::StashPreviewState;
 use text_input::{MultiLineInputElement, SingleLineInputElement, TextFieldState};
 use ui::{
@@ -162,20 +161,6 @@ struct PendingCredential {
 enum CredentialFormMode {
     Https,
     Ssh,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-struct RemoteCredentialBindings {
-    #[serde(default)]
-    remotes: Vec<RemoteCredentialBinding>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-struct RemoteCredentialBinding {
-    repo_path: String,
-    remote_name: String,
-    remote_url: String,
-    policy: RemoteCredentialPolicy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -505,11 +490,6 @@ fn diff_render_rows_for(diff: Option<&FileDiff>, headers_expanded: bool) -> Vec<
         .collect()
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct DiffEncodingPreferences {
-    repositories: BTreeMap<String, DiffEncodingChoice>,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct PendingConflictResolve {
     path: String,
@@ -704,12 +684,6 @@ impl RepoTabState {
             self.history_diff_headers_expanded = false;
         }
     }
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-struct SessionState {
-    repo_paths: Vec<PathBuf>,
-    active_repo_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1043,6 +1017,7 @@ impl ProgressEmitter for TabProgress {
 #[derive(Clone)]
 struct TabCredentialProvider {
     store: Arc<dyn khaslana::CredentialStore>,
+    storage: Arc<khaslana::AppStorage>,
     remote_bindings: Arc<Mutex<RemoteCredentialBindings>>,
     tx: Sender<UiEvent>,
     rejected_record_ids: Arc<Mutex<Vec<String>>>,
@@ -1082,12 +1057,14 @@ impl StoredCredentialAttempt {
 impl TabCredentialProvider {
     fn new(
         store: Arc<dyn khaslana::CredentialStore>,
+        storage: Arc<khaslana::AppStorage>,
         remote_bindings: Arc<Mutex<RemoteCredentialBindings>>,
         tx: Sender<UiEvent>,
         tab_id: RepoTabId,
     ) -> Self {
         Self {
             store,
+            storage,
             remote_bindings,
             tx,
             rejected_record_ids: Arc::new(Mutex::new(Vec::new())),
@@ -1194,7 +1171,11 @@ impl CredentialProvider for TabCredentialProvider {
                             RemoteCredentialPolicy::Record(record.id),
                         );
                         if let Ok(bindings) = self.remote_bindings.lock() {
-                            save_remote_credential_bindings_to_disk(&bindings);
+                            if let Err(err) =
+                                self.storage.save_remote_credential_bindings(&bindings)
+                            {
+                                tracing::warn!("remote credential bindings write skipped: {err}");
+                            }
                         }
                     }
                     Err(err) => {
@@ -1271,27 +1252,6 @@ fn set_remote_binding_for_request(
             remote_url: request.url.clone(),
             policy,
         });
-    }
-}
-
-fn save_remote_credential_bindings_to_disk(bindings: &RemoteCredentialBindings) {
-    let Some(path) = RepositoryView::remote_credential_bindings_path() else {
-        return;
-    };
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    if let Err(err) = fs::create_dir_all(parent) {
-        tracing::warn!("remote credential bindings directory create skipped: {err}");
-        return;
-    }
-    match serde_json::to_string_pretty(bindings) {
-        Ok(content) => {
-            if let Err(err) = fs::write(path, content) {
-                tracing::warn!("remote credential bindings write skipped: {err}");
-            }
-        }
-        Err(err) => tracing::warn!("remote credential bindings encode skipped: {err}"),
     }
 }
 
@@ -1377,6 +1337,7 @@ fn started_message_for_label(label: &'static str) -> &'static str {
 pub(crate) struct RepositoryView {
     tx: Sender<UiEvent>,
     rx: Receiver<UiEvent>,
+    storage: Arc<khaslana::AppStorage>,
     credential_store: Arc<KeyringCredentialStore>,
     remote_credential_bindings: Arc<Mutex<RemoteCredentialBindings>>,
     credential_records: Vec<CredentialRecord>,
@@ -1454,10 +1415,11 @@ pub(crate) struct RepositoryView {
 impl RepositoryView {
     fn new(cx: &mut Context<Self>) -> Self {
         let (tx, rx) = async_channel::unbounded();
-        let credential_store = Arc::new(KeyringCredentialStore::new());
+        let (storage, storage_status, storage_error) = Self::open_storage();
+        let credential_store = Arc::new(KeyringCredentialStore::with_storage(storage.clone()));
         let remote_credential_bindings =
-            Arc::new(Mutex::new(Self::load_remote_credential_bindings()));
-        let proxy_settings = Self::load_proxy_settings();
+            Arc::new(Mutex::new(Self::load_remote_credential_bindings(&storage)));
+        let proxy_settings = Self::load_proxy_settings(&storage);
         let proxy_custom = proxy_settings.custom.normalized();
         Self::spawn_event_pump(rx.clone(), cx);
         Self::spawn_ui_tick(tx.clone());
@@ -1465,17 +1427,25 @@ impl RepositoryView {
         Self {
             tx,
             rx,
+            storage: storage.clone(),
             credential_store,
             remote_credential_bindings,
             credential_records: Vec::new(),
             workflow_templates: Vec::new(),
             workflow_template_dir: None,
-            diff_encoding_preferences: Self::load_diff_encoding_preferences(),
+            diff_encoding_preferences: Self::load_diff_encoding_preferences(&storage),
             proxy_settings: proxy_settings.clone(),
             tabs: Vec::new(),
             active_tab: None,
             next_tab_id: 1,
-            fallback_tab: RepoTabState::new(RepoTabId(0), None),
+            fallback_tab: {
+                let mut tab = RepoTabState::new(RepoTabId(0), None);
+                if let Some(status) = storage_status {
+                    tab.status = status;
+                    tab.last_error = storage_error;
+                }
+                tab
+            },
             restoring_session: false,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             changes_width: DEFAULT_CHANGES_WIDTH,
@@ -1723,79 +1693,73 @@ impl RepositoryView {
         self.save_session();
     }
 
-    fn session_path() -> Option<PathBuf> {
-        ProjectDirs::from("", "", "Khaslana").map(|dirs| dirs.config_dir().join("session.json"))
+    fn open_storage() -> (Arc<khaslana::AppStorage>, Option<String>, Option<String>) {
+        match khaslana::AppStorage::open_default() {
+            Ok(storage) => (Arc::new(storage), None, None),
+            Err(first_err) => {
+                tracing::warn!("local config database open failed, recreating: {first_err}");
+                match khaslana::AppStorage::recreate_default_after_failure() {
+                    Ok(storage) => (
+                        Arc::new(storage),
+                        Some("本地配置数据库已重建".to_string()),
+                        Some(format!("原数据库打开失败，已创建空数据库：{first_err}")),
+                    ),
+                    Err(second_err) => {
+                        tracing::warn!(
+                            "local config database recreate failed, using memory database: {second_err}"
+                        );
+                        let storage =
+                            khaslana::AppStorage::open_in_memory().unwrap_or_else(|err| {
+                                panic!("无法创建临时配置数据库：{err}");
+                            });
+                        (
+                            Arc::new(storage),
+                            Some("正在使用临时配置数据库".to_string()),
+                            Some(format!("本地配置数据库不可用：{second_err}")),
+                        )
+                    }
+                }
+            }
+        }
     }
 
-    fn diff_encoding_preferences_path() -> Option<PathBuf> {
-        ProjectDirs::from("", "", "Khaslana")
-            .map(|dirs| dirs.config_dir().join("diff-encodings.json"))
+    fn load_session_state(&self) -> Option<SessionState> {
+        match self.storage.load_session_state() {
+            Ok(state) => state,
+            Err(err) => {
+                tracing::warn!("session load skipped: {err}");
+                None
+            }
+        }
     }
 
-    fn remote_credential_bindings_path() -> Option<PathBuf> {
-        ProjectDirs::from("", "", "Khaslana")
-            .map(|dirs| dirs.config_dir().join("remote-credentials.json"))
+    fn load_diff_encoding_preferences(storage: &khaslana::AppStorage) -> DiffEncodingPreferences {
+        storage
+            .load_diff_encoding_preferences()
+            .inspect_err(|err| tracing::warn!("diff encoding preferences load skipped: {err}"))
+            .unwrap_or_default()
     }
 
-    fn proxy_settings_path() -> Option<PathBuf> {
-        ProjectDirs::from("", "", "Khaslana")
-            .map(|dirs| dirs.config_dir().join("network-proxy.json"))
+    fn load_remote_credential_bindings(storage: &khaslana::AppStorage) -> RemoteCredentialBindings {
+        storage
+            .load_remote_credential_bindings()
+            .inspect_err(|err| tracing::warn!("remote credential bindings load skipped: {err}"))
+            .unwrap_or_default()
     }
 
-    fn load_session_state() -> Option<SessionState> {
-        let path = Self::session_path()?;
-        let content = fs::read_to_string(path).ok()?;
-        serde_json::from_str(&content).ok()
-    }
-
-    fn load_diff_encoding_preferences() -> DiffEncodingPreferences {
-        let Some(path) = Self::diff_encoding_preferences_path() else {
-            return DiffEncodingPreferences::default();
-        };
-        let Ok(content) = fs::read_to_string(path) else {
-            return DiffEncodingPreferences::default();
-        };
-        serde_json::from_str(&content).unwrap_or_default()
-    }
-
-    fn load_remote_credential_bindings() -> RemoteCredentialBindings {
-        let Some(path) = Self::remote_credential_bindings_path() else {
-            return RemoteCredentialBindings::default();
-        };
-        let Ok(content) = fs::read_to_string(path) else {
-            return RemoteCredentialBindings::default();
-        };
-        serde_json::from_str(&content).unwrap_or_default()
-    }
-
-    fn load_proxy_settings() -> NetworkProxySettings {
-        let Some(path) = Self::proxy_settings_path() else {
-            return NetworkProxySettings::default();
-        };
-        let Ok(content) = fs::read_to_string(path) else {
-            return NetworkProxySettings::default();
-        };
-        serde_json::from_str(&content).unwrap_or_default()
+    fn load_proxy_settings(storage: &khaslana::AppStorage) -> NetworkProxySettings {
+        storage
+            .load_proxy_settings()
+            .inspect_err(|err| tracing::warn!("network proxy settings load skipped: {err}"))
+            .unwrap_or_default()
     }
 
     fn save_diff_encoding_preferences(&self) {
-        let Some(path) = Self::diff_encoding_preferences_path() else {
-            return;
-        };
-        let Some(parent) = path.parent() else {
-            return;
-        };
-        if let Err(err) = fs::create_dir_all(parent) {
-            tracing::warn!("diff encoding preferences directory create skipped: {err}");
-            return;
-        }
-        match serde_json::to_string_pretty(&self.diff_encoding_preferences) {
-            Ok(content) => {
-                if let Err(err) = fs::write(path, content) {
-                    tracing::warn!("diff encoding preferences write skipped: {err}");
-                }
-            }
-            Err(err) => tracing::warn!("diff encoding preferences encode skipped: {err}"),
+        if let Err(err) = self
+            .storage
+            .save_diff_encoding_preferences(&self.diff_encoding_preferences)
+        {
+            tracing::warn!("diff encoding preferences write skipped: {err}");
         }
     }
 
@@ -1804,27 +1768,14 @@ impl RepositoryView {
             tracing::warn!("remote credential bindings state read skipped");
             return;
         };
-        save_remote_credential_bindings_to_disk(&bindings);
+        if let Err(err) = self.storage.save_remote_credential_bindings(&bindings) {
+            tracing::warn!("remote credential bindings write skipped: {err}");
+        }
     }
 
     pub(crate) fn save_proxy_settings(&self) {
-        let Some(path) = Self::proxy_settings_path() else {
-            return;
-        };
-        let Some(parent) = path.parent() else {
-            return;
-        };
-        if let Err(err) = fs::create_dir_all(parent) {
-            tracing::warn!("network proxy settings directory create skipped: {err}");
-            return;
-        }
-        match serde_json::to_string_pretty(&self.proxy_settings) {
-            Ok(content) => {
-                if let Err(err) = fs::write(path, content) {
-                    tracing::warn!("network proxy settings write skipped: {err}");
-                }
-            }
-            Err(err) => tracing::warn!("network proxy settings encode skipped: {err}"),
+        if let Err(err) = self.storage.save_proxy_settings(&self.proxy_settings) {
+            tracing::warn!("network proxy settings write skipped: {err}");
         }
     }
 
@@ -1881,17 +1832,6 @@ impl RepositoryView {
         if self.restoring_session {
             return;
         }
-        let Some(path) = Self::session_path() else {
-            return;
-        };
-        let Some(parent) = path.parent() else {
-            return;
-        };
-        if let Err(err) = fs::create_dir_all(parent) {
-            tracing::warn!("session directory create skipped: {err}");
-            return;
-        }
-
         let repo_paths = dedupe_repo_paths(
             self.tabs
                 .iter()
@@ -1906,18 +1846,13 @@ impl RepositoryView {
             repo_paths,
             active_repo_path,
         };
-        match serde_json::to_string_pretty(&state) {
-            Ok(content) => {
-                if let Err(err) = fs::write(path, content) {
-                    tracing::warn!("session write skipped: {err}");
-                }
-            }
-            Err(err) => tracing::warn!("session encode skipped: {err}"),
+        if let Err(err) = self.storage.save_session_state(&state) {
+            tracing::warn!("session write skipped: {err}");
         }
     }
 
     fn restore_session(&mut self) {
-        let Some(session) = Self::load_session_state() else {
+        let Some(session) = self.load_session_state() else {
             return;
         };
         self.restoring_session = true;
@@ -1999,6 +1934,7 @@ impl RepositoryView {
         GitService::new(
             Arc::new(TabCredentialProvider::new(
                 self.credential_store.clone(),
+                self.storage.clone(),
                 self.remote_credential_bindings.clone(),
                 self.tx.clone(),
                 tab_id,
@@ -9790,8 +9726,9 @@ mod app_tests {
         bindings: Arc<Mutex<RemoteCredentialBindings>>,
     ) -> (TabCredentialProvider, Receiver<UiEvent>) {
         let (tx, rx) = async_channel::unbounded();
+        let storage = Arc::new(khaslana::AppStorage::open_in_memory().unwrap());
         (
-            TabCredentialProvider::new(store, bindings, tx, RepoTabId(7)),
+            TabCredentialProvider::new(store, storage, bindings, tx, RepoTabId(7)),
             rx,
         )
     }

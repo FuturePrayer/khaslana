@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use directories::ProjectDirs;
 use git2::{Cred, CredentialType};
 use serde::{Deserialize, Serialize};
 
+use crate::storage::AppStorage;
 use crate::types::{GitError, Result};
 
 const KEYRING_SERVICE_PREFIX: &str = "khaslana.git.credential";
@@ -443,24 +443,37 @@ impl CredentialStore for MemoryCredentialStore {
     }
 }
 
-#[derive(Default)]
 pub struct KeyringCredentialStore {
     initialized: Mutex<bool>,
-    index_path: Option<PathBuf>,
+    storage: Arc<AppStorage>,
 }
 
 impl KeyringCredentialStore {
-    pub fn new() -> Self {
-        Self {
+    pub fn new() -> Result<Self> {
+        Ok(Self {
             initialized: Mutex::new(false),
-            index_path: credentials_index_path(),
-        }
+            storage: Arc::new(AppStorage::open_default()?),
+        })
     }
 
-    pub fn with_index_path(path: PathBuf) -> Self {
+    pub fn new_with_recreated_database() -> Result<Self> {
+        Ok(Self {
+            initialized: Mutex::new(false),
+            storage: Arc::new(AppStorage::recreate_default_after_failure()?),
+        })
+    }
+
+    pub fn with_storage_path(path: impl AsRef<Path>) -> Result<Self> {
+        Ok(Self {
+            initialized: Mutex::new(false),
+            storage: Arc::new(AppStorage::open(path)?),
+        })
+    }
+
+    pub fn with_storage(storage: Arc<AppStorage>) -> Self {
         Self {
             initialized: Mutex::new(false),
-            index_path: Some(path),
+            storage,
         }
     }
 
@@ -477,31 +490,14 @@ impl KeyringCredentialStore {
         Ok(())
     }
 
-    fn index_path(&self) -> Result<&Path> {
-        self.index_path
-            .as_deref()
-            .ok_or_else(|| GitError::Credential("无法定位凭据索引文件".to_string()))
-    }
-
     fn load_index(&self) -> Result<CredentialIndex> {
-        let path = self.index_path()?;
-        if !path.exists() {
-            return Ok(CredentialIndex::default());
-        }
-        let content = fs::read_to_string(path)?;
-        serde_json::from_str(&content)
-            .map_err(|err| GitError::Credential(format!("凭据索引解析失败：{err}")))
+        Ok(CredentialIndex {
+            records: self.storage.load_credential_records()?,
+        })
     }
 
     fn save_index(&self, index: &CredentialIndex) -> Result<()> {
-        let path = self.index_path()?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let content = serde_json::to_string_pretty(index)
-            .map_err(|err| GitError::Credential(format!("凭据索引编码失败：{err}")))?;
-        fs::write(path, content)?;
-        Ok(())
+        self.storage.save_credential_records(&index.records)
     }
 
     fn entry_for_record(record_id: &str, username: &str) -> Result<keyring_core::Entry> {
@@ -1073,10 +1069,6 @@ fn remote_metadata(url: &str) -> Option<RemoteMetadata> {
 
 fn normalize_remote_url(url: &str) -> String {
     url.trim().trim_end_matches('/').to_ascii_lowercase()
-}
-
-fn credentials_index_path() -> Option<PathBuf> {
-    ProjectDirs::from("", "", "Khaslana").map(|dirs| dirs.config_dir().join("credentials.json"))
 }
 
 fn new_keyring_service(record_id: &str) -> String {

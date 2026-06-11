@@ -1,6 +1,7 @@
 pub mod credentials;
 pub mod git;
 pub mod proxy;
+pub mod storage;
 pub mod types;
 pub mod workflow;
 
@@ -14,6 +15,11 @@ pub use credentials::{
 };
 pub use git::{GitService, NoopProgress, ProgressEmitter};
 pub use proxy::{CustomProxySettings, NetworkProxyMode, NetworkProxySettings};
+pub use storage::{
+    AppStorage, DiffEncodingPreferences, LegacyImportSummary, LegacyStoragePaths,
+    RemoteCredentialBinding, RemoteCredentialBindings, SessionState, default_database_path,
+    default_legacy_storage_paths, legacy_storage_paths,
+};
 pub use types::*;
 pub use workflow::{
     RemoteBranchGuardAction, WorkflowDefinition, WorkflowExecutor, WorkflowInputDefinition,
