@@ -14,6 +14,7 @@ Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中
 - 提交历史、提交文件列表、历史 diff、提交图
 - commit reset / revert
 - HTTPS 与 SSH 凭据管理、远端凭据绑定
+- 网络代理设置，支持禁用、Git 配置/环境变量代理和自定义代理
 - diff 编码自动识别与手动选择，支持 UTF-8、GB18030/GBK、Big5
 
 产品形态更接近“轻量但完整的 Git 桌面客户端”，适合继续补齐高频 Git 操作、冲突处理、搜索过滤和差异查看能力。
@@ -46,8 +47,10 @@ Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中
 - `src/types.rs`：领域类型和错误类型的汇总入口；较独立的领域类型放到 `src/types/` 子目录，例如冲突解决类型在 `src/types/conflicts.rs`。
 - `src/git.rs`：核心 Git 服务层的汇总入口；大型或独立 Git 能力放到 `src/git/` 子目录，例如冲突解决服务在 `src/git/conflicts.rs`，贮藏服务在 `src/git/stash.rs`。
 - `src/credentials.rs`：凭据存储、匹配、Keyring 读写、凭据测试、旧存储兼容迁移和单元测试。
+- `src/proxy.rs`：网络代理设置类型、代理 URL 校验、远端协议到代理 URL 的选择，以及 `git2::ProxyOptions` 接入 helper。
 - `src/main.rs`：应用入口与主要 UI 状态机。包含 `RepositoryView`、多标签页状态、对话框、文本输入、事件泵、异步 Git 任务、工作区视图、diff、提交框、凭据/远端弹窗等。
 - `src/conflicts/`：冲突解决相关 UI、交互动作和轻量状态 helper，作为 `main.rs` 的子模块实现 `RepositoryView` 的冲突区域。
+- `src/proxy_view.rs`：网络代理设置弹窗，包括模式切换、自定义代理输入、保存和测试代理入口。
 - `src/stash_view.rs`：贮藏完整工作流 UI，包括创建贮藏、查看贮藏文件、加载贮藏 diff 和删除确认。
 - `src/ui/`：前端设计系统适配层。`theme.rs` 定义 Khaslana 语义色值和状态 token，`components.rs` 封装按钮、toast、tooltip、section header 等项目级 UI helper，`mod.rs` 统一导出。
 - `src/sidebar_view.rs`：侧边栏 UI，包括本地分支、远端、远端分支、标签、贮藏和相关右键菜单。
@@ -130,6 +133,7 @@ UI 线程通过 `async-channel` 接收后台线程发回的 `UiEvent`。重型 G
 - `session.json`：打开过的仓库路径和当前激活仓库。
 - `diff-encoding.json`：每个仓库的 diff 编码偏好。
 - `remote-credential-bindings.json`：仓库远端到凭据策略的绑定。
+- `network-proxy.json`：全局网络代理设置，只保存模式和代理 URL，不拆分存储代理密文。
 
 凭据密文不写入这些 JSON 文件，而是通过系统 Keyring 保存。`credentials.rs` 中的记录索引和密钥服务名需要保持兼容，改动时必须加迁移或回归测试。
 
@@ -186,6 +190,13 @@ UI 线程通过 `async-channel` 接收后台线程发回的 `UiEvent`。重型 G
 - 凭据保存到系统 Keyring
 - 凭据记录管理、删除、测试连接
 - 远端凭据策略：自动匹配、不使用凭据、绑定指定记录
+
+### 5.6 网络代理
+
+- 全局代理设置：不使用代理、使用系统代理、自定义代理
+- “使用系统代理”基于 libgit2 的 `GIT_PROXY_AUTO`，读取 Git 代理配置和 `http_proxy` / `https_proxy` 环境变量，不读取系统 UI 代理或 PAC
+- 自定义代理支持 HTTP、HTTPS、SOCKS5 URL；代理认证第一版写在 URL 中
+- clone、fetch、pull、push、删除远端分支和工作流远端步骤共用同一代理策略
 
 ## 6. 开发命令
 
@@ -244,6 +255,7 @@ cargo build
 - 远端、分支名、URL 等输入要复用或补充验证函数。
 - diff 相关功能要考虑编码、二进制文件、大文件和虚拟列表。
 - 凭据逻辑要避免把 secret 写入普通配置文件或日志。
+- 代理设置不要把代理 secret 拆分写入普通配置；如需认证，第一版只接受用户写在代理 URL 中。
 - 右键菜单和弹窗位置应复用现有菜单定位/对话框样式。
 
 ## 9. 已知风险和维护重点

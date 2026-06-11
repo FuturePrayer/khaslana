@@ -524,6 +524,11 @@ impl TextFieldState {
         }
     }
 
+    pub(crate) fn with_value(mut self, value: impl Into<String>) -> Self {
+        self.edit.set_value(value);
+        self
+    }
+
     pub(crate) fn secret(mut self) -> Self {
         self.edit.secret = true;
         self

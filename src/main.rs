@@ -3,6 +3,7 @@
 mod assets;
 mod conflicts;
 mod history_view;
+mod proxy_view;
 mod remote_branch_operation;
 mod sidebar_view;
 mod stash_view;
@@ -33,13 +34,13 @@ use gpui::{
 use khaslana::{
     BranchKind, BranchName, BranchSyncStatus, CommitFileChange, CommitInfo, CommitMessage,
     ConflictBlockResolution, ConflictFileKind, ConflictFileView, CredentialProvider,
-    CredentialRecord, CredentialRequest, CredentialScope, CredentialStore, DiffEncodingChoice,
-    DiffLineKind, DiffScope, FileDiff, GitCredential, GitService, HistoryScope,
-    KeyringCredentialStore, OperationEvent, ProgressEmitter, RemoteCredentialPolicy, RemoteInfo,
-    RemoteName, RepoPath, RepositorySnapshot, ResetMode, TagName, credential_display_target,
-    credential_key_filename, credential_kind_label, credential_record_is_compatible_with_url,
-    credential_record_label, credential_record_matches_remote_url, credential_scope_label,
-    test_credential_connection,
+    CredentialRecord, CredentialRequest, CredentialScope, CredentialStore, CustomProxySettings,
+    DiffEncodingChoice, DiffLineKind, DiffScope, FileDiff, GitCredential, GitService, HistoryScope,
+    KeyringCredentialStore, NetworkProxyMode, NetworkProxySettings, OperationEvent,
+    ProgressEmitter, RemoteCredentialPolicy, RemoteInfo, RemoteName, RepoPath, RepositorySnapshot,
+    ResetMode, TagName, credential_display_target, credential_key_filename, credential_kind_label,
+    credential_record_is_compatible_with_url, credential_record_label,
+    credential_record_matches_remote_url, credential_scope_label, test_credential_connection,
 };
 use remote_branch_operation::{
     RemoteBranchOperationKind, RemoteBranchOperationState, default_remote_branch_for,
@@ -143,6 +144,9 @@ enum FieldId {
     ConflictEditor,
     RemoteBranchName,
     RemoteBranchSearch,
+    ProxyHttpUrl,
+    ProxyHttpsUrl,
+    ProxySocks5Url,
     StashMessage,
     WorkflowInput(usize),
 }
@@ -221,6 +225,7 @@ pub(crate) enum DialogState {
         record_id: String,
         label: String,
     },
+    NetworkProxySettings,
     StashForm,
     ConfirmDropStash {
         index: usize,
@@ -985,6 +990,9 @@ pub(crate) enum UiEvent {
         request: CredentialRequest,
         response_tx: Arc<Mutex<Option<mpsc::Sender<khaslana::Result<Option<GitCredential>>>>>>,
     },
+    ProxyTestFinished {
+        message: String,
+    },
     WorkflowProgress {
         tab_id: RepoTabId,
         message: String,
@@ -1375,6 +1383,7 @@ pub(crate) struct RepositoryView {
     pub(crate) workflow_templates: Vec<WorkflowTemplateItem>,
     pub(crate) workflow_template_dir: Option<PathBuf>,
     diff_encoding_preferences: DiffEncodingPreferences,
+    proxy_settings: NetworkProxySettings,
     tabs: Vec<RepoTabState>,
     active_tab: Option<RepoTabId>,
     next_tab_id: u64,
@@ -1436,6 +1445,10 @@ pub(crate) struct RepositoryView {
     pub(crate) remote_branch_name: TextFieldState,
     pub(crate) remote_branch_search: TextFieldState,
     pub(crate) remote_branch_operation: RemoteBranchOperationState,
+    proxy_mode: NetworkProxyMode,
+    proxy_http_url: TextFieldState,
+    proxy_https_url: TextFieldState,
+    proxy_socks5_url: TextFieldState,
 }
 
 impl RepositoryView {
@@ -1444,6 +1457,8 @@ impl RepositoryView {
         let credential_store = Arc::new(KeyringCredentialStore::new());
         let remote_credential_bindings =
             Arc::new(Mutex::new(Self::load_remote_credential_bindings()));
+        let proxy_settings = Self::load_proxy_settings();
+        let proxy_custom = proxy_settings.custom.normalized();
         Self::spawn_event_pump(rx.clone(), cx);
         Self::spawn_ui_tick(tx.clone());
 
@@ -1456,6 +1471,7 @@ impl RepositoryView {
             workflow_templates: Vec::new(),
             workflow_template_dir: None,
             diff_encoding_preferences: Self::load_diff_encoding_preferences(),
+            proxy_settings: proxy_settings.clone(),
             tabs: Vec::new(),
             active_tab: None,
             next_tab_id: 1,
@@ -1517,6 +1533,13 @@ impl RepositoryView {
             remote_branch_name: TextFieldState::new(cx, "远程分支"),
             remote_branch_search: TextFieldState::new(cx, "搜索远端分支"),
             remote_branch_operation: RemoteBranchOperationState::default(),
+            proxy_mode: proxy_settings.mode,
+            proxy_http_url: TextFieldState::new(cx, "HTTP 代理 URL")
+                .with_value(proxy_custom.http_proxy),
+            proxy_https_url: TextFieldState::new(cx, "HTTPS 代理 URL")
+                .with_value(proxy_custom.https_proxy),
+            proxy_socks5_url: TextFieldState::new(cx, "SOCKS5 代理 URL")
+                .with_value(proxy_custom.socks5_proxy),
         }
     }
 
@@ -1714,6 +1737,11 @@ impl RepositoryView {
             .map(|dirs| dirs.config_dir().join("remote-credentials.json"))
     }
 
+    fn proxy_settings_path() -> Option<PathBuf> {
+        ProjectDirs::from("", "", "Khaslana")
+            .map(|dirs| dirs.config_dir().join("network-proxy.json"))
+    }
+
     fn load_session_state() -> Option<SessionState> {
         let path = Self::session_path()?;
         let content = fs::read_to_string(path).ok()?;
@@ -1736,6 +1764,16 @@ impl RepositoryView {
         };
         let Ok(content) = fs::read_to_string(path) else {
             return RemoteCredentialBindings::default();
+        };
+        serde_json::from_str(&content).unwrap_or_default()
+    }
+
+    fn load_proxy_settings() -> NetworkProxySettings {
+        let Some(path) = Self::proxy_settings_path() else {
+            return NetworkProxySettings::default();
+        };
+        let Ok(content) = fs::read_to_string(path) else {
+            return NetworkProxySettings::default();
         };
         serde_json::from_str(&content).unwrap_or_default()
     }
@@ -1767,6 +1805,27 @@ impl RepositoryView {
             return;
         };
         save_remote_credential_bindings_to_disk(&bindings);
+    }
+
+    pub(crate) fn save_proxy_settings(&self) {
+        let Some(path) = Self::proxy_settings_path() else {
+            return;
+        };
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        if let Err(err) = fs::create_dir_all(parent) {
+            tracing::warn!("network proxy settings directory create skipped: {err}");
+            return;
+        }
+        match serde_json::to_string_pretty(&self.proxy_settings) {
+            Ok(content) => {
+                if let Err(err) = fs::write(path, content) {
+                    tracing::warn!("network proxy settings write skipped: {err}");
+                }
+            }
+            Err(err) => tracing::warn!("network proxy settings encode skipped: {err}"),
+        }
     }
 
     pub(crate) fn diff_encoding_choice_for_path(&self, path: &Path) -> DiffEncodingChoice {
@@ -1949,6 +2008,7 @@ impl RepositoryView {
                 tab_id,
             }),
         )
+        .with_proxy_settings(self.proxy_settings.clone())
     }
 
     pub(crate) fn with_tab_context<R>(
@@ -2517,6 +2577,13 @@ impl RepositoryView {
                 });
                 self.prepare_current_credential_prompt();
             }
+            UiEvent::ProxyTestFinished { message } => {
+                let toast_message = message.clone();
+                self.busy = false;
+                self.status = message;
+                self.last_error = None;
+                self.notify_success(toast_message, cx);
+            }
             UiEvent::WorkflowProgress { tab_id, message } => {
                 self.with_tab_context(tab_id, |this| {
                     this.status = message.clone();
@@ -2989,6 +3056,13 @@ impl RepositoryView {
             self.remote_branch_operation.branch_dropdown_open = false;
         } else if matches!(
             field,
+            FieldId::ProxyHttpUrl | FieldId::ProxyHttpsUrl | FieldId::ProxySocks5Url
+        ) {
+            if self.active_dialog == Some(DialogState::NetworkProxySettings) {
+                self.save_network_proxy_settings();
+            }
+        } else if matches!(
+            field,
             FieldId::CredentialSecret
                 | FieldId::CredentialPassphrase
                 | FieldId::CredentialUsername
@@ -3183,6 +3257,13 @@ impl RepositoryView {
             } else if field == FieldId::ConflictEditor {
                 self.apply_selected_conflict_draft(false);
                 cx.notify();
+            } else if matches!(
+                field,
+                FieldId::ProxyHttpUrl | FieldId::ProxyHttpsUrl | FieldId::ProxySocks5Url
+            ) && self.active_dialog == Some(DialogState::NetworkProxySettings)
+            {
+                self.save_network_proxy_settings();
+                cx.notify();
             }
         }
     }
@@ -3209,6 +3290,9 @@ impl RepositoryView {
             (FieldId::ConflictEditor, &self.conflict_editor),
             (FieldId::RemoteBranchName, &self.remote_branch_name),
             (FieldId::RemoteBranchSearch, &self.remote_branch_search),
+            (FieldId::ProxyHttpUrl, &self.proxy_http_url),
+            (FieldId::ProxyHttpsUrl, &self.proxy_https_url),
+            (FieldId::ProxySocks5Url, &self.proxy_socks5_url),
         ]
         .into_iter()
         .find_map(|(id, field)| field.focus.is_focused(window).then_some(id))
@@ -3234,6 +3318,9 @@ impl RepositoryView {
             FieldId::ConflictEditor => &self.conflict_editor,
             FieldId::RemoteBranchName => &self.remote_branch_name,
             FieldId::RemoteBranchSearch => &self.remote_branch_search,
+            FieldId::ProxyHttpUrl => &self.proxy_http_url,
+            FieldId::ProxyHttpsUrl => &self.proxy_https_url,
+            FieldId::ProxySocks5Url => &self.proxy_socks5_url,
             FieldId::WorkflowInput(index) => self.workflow_input_field(index),
         }
     }
@@ -3257,6 +3344,9 @@ impl RepositoryView {
             FieldId::ConflictEditor => &mut self.conflict_editor,
             FieldId::RemoteBranchName => &mut self.remote_branch_name,
             FieldId::RemoteBranchSearch => &mut self.remote_branch_search,
+            FieldId::ProxyHttpUrl => &mut self.proxy_http_url,
+            FieldId::ProxyHttpsUrl => &mut self.proxy_https_url,
+            FieldId::ProxySocks5Url => &mut self.proxy_socks5_url,
             FieldId::WorkflowInput(index) => self.workflow_input_field_mut(index),
         }
     }
@@ -3348,6 +3438,111 @@ impl RepositoryView {
         self.close_popups();
         self.active_dialog = Some(DialogState::CredentialManager);
         self.reload_credential_records("凭据列表已加载");
+    }
+
+    pub(crate) fn open_network_proxy_settings(&mut self) {
+        self.close_popups();
+        self.reset_proxy_form_from_settings();
+        self.active_dialog = Some(DialogState::NetworkProxySettings);
+        self.status = "代理设置已打开".into();
+        self.last_error = None;
+    }
+
+    pub(crate) fn reset_proxy_form_from_settings(&mut self) {
+        let custom = self.proxy_settings.custom.normalized();
+        self.proxy_mode = self.proxy_settings.mode;
+        self.proxy_http_url.set_value(custom.http_proxy);
+        self.proxy_https_url.set_value(custom.https_proxy);
+        self.proxy_socks5_url.set_value(custom.socks5_proxy);
+    }
+
+    pub(crate) fn proxy_form_settings(&self) -> NetworkProxySettings {
+        NetworkProxySettings {
+            mode: self.proxy_mode,
+            custom: CustomProxySettings {
+                http_proxy: self.proxy_http_url.value.trim().to_string(),
+                https_proxy: self.proxy_https_url.value.trim().to_string(),
+                socks5_proxy: self.proxy_socks5_url.value.trim().to_string(),
+            },
+        }
+    }
+
+    pub(crate) fn set_proxy_mode(&mut self, mode: NetworkProxyMode) {
+        self.proxy_mode = mode;
+        self.last_error = None;
+    }
+
+    pub(crate) fn save_network_proxy_settings(&mut self) {
+        let settings = self.proxy_form_settings();
+        if let Err(err) = settings.validate() {
+            self.last_error = Some(err.to_string());
+            return;
+        }
+        self.proxy_settings = settings;
+        self.save_proxy_settings();
+        self.status = "代理设置已保存".into();
+        self.last_error = None;
+    }
+
+    pub(crate) fn save_network_proxy_settings_and_close(&mut self) {
+        self.save_network_proxy_settings();
+        if self.last_error.is_none() {
+            self.active_dialog = None;
+        }
+    }
+
+    pub(crate) fn test_network_proxy_settings(&mut self) {
+        if self.busy {
+            self.last_error = Some("已有操作正在运行".into());
+            return;
+        }
+        let Some(tab_id) = self.active_tab_id() else {
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        };
+        let Some(repo_path) = self.repo_path.clone() else {
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        };
+        let Some(remote) = self.current_remote() else {
+            self.last_error = Some("当前仓库没有远端，无法测试代理".into());
+            return;
+        };
+        let settings = self.proxy_form_settings();
+        if let Err(err) = settings.validate() {
+            self.last_error = Some(err.to_string());
+            return;
+        }
+
+        self.proxy_settings = settings;
+        self.save_proxy_settings();
+        self.busy = true;
+        self.status = "正在测试代理连接".into();
+        self.last_error = None;
+        let service = self.service_for_tab(tab_id);
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = (|| -> khaslana::Result<()> {
+                let repo = Repository::open(repo_path)?;
+                service.test_proxy(&repo, &RemoteName::new(remote))?;
+                Ok(())
+            })();
+            match result {
+                Ok(()) => send_ui_event(
+                    &tx,
+                    UiEvent::ProxyTestFinished {
+                        message: "代理测试通过".into(),
+                    },
+                ),
+                Err(err) => send_ui_event(
+                    &tx,
+                    UiEvent::OperationFailed {
+                        tab_id: None,
+                        error: err.to_string(),
+                    },
+                ),
+            }
+        });
     }
 
     fn open_credential_form(&mut self) {
@@ -6302,6 +6497,13 @@ impl RepositoryView {
                         |this, _, _| this.open_credential_manager(),
                         cx,
                     ))
+                    .child(self.toolbar_button(
+                        "代理设置",
+                        ToolbarIcon::Proxy,
+                        !self.busy,
+                        |this, _, _| this.open_network_proxy_settings(),
+                        cx,
+                    ))
                     .child(
                         div()
                             .ml_3()
@@ -7824,6 +8026,9 @@ impl RepositoryView {
                 .into_any_element(),
             DialogState::ConfirmDeleteCredential { record_id, label } => self
                 .render_confirm_delete_credential_dialog(record_id, label, cx)
+                .into_any_element(),
+            DialogState::NetworkProxySettings => self
+                .render_network_proxy_settings_dialog(window, cx)
                 .into_any_element(),
             DialogState::StashForm => self.render_stash_form_dialog(window, cx).into_any_element(),
             DialogState::ConfirmDropStash { index, message } => self

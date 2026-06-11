@@ -1,5 +1,6 @@
 pub mod credentials;
 pub mod git;
+pub mod proxy;
 pub mod types;
 pub mod workflow;
 
@@ -12,6 +13,7 @@ pub use credentials::{
     test_credential_connection,
 };
 pub use git::{GitService, NoopProgress, ProgressEmitter};
+pub use proxy::{CustomProxySettings, NetworkProxyMode, NetworkProxySettings};
 pub use types::*;
 pub use workflow::{
     RemoteBranchGuardAction, WorkflowDefinition, WorkflowExecutor, WorkflowInputDefinition,

@@ -16,6 +16,7 @@ use git2::{
 };
 
 use crate::credentials::{CredentialProvider, CredentialRequest, to_git_credential};
+use crate::proxy::NetworkProxySettings;
 use crate::types::{
     BranchInfo, BranchKind, BranchName, BranchSyncStatus, ChangeState, CommitFileChange,
     CommitInfo, CommitMessage, CommitRefInfo, CommitRefKind, DiffEncodingChoice, DiffEncodingInfo,
@@ -46,6 +47,7 @@ pub struct GitService {
     progress: Arc<dyn ProgressEmitter>,
     remote_context: Arc<Mutex<Option<RemoteOperationContext>>>,
     next_remote_operation_id: Arc<AtomicU64>,
+    proxy_settings: Arc<Mutex<NetworkProxySettings>>,
 }
 
 #[derive(Clone, Debug)]
@@ -78,7 +80,15 @@ impl GitService {
             progress,
             remote_context: Arc::new(Mutex::new(None)),
             next_remote_operation_id: Arc::new(AtomicU64::new(1)),
+            proxy_settings: Arc::new(Mutex::new(NetworkProxySettings::default())),
         }
+    }
+
+    pub fn with_proxy_settings(self, proxy_settings: NetworkProxySettings) -> Self {
+        if let Ok(mut current) = self.proxy_settings.lock() {
+            *current = proxy_settings;
+        }
+        self
     }
 
     pub fn open(&self, path: &RepoPath) -> Result<RepositorySnapshot> {
@@ -97,6 +107,7 @@ impl GitService {
 
         let mut fetch_options = FetchOptions::new();
         fetch_options.remote_callbacks(self.remote_callbacks(None));
+        self.apply_fetch_proxy(&mut fetch_options, Some(url))?;
 
         let mut checkout = CheckoutBuilder::new();
         checkout.progress(|path, current, total| {
@@ -439,11 +450,29 @@ impl GitService {
         self.snapshot_after_operation(repo)
     }
 
+    pub fn test_proxy(&self, repo: &Repository, remote: &RemoteName) -> Result<()> {
+        let _remote_context = self.set_remote_context(repo, remote);
+        let mut remote_handle = repo.find_remote(&remote.0)?;
+        let remote_url = remote_fetch_url(&remote_handle);
+        let proxy_options = self
+            .proxy_settings()
+            .proxy_options_for_remote(remote_url.as_deref())?;
+        let connection = remote_handle.connect_auth(
+            git2::Direction::Fetch,
+            Some(self.remote_callbacks(Some(repo))),
+            proxy_options,
+        )?;
+        connection.list()?;
+        Ok(())
+    }
+
     fn fetch_remote_refs(&self, repo: &mut Repository, remote: &RemoteName) -> Result<()> {
         let _remote_context = self.set_remote_context(repo, remote);
         let mut remote_handle = repo.find_remote(&remote.0)?;
         let mut options = FetchOptions::new();
         options.remote_callbacks(self.remote_callbacks(Some(repo)));
+        let remote_url = remote_fetch_url(&remote_handle);
+        self.apply_fetch_proxy(&mut options, remote_url.as_deref())?;
         // 刷新远端时同步清理已删除的远端跟踪分支，避免继续显示过期的拉取/推送状态。
         options.prune(FetchPrune::On);
         let result =
@@ -548,6 +577,8 @@ impl GitService {
         let mut remote_handle = repo.find_remote(&remote.0)?;
         let mut options = PushOptions::new();
         options.remote_callbacks(self.remote_callbacks(Some(repo)));
+        let remote_url = remote_push_url(&remote_handle);
+        self.apply_push_proxy(&mut options, remote_url.as_deref())?;
         let refspec = format!(
             "refs/heads/{}:refs/heads/{}",
             local_branch.0, remote_branch.0
@@ -615,6 +646,8 @@ impl GitService {
         let mut remote_handle = repo.find_remote(&remote.0)?;
         let mut options = PushOptions::new();
         options.remote_callbacks(self.remote_callbacks(Some(repo)));
+        let remote_url = remote_push_url(&remote_handle);
+        self.apply_push_proxy(&mut options, remote_url.as_deref())?;
         let refspec = format!(":refs/heads/{}", remote_branch.0);
         let result = remote_handle.push(&[refspec.as_str()], Some(&mut options));
         drop(remote_handle);
@@ -1482,6 +1515,31 @@ impl GitService {
         }
     }
 
+    fn proxy_settings(&self) -> NetworkProxySettings {
+        self.proxy_settings
+            .lock()
+            .map(|settings| settings.clone())
+            .unwrap_or_default()
+    }
+
+    fn apply_fetch_proxy<'a>(
+        &self,
+        options: &mut FetchOptions<'a>,
+        remote_url: Option<&str>,
+    ) -> Result<()> {
+        self.proxy_settings()
+            .apply_to_fetch_options(options, remote_url)
+    }
+
+    fn apply_push_proxy<'a>(
+        &self,
+        options: &mut PushOptions<'a>,
+        remote_url: Option<&str>,
+    ) -> Result<()> {
+        self.proxy_settings()
+            .apply_to_push_options(options, remote_url)
+    }
+
     fn remote_callbacks<'a>(&'a self, repo: Option<&'a Repository>) -> RemoteCallbacks<'a> {
         let provider = self.credential_provider.clone();
         let progress = self.progress.clone();
@@ -1728,6 +1786,19 @@ fn validate_remote_url(url: &str) -> Result<()> {
         return Err(GitError::Message("远端地址不能为空".into()));
     }
     Ok(())
+}
+
+fn remote_fetch_url(remote: &git2::Remote<'_>) -> Option<String> {
+    remote.url().ok().map(str::to_string)
+}
+
+fn remote_push_url(remote: &git2::Remote<'_>) -> Option<String> {
+    remote
+        .pushurl()
+        .ok()
+        .flatten()
+        .or_else(|| remote.url().ok())
+        .map(str::to_string)
 }
 
 fn remote_branch_name_parts(name: &str) -> Result<(&str, &str)> {
@@ -2705,6 +2776,28 @@ mod tests {
             .clone_repo(&path_url(remote_dir.path()), &RepoPath::new(&other_path))
             .unwrap();
         assert!(other_path.join("clone.txt").exists());
+    }
+
+    #[test]
+    fn test_proxy_connects_to_current_remote_refs() {
+        let remote_dir = TempDir::new().unwrap();
+        let mut bare_opts = RepositoryInitOptions::new();
+        bare_opts.bare(true).initial_head("main");
+        Repository::init_opts(remote_dir.path(), &bare_opts).unwrap();
+
+        let (seed_dir, mut seed_repo, service) = init_repo();
+        write_file(seed_dir.path(), "README.md", "seed\n");
+        commit_all(&seed_repo, "seed");
+        seed_repo
+            .remote("origin", &path_url(remote_dir.path()))
+            .unwrap();
+        service
+            .push(&mut seed_repo, &RemoteName::new("origin"))
+            .unwrap();
+
+        service
+            .test_proxy(&seed_repo, &RemoteName::new("origin"))
+            .unwrap();
     }
 
     #[test]

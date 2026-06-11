@@ -9,6 +9,7 @@ pub(crate) enum ToolbarIcon {
     Pull,
     Push,
     Credentials,
+    Proxy,
     Workflow,
     Stash,
 }
@@ -23,6 +24,7 @@ impl ToolbarIcon {
             Self::Pull => "icons/pull.svg",
             Self::Push => "icons/push.svg",
             Self::Credentials => "icons/credentials.svg",
+            Self::Proxy => "icons/proxy.svg",
             Self::Workflow => "icons/workflow.svg",
             Self::Stash => "icons/stash.svg",
         }
@@ -68,6 +70,7 @@ mod tests {
             ToolbarIcon::Pull,
             ToolbarIcon::Push,
             ToolbarIcon::Credentials,
+            ToolbarIcon::Proxy,
             ToolbarIcon::Workflow,
             ToolbarIcon::Stash,
         ] {
