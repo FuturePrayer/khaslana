@@ -20,6 +20,7 @@ const REMOTE_OPERATION_BRANCH_MENU_HEIGHT: f32 = 240.0;
 pub(crate) enum RemoteBranchOperationKind {
     Pull,
     Push,
+    SetUpstream,
 }
 
 impl RemoteBranchOperationKind {
@@ -27,6 +28,7 @@ impl RemoteBranchOperationKind {
         match self {
             Self::Pull => "拉取",
             Self::Push => "推送",
+            Self::SetUpstream => "设置 upstream",
         }
     }
 
@@ -34,6 +36,7 @@ impl RemoteBranchOperationKind {
         match self {
             Self::Pull => "拉取",
             Self::Push => "推送",
+            Self::SetUpstream => "设置",
         }
     }
 
@@ -45,12 +48,20 @@ impl RemoteBranchOperationKind {
             Self::Push => {
                 "推送会把当前本地分支推送到填写的远程分支；远端分支不存在时会自动创建，并设置为上游分支。"
             }
+            Self::SetUpstream => {
+                "upstream 用来计算本地分支相对远端分支的拉取和推送状态；只能选择已存在的远端分支。"
+            }
         }
+    }
+
+    pub(crate) fn requires_existing_remote_branch(self) -> bool {
+        matches!(self, Self::Pull | Self::SetUpstream)
     }
 }
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RemoteBranchOperationState {
+    pub(crate) local_branch: Option<String>,
     pub(crate) selected_remote: Option<String>,
     pub(crate) refreshing: bool,
     pub(crate) branch_dropdown_open: bool,
@@ -58,6 +69,7 @@ pub(crate) struct RemoteBranchOperationState {
 
 impl RemoteBranchOperationState {
     pub(crate) fn clear(&mut self) {
+        self.local_branch = None;
         self.selected_remote = None;
         self.refreshing = false;
         self.branch_dropdown_open = false;
@@ -76,6 +88,16 @@ pub(crate) fn current_local_branch(snapshot: &RepositorySnapshot) -> Option<&Bra
         .branches
         .iter()
         .find(|branch| branch.kind == BranchKind::Local && branch.is_head)
+}
+
+pub(crate) fn local_branch_by_name<'a>(
+    snapshot: &'a RepositorySnapshot,
+    name: &str,
+) -> Option<&'a BranchInfo> {
+    snapshot
+        .branches
+        .iter()
+        .find(|branch| branch.kind == BranchKind::Local && branch.name == name)
 }
 
 pub(crate) fn default_remote_branch_for(
@@ -157,9 +179,15 @@ impl RepositoryView {
             .map(|snapshot| snapshot.remotes.clone())
             .unwrap_or_default();
         let local_branch = snapshot
-            .and_then(current_local_branch)
-            .map(|branch| branch.name.clone())
-            .unwrap_or_else(|| "无本地分支".to_string());
+            .and_then(|snapshot| {
+                self.remote_branch_operation
+                    .local_branch
+                    .as_deref()
+                    .and_then(|name| local_branch_by_name(snapshot, name))
+                    .or_else(|| current_local_branch(snapshot))
+            })
+            .map(|branch| branch.name.clone());
+        let local_branch_label = local_branch.as_deref().unwrap_or("无本地分支").to_string();
         let selected_remote = self
             .remote_branch_operation
             .selected_remote
@@ -174,10 +202,10 @@ impl RepositoryView {
         let can_confirm = !self.busy
             && !self.remote_branch_operation.refreshing
             && remote_exists
-            && !local_branch.is_empty()
+            && local_branch.is_some()
             && !remote_branch.is_empty()
-            && (kind == RemoteBranchOperationKind::Push || branch_exists);
-        let pull_hint = if kind == RemoteBranchOperationKind::Pull
+            && (!kind.requires_existing_remote_branch() || branch_exists);
+        let missing_branch_hint = if kind.requires_existing_remote_branch()
             && !remote_branch.is_empty()
             && !branch_exists
         {
@@ -212,7 +240,7 @@ impl RepositoryView {
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .text_color(rgb(ui_theme::TEXT))
                                     .truncate()
-                                    .child(local_branch.clone()),
+                                    .child(local_branch_label),
                             ),
                     )
                     .child(self.button(
@@ -245,7 +273,7 @@ impl RepositoryView {
                         window,
                         cx,
                     ))
-                    .when_some(pull_hint, |this, hint| {
+                    .when_some(missing_branch_hint, |this, hint| {
                         this.child(
                             div()
                                 .text_size(px(12.0))

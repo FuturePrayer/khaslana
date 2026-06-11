@@ -6,8 +6,8 @@ use khaslana::{BranchInfo, BranchKind, RemoteInfo, StashInfo, TagInfo};
 use crate::{
     BRANCH_MENU_HEIGHT, BRANCH_MENU_WIDTH, BranchContextMenu, NAV_ROW_HEIGHT, RepositoryView,
     STASH_MENU_HEIGHT, STASH_MENU_WIDTH, SidebarSection, StashContextMenu, TAG_MENU_HEIGHT,
-    TAG_MENU_WIDTH, TagContextMenu, clamped_menu_position, context_menu_item, menu_separator,
-    nav_list, nav_row, placeholder_row,
+    TAG_MENU_WIDTH, TagContextMenu, clamped_menu_position, context_menu_item,
+    context_menu_item_with_context, menu_separator, nav_list, nav_row, placeholder_row,
     ui::{components::glass_menu, theme as ui_theme},
 };
 
@@ -489,6 +489,28 @@ impl RepositoryView {
             .left(px(menu.x))
             .top(px(menu.y))
             .w(px(BRANCH_MENU_WIDTH))
+            .when(!is_local, |this| {
+                let branch = menu.branch.clone();
+                this.child(context_menu_item_with_context(
+                    "复制名称",
+                    !self.busy,
+                    {
+                        let branch = branch.clone();
+                        move |this, cx| this.copy_branch_name(branch.clone(), cx)
+                    },
+                    cx,
+                ))
+                .child(context_menu_item_with_context(
+                    "复制 checkout 命令",
+                    !self.busy,
+                    {
+                        let branch = branch.clone();
+                        move |this, cx| this.copy_remote_checkout_command(branch.clone(), cx)
+                    },
+                    cx,
+                ))
+                .child(menu_separator())
+            })
             .child(context_menu_item(
                 "切换到此分支",
                 is_local && !menu.is_head && !self.busy,
@@ -518,6 +540,15 @@ impl RepositoryView {
             ))
             .child(menu_separator())
             .child(context_menu_item(
+                "设置/修改 upstream...",
+                is_local && !self.busy,
+                {
+                    let branch = menu.branch.clone();
+                    move |this| this.open_set_branch_upstream_dialog(branch.clone())
+                },
+                cx,
+            ))
+            .child(context_menu_item(
                 "重命名...",
                 is_local && !self.busy,
                 {
@@ -532,6 +563,15 @@ impl RepositoryView {
                 {
                     let branch = menu.branch.clone();
                     move |this| this.delete_branch(branch.clone())
+                },
+                cx,
+            ))
+            .child(context_menu_item(
+                "删除远端分支",
+                !is_local && !self.busy,
+                {
+                    let branch = menu.branch.clone();
+                    move |this| this.open_delete_remote_branch_confirm(branch.clone())
                 },
                 cx,
             ))

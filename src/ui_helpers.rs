@@ -757,6 +757,36 @@ pub(crate) fn context_menu_item(
         .child(label)
 }
 
+pub(crate) fn context_menu_item_with_context(
+    label: &'static str,
+    enabled: bool,
+    on_click: impl Fn(&mut RepositoryView, &mut Context<RepositoryView>) + 'static,
+    cx: &mut Context<RepositoryView>,
+) -> impl IntoElement {
+    div()
+        .id(format!("context-menu-{label}"))
+        .px_3()
+        .py_1()
+        .text_color(if enabled {
+            rgb(COLOR_TEXT)
+        } else {
+            rgb(COLOR_TEXT_FAINT)
+        })
+        .bg(rgba(ui_theme::GLASS_BG))
+        .cursor_pointer()
+        .when(enabled, |this| {
+            this.hover(|this| this.bg(rgb(ui_theme::ACCENT_VIVID_SOFT)))
+        })
+        .on_click(cx.listener(move |this, _event, _window, cx| {
+            cx.stop_propagation();
+            if enabled {
+                on_click(this, cx);
+                cx.notify();
+            }
+        }))
+        .child(label)
+}
+
 pub(crate) fn menu_separator() -> impl IntoElement {
     div()
         .h(px(1.0))

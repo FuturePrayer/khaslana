@@ -11,7 +11,7 @@ use encoding_rs::{BIG5, Encoding, GB18030, UTF_8};
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use git2::{
     AnnotatedCommit, BranchType, Cred, CredentialType, Delta, DiffFormat, DiffOptions, ErrorCode,
-    FetchOptions, IndexAddOption, MergeAnalysis, MergeOptions, PushOptions, Reference,
+    FetchOptions, FetchPrune, IndexAddOption, MergeAnalysis, MergeOptions, PushOptions, Reference,
     RemoteCallbacks, Repository, ResetType, Signature, Sort, StashApplyOptions, Status,
     StatusOptions,
 };
@@ -424,11 +424,28 @@ impl GitService {
         self.snapshot_after_operation(repo)
     }
 
+    pub fn refresh(
+        &self,
+        repo: &mut Repository,
+        remote: Option<&RemoteName>,
+    ) -> Result<RepositorySnapshot> {
+        if let Some(remote) = remote {
+            self.progress
+                .emit(OperationEvent::Started(format!("正在刷新 {}", remote.0)));
+            self.fetch_remote_refs(repo, remote)?;
+            self.progress
+                .emit(OperationEvent::Finished(format!("已刷新 {}", remote.0)));
+        }
+        self.snapshot_after_operation(repo)
+    }
+
     fn fetch_remote_refs(&self, repo: &mut Repository, remote: &RemoteName) -> Result<()> {
         let _remote_context = self.set_remote_context(repo, remote);
         let mut remote_handle = repo.find_remote(&remote.0)?;
         let mut options = FetchOptions::new();
         options.remote_callbacks(self.remote_callbacks(Some(repo)));
+        // 刷新远端时同步清理已删除的远端跟踪分支，避免继续显示过期的拉取/推送状态。
+        options.prune(FetchPrune::On);
         let result =
             remote_handle.fetch(&[] as &[&str], Some(&mut options), Some("khaslana fetch"));
         drop(remote_handle);
@@ -549,6 +566,65 @@ impl GitService {
         self.progress.emit(OperationEvent::Finished(format!(
             "已推送 {} 到 {}/{}",
             local_branch.0, remote.0, remote_branch.0
+        )));
+        self.snapshot_after_operation(repo)
+    }
+
+    pub fn set_branch_upstream(
+        &self,
+        repo: &mut Repository,
+        local_branch: &BranchName,
+        remote: &RemoteName,
+        remote_branch: &BranchName,
+    ) -> Result<RepositorySnapshot> {
+        validate_branch_name(&local_branch.0)?;
+        validate_remote_name(&remote.0)?;
+        validate_branch_name(&remote_branch.0)?;
+
+        let upstream = format!("{}/{}", remote.0, remote_branch.0);
+        match repo.find_branch(&upstream, BranchType::Remote) {
+            Ok(branch) if branch.get().target().is_some() => drop(branch),
+            _ => return Err(GitError::Message(format!("远端分支不存在：{upstream}"))),
+        }
+
+        let mut branch = repo
+            .find_branch(&local_branch.0, BranchType::Local)
+            .map_err(|_| GitError::Message(format!("本地分支不存在：{}", local_branch.0)))?;
+        branch.set_upstream(Some(&upstream))?;
+        drop(branch);
+        self.snapshot_after_operation(repo)
+    }
+
+    pub fn delete_remote_branch(
+        &self,
+        repo: &mut Repository,
+        remote: &RemoteName,
+        remote_branch: &BranchName,
+    ) -> Result<RepositorySnapshot> {
+        validate_remote_name(&remote.0)?;
+        validate_branch_name(&remote_branch.0)?;
+        let upstream = format!("{}/{}", remote.0, remote_branch.0);
+        if repo.find_branch(&upstream, BranchType::Remote).is_err() {
+            return Err(GitError::Message(format!("远端分支不存在：{upstream}")));
+        }
+
+        self.progress.emit(OperationEvent::Started(format!(
+            "正在删除远端分支 {upstream}"
+        )));
+        let _remote_context = self.set_remote_context(repo, remote);
+        let mut remote_handle = repo.find_remote(&remote.0)?;
+        let mut options = PushOptions::new();
+        options.remote_callbacks(self.remote_callbacks(Some(repo)));
+        let refspec = format!(":refs/heads/{}", remote_branch.0);
+        let result = remote_handle.push(&[refspec.as_str()], Some(&mut options));
+        drop(remote_handle);
+        drop(options);
+        result?;
+        drop(_remote_context);
+
+        self.fetch_remote_refs(repo, remote)?;
+        self.progress.emit(OperationEvent::Finished(format!(
+            "已删除远端分支 {upstream}"
         )));
         self.snapshot_after_operation(repo)
     }
@@ -2865,6 +2941,65 @@ mod tests {
     }
 
     #[test]
+    fn fetch_prunes_deleted_remote_branch_and_clears_sync_status() {
+        let (remote_dir, _clone_dir, _clone_path, mut repo, service) =
+            clone_repo_with_remote_feature();
+        service
+            .checkout_remote_branch(&mut repo, &BranchName::new("origin/feature"))
+            .unwrap();
+
+        let remote_repo = Repository::open_bare(remote_dir.path()).unwrap();
+        remote_repo
+            .find_reference("refs/heads/feature")
+            .unwrap()
+            .delete()
+            .unwrap();
+        service
+            .fetch(&mut repo, &RemoteName::new("origin"))
+            .unwrap();
+
+        assert!(
+            repo.find_branch("origin/feature", BranchType::Remote)
+                .is_err()
+        );
+        assert!(
+            service
+                .branch_sync_status(&repo, &RemoteName::new("origin"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn refresh_with_remote_prunes_deleted_current_upstream() {
+        let (remote_dir, _clone_dir, _clone_path, mut repo, service) =
+            clone_repo_with_remote_feature();
+        service
+            .checkout_remote_branch(&mut repo, &BranchName::new("origin/feature"))
+            .unwrap();
+
+        let remote_repo = Repository::open_bare(remote_dir.path()).unwrap();
+        remote_repo
+            .find_reference("refs/heads/feature")
+            .unwrap()
+            .delete()
+            .unwrap();
+        let snapshot = service
+            .refresh(&mut repo, Some(&RemoteName::new("origin")))
+            .unwrap();
+
+        assert!(!snapshot.branches.iter().any(|branch| {
+            branch.kind == BranchKind::Remote && branch.name == "origin/feature"
+        }));
+        assert!(
+            service
+                .branch_sync_status(&repo, &RemoteName::new("origin"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn branch_sync_status_is_unknown_for_detached_head() {
         let (_remote_dir, _clone_dir, _clone_path, repo, service) =
             clone_repo_with_remote_feature();
@@ -3041,6 +3176,76 @@ mod tests {
         assert_eq!(upstream.name().unwrap(), Some("origin/feature"));
         assert!(snapshot.changes.is_empty());
         assert!(service.status_full(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_branch_upstream_tracks_existing_remote_branch() {
+        let (_remote_dir, _clone_dir, _clone_path, mut repo, service) =
+            clone_repo_with_remote_feature();
+        service
+            .create_branch(&mut repo, &BranchName::new("topic"))
+            .unwrap();
+
+        let snapshot = service
+            .set_branch_upstream(
+                &mut repo,
+                &BranchName::new("topic"),
+                &RemoteName::new("origin"),
+                &BranchName::new("feature"),
+            )
+            .unwrap();
+
+        let branch = repo.find_branch("topic", BranchType::Local).unwrap();
+        assert_eq!(
+            branch.upstream().unwrap().name().unwrap(),
+            Some("origin/feature")
+        );
+        assert!(snapshot.branches.iter().any(|branch| {
+            branch.kind == BranchKind::Local
+                && branch.name == "topic"
+                && branch.upstream.as_deref() == Some("origin/feature")
+        }));
+    }
+
+    #[test]
+    fn set_branch_upstream_rejects_missing_remote_branch() {
+        let (_remote_dir, _clone_dir, _clone_path, mut repo, service) =
+            clone_repo_with_remote_feature();
+
+        let err = service
+            .set_branch_upstream(
+                &mut repo,
+                &BranchName::new("main"),
+                &RemoteName::new("origin"),
+                &BranchName::new("missing"),
+            )
+            .unwrap_err();
+
+        assert!(err.to_string().contains("远端分支不存在"));
+    }
+
+    #[test]
+    fn delete_remote_branch_removes_remote_ref_and_tracking_branch() {
+        let (remote_dir, _clone_dir, _clone_path, mut repo, service) =
+            clone_repo_with_remote_feature();
+
+        let snapshot = service
+            .delete_remote_branch(
+                &mut repo,
+                &RemoteName::new("origin"),
+                &BranchName::new("feature"),
+            )
+            .unwrap();
+
+        let remote_repo = Repository::open_bare(remote_dir.path()).unwrap();
+        assert!(remote_repo.find_reference("refs/heads/feature").is_err());
+        assert!(
+            repo.find_branch("origin/feature", BranchType::Remote)
+                .is_err()
+        );
+        assert!(!snapshot.branches.iter().any(|branch| {
+            branch.kind == BranchKind::Remote && branch.name == "origin/feature"
+        }));
     }
 
     #[test]

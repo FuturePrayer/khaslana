@@ -41,7 +41,7 @@ use khaslana::{
 };
 use remote_branch_operation::{
     RemoteBranchOperationKind, RemoteBranchOperationState, default_remote_branch_for,
-    remote_branch_dialog_defaults, remote_branch_exists,
+    local_branch_by_name, remote_branch_dialog_defaults, remote_branch_exists,
 };
 use serde::{Deserialize, Serialize};
 use text_input::{MultiLineInputElement, SingleLineInputElement, TextFieldState};
@@ -100,7 +100,7 @@ const MIN_HISTORY_FILES_WIDTH: f32 = 260.0;
 const MAX_HISTORY_FILES_WIDTH: f32 = 720.0;
 const HISTORY_PAGE_SIZE: usize = 50;
 pub(crate) const BRANCH_MENU_WIDTH: f32 = 190.0;
-pub(crate) const BRANCH_MENU_HEIGHT: f32 = 230.0;
+pub(crate) const BRANCH_MENU_HEIGHT: f32 = 340.0;
 const CHANGE_MENU_WIDTH: f32 = 210.0;
 const CHANGE_MENU_HEIGHT: f32 = 255.0;
 const CREDENTIAL_MENU_WIDTH: f32 = 180.0;
@@ -206,6 +206,10 @@ pub(crate) enum DialogState {
     },
     ConfirmDeleteRemote {
         name: String,
+    },
+    ConfirmDeleteRemoteBranch {
+        remote: String,
+        branch: String,
     },
     ConfirmDeleteCredential {
         record_id: String,
@@ -3351,6 +3355,19 @@ impl RepositoryView {
         self.last_error = None;
     }
 
+    pub(crate) fn open_delete_remote_branch_confirm(&mut self, remote_branch: String) {
+        let Some((remote, branch)) = remote_branch.split_once('/') else {
+            self.last_error = Some(format!("远端分支名称无效：{remote_branch}"));
+            return;
+        };
+        self.branch_context_menu = None;
+        self.active_dialog = Some(DialogState::ConfirmDeleteRemoteBranch {
+            remote: remote.to_string(),
+            branch: branch.to_string(),
+        });
+        self.last_error = None;
+    }
+
     fn save_remote(&mut self, editing: Option<String>) {
         let name = self.remote_name.value.trim().to_string();
         let url = self.remote_url.value.trim().to_string();
@@ -3473,6 +3490,12 @@ impl RepositoryView {
         }
         self.with_repo("远端已删除", move |service, repo| {
             service.delete_remote(repo, &RemoteName::new(name))
+        });
+    }
+
+    fn delete_remote_branch(&mut self, remote: String, branch: String) {
+        self.with_repo("远端分支已删除", move |service, repo| {
+            service.delete_remote_branch(repo, &RemoteName::new(remote), &BranchName::new(branch))
         });
     }
 
@@ -3710,6 +3733,12 @@ impl RepositoryView {
             self.last_error = Some("请先打开一个仓库".into());
             return;
         };
+        if let Some(remote) = self.current_remote() {
+            self.with_repo("已刷新", move |service, repo| {
+                service.refresh(repo, Some(&RemoteName::new(remote)))
+            });
+            return;
+        }
         self.queue_repository_load(tab_id, path, "正在刷新仓库", "已刷新", LoadPriority::User);
     }
 
@@ -4242,10 +4271,37 @@ impl RepositoryView {
         };
         self.close_popups();
         self.remote_branch_operation.clear();
+        self.remote_branch_operation.local_branch = Some(defaults.local_branch);
         self.remote_branch_operation.selected_remote = Some(defaults.remote);
         self.remote_branch_name.set_value(defaults.remote_branch);
         self.remote_branch_search.clear();
         self.active_dialog = Some(DialogState::RemoteBranchOperation { kind });
+        self.last_error = None;
+    }
+
+    pub(crate) fn open_set_branch_upstream_dialog(&mut self, branch: String) {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            self.last_error = Some("请先打开一个仓库".into());
+            return;
+        };
+        let Some(local_branch) = local_branch_by_name(snapshot, &branch) else {
+            self.last_error = Some(format!("本地分支不存在：{branch}"));
+            return;
+        };
+        let Some(remote) = self.current_remote() else {
+            self.last_error = Some("当前仓库没有远端".into());
+            return;
+        };
+        let remote_branch = default_remote_branch_for(local_branch, &remote);
+        self.close_popups();
+        self.remote_branch_operation.clear();
+        self.remote_branch_operation.local_branch = Some(branch);
+        self.remote_branch_operation.selected_remote = Some(remote);
+        self.remote_branch_name.set_value(remote_branch);
+        self.remote_branch_search.clear();
+        self.active_dialog = Some(DialogState::RemoteBranchOperation {
+            kind: RemoteBranchOperationKind::SetUpstream,
+        });
         self.last_error = None;
     }
 
@@ -4256,7 +4312,13 @@ impl RepositoryView {
         let default_branch = self
             .snapshot
             .as_ref()
-            .and_then(remote_branch_operation::current_local_branch)
+            .and_then(|snapshot| {
+                self.remote_branch_operation
+                    .local_branch
+                    .as_deref()
+                    .and_then(|name| local_branch_by_name(snapshot, name))
+                    .or_else(|| remote_branch_operation::current_local_branch(snapshot))
+            })
             .map(|local_branch| default_remote_branch_for(local_branch, &remote));
         if let Some(default_branch) = default_branch {
             self.remote_branch_name.set_value(default_branch);
@@ -4281,10 +4343,15 @@ impl RepositoryView {
             self.last_error = Some("请先打开一个仓库".into());
             return;
         };
-        let Some(local_branch) = remote_branch_operation::current_local_branch(snapshot)
+        let Some(local_branch) = self
+            .remote_branch_operation
+            .local_branch
+            .as_deref()
+            .and_then(|name| local_branch_by_name(snapshot, name))
+            .or_else(|| remote_branch_operation::current_local_branch(snapshot))
             .map(|branch| branch.name.clone())
         else {
-            self.last_error = Some("当前不是本地分支，无法拉取或推送".into());
+            self.last_error = Some("当前不是本地分支，无法拉取、推送或设置 upstream".into());
             return;
         };
         let Some(remote) = self.remote_branch_operation.selected_remote.clone() else {
@@ -4296,7 +4363,7 @@ impl RepositoryView {
             self.last_error = Some("需要填写远程分支".into());
             return;
         }
-        if kind == RemoteBranchOperationKind::Pull
+        if kind.requires_existing_remote_branch()
             && !remote_branch_exists(snapshot, &remote, &remote_branch)
         {
             self.last_error = Some("远端分支不存在，请点击刷新或选择已有分支".into());
@@ -4324,6 +4391,16 @@ impl RepositoryView {
                         &BranchName::new(local_branch),
                         &BranchName::new(remote_branch),
                         true,
+                    )
+                });
+            }
+            RemoteBranchOperationKind::SetUpstream => {
+                self.with_repo("upstream 已设置", move |service, repo| {
+                    service.set_branch_upstream(
+                        repo,
+                        &BranchName::new(local_branch),
+                        &RemoteName::new(remote),
+                        &BranchName::new(remote_branch),
                     )
                 });
             }
@@ -4587,6 +4664,24 @@ impl RepositoryView {
         cx.write_to_clipboard(ClipboardItem::new_string(oid));
         self.commit_context_menu = None;
         self.status = "已复制提交 SHA".into();
+        self.last_error = None;
+        self.notify_success(self.status.clone(), cx);
+    }
+
+    pub(crate) fn copy_branch_name(&mut self, branch: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(branch));
+        self.branch_context_menu = None;
+        self.status = "已复制分支名称".into();
+        self.last_error = None;
+        self.notify_success(self.status.clone(), cx);
+    }
+
+    pub(crate) fn copy_remote_checkout_command(&mut self, branch: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(format!(
+            "git checkout --track {branch}"
+        )));
+        self.branch_context_menu = None;
+        self.status = "已复制 checkout 命令".into();
         self.last_error = None;
         self.notify_success(self.status.clone(), cx);
     }
@@ -7531,6 +7626,9 @@ impl RepositoryView {
             DialogState::ConfirmDeleteRemote { name } => self
                 .render_confirm_delete_remote_dialog(name, cx)
                 .into_any_element(),
+            DialogState::ConfirmDeleteRemoteBranch { remote, branch } => self
+                .render_confirm_delete_remote_branch_dialog(remote, branch, cx)
+                .into_any_element(),
             DialogState::ConfirmDeleteCredential { record_id, label } => self
                 .render_confirm_delete_credential_dialog(record_id, label, cx)
                 .into_any_element(),
@@ -8310,6 +8408,43 @@ impl RepositoryView {
                         "确认删除",
                         !self.busy,
                         move |this, _, _| this.delete_remote(name.clone()),
+                        cx,
+                    )),
+            )
+    }
+
+    fn render_confirm_delete_remote_branch_dialog(
+        &self,
+        remote: String,
+        branch: String,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let full_name = format!("{remote}/{branch}");
+        self.dialog_panel("删除远端分支", cx)
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(ui_theme::TEXT))
+                    .child(format!("确认删除远端分支：{full_name}")),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(ui_theme::TEXT_MUTED))
+                    .child(
+                        "这会删除远端仓库上的分支，并刷新本地远端分支列表；不会删除同名本地分支。",
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.danger_button(
+                        "确认删除",
+                        !self.busy,
+                        move |this, _, _| this.delete_remote_branch(remote.clone(), branch.clone()),
                         cx,
                     )),
             )
