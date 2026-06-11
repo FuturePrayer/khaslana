@@ -994,8 +994,37 @@ struct TabCredentialProvider {
     remote_bindings: Arc<Mutex<RemoteCredentialBindings>>,
     tx: Sender<UiEvent>,
     rejected_record_ids: Arc<Mutex<Vec<String>>>,
-    last_stored_attempt: Arc<Mutex<Option<(String, String)>>>,
+    last_stored_attempt: Arc<Mutex<Option<StoredCredentialAttempt>>>,
     tab_id: RepoTabId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StoredCredentialAttempt {
+    url: String,
+    record_id: String,
+    operation_id: Option<u64>,
+    repo_path: Option<PathBuf>,
+    remote_name: Option<String>,
+}
+
+impl StoredCredentialAttempt {
+    fn from_request(request: &CredentialRequest, record_id: String) -> Self {
+        Self {
+            url: request.url.clone(),
+            record_id,
+            operation_id: request.operation_id,
+            repo_path: request.repo_path.clone(),
+            remote_name: request.remote_name.clone(),
+        }
+    }
+
+    fn is_retry_for(&self, request: &CredentialRequest) -> bool {
+        self.operation_id.is_some()
+            && self.operation_id == request.operation_id
+            && self.url == request.url
+            && self.repo_path == request.repo_path
+            && self.remote_name == request.remote_name
+    }
 }
 
 impl TabCredentialProvider {
@@ -1022,16 +1051,13 @@ impl CredentialProvider for TabCredentialProvider {
         request: CredentialRequest,
     ) -> khaslana::Result<Option<GitCredential>> {
         if let Ok(mut last) = self.last_stored_attempt.lock()
-            && let Some((url, record_id)) = last.clone()
-            && url == request.url
+            && let Some(attempt) = last.clone()
+            && attempt.is_retry_for(&request)
         {
             if let Ok(mut rejected) = self.rejected_record_ids.lock()
-                && !rejected.contains(&record_id)
+                && !rejected.contains(&attempt.record_id)
             {
-                rejected.push(record_id.clone());
-            }
-            if let Err(err) = self.store.delete_record(&record_id) {
-                tracing::warn!("rejected credential delete skipped: {err}");
+                rejected.push(attempt.record_id.clone());
             }
             *last = None;
         }
@@ -1075,7 +1101,10 @@ impl CredentialProvider for TabCredentialProvider {
         match stored {
             Ok(Some(stored)) => {
                 if let Ok(mut last) = self.last_stored_attempt.lock() {
-                    *last = Some((request.url.clone(), stored.record.id.clone()));
+                    *last = Some(StoredCredentialAttempt::from_request(
+                        &request,
+                        stored.record.id.clone(),
+                    ));
                 }
                 return Ok(Some(stored.credential));
             }
@@ -1102,7 +1131,10 @@ impl CredentialProvider for TabCredentialProvider {
                 match self.store.save_record(&request, &credential) {
                     Ok(record) => {
                         if let Ok(mut last) = self.last_stored_attempt.lock() {
-                            *last = Some((request.url.clone(), record.id.clone()));
+                            *last = Some(StoredCredentialAttempt::from_request(
+                                &request,
+                                record.id.clone(),
+                            ));
                         }
                         set_remote_binding_for_request(
                             &self.remote_bindings,
@@ -3203,6 +3235,7 @@ impl RepositoryView {
                 | git2::CredentialType::SSH_KEY,
             repo_path: None,
             remote_name: None,
+            operation_id: None,
         });
         if inferred_mode != self.credential_form_mode {
             self.last_error = Some("凭据类型与远端 URL 协议不匹配".into());
@@ -3255,6 +3288,7 @@ impl RepositoryView {
             },
             repo_path: None,
             remote_name: None,
+            operation_id: None,
         };
         match self.credential_store.save_record(&request, &credential) {
             Ok(_) => {
@@ -3396,6 +3430,7 @@ impl RepositoryView {
                     | git2::CredentialType::SSH_KEY,
                 repo_path: Some(repo_path.clone()),
                 remote_name: Some(name.clone()),
+                operation_id: None,
             };
             set_remote_binding_for_request(
                 &self.remote_credential_bindings,
@@ -9186,6 +9221,64 @@ fn dedupe_repo_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 #[cfg(test)]
 mod app_tests {
     use super::*;
+    use khaslana::MemoryCredentialStore;
+
+    fn credential_request(operation_id: Option<u64>) -> CredentialRequest {
+        CredentialRequest {
+            url: "https://gitee.com/team/repo.git".into(),
+            username_from_url: None,
+            allowed_types: git2::CredentialType::USER_PASS_PLAINTEXT,
+            repo_path: Some(PathBuf::from("C:/work/repo")),
+            remote_name: Some("origin".into()),
+            operation_id,
+        }
+    }
+
+    fn host_credential(secret: &str) -> GitCredential {
+        GitCredential::UserPass {
+            username: "user@example.com".into(),
+            secret: secret.into(),
+            display_name: Some("gitee".into()),
+            save_to_keyring: true,
+            scope: CredentialScope::Host,
+        }
+    }
+
+    fn credential_provider_with_store(
+        store: Arc<MemoryCredentialStore>,
+        bindings: Arc<Mutex<RemoteCredentialBindings>>,
+    ) -> (TabCredentialProvider, Receiver<UiEvent>) {
+        let (tx, rx) = async_channel::unbounded();
+        (
+            TabCredentialProvider::new(store, bindings, tx, RepoTabId(7)),
+            rx,
+        )
+    }
+
+    fn save_host_credential(store: &MemoryCredentialStore) -> String {
+        let record = store
+            .save_record(&credential_request(None), &host_credential("token"))
+            .unwrap();
+        record.id
+    }
+
+    fn expect_credential_prompt_cancelled(rx: &Receiver<UiEvent>) {
+        let event = rx.recv_blocking().expect("credential prompt requested");
+        match event {
+            UiEvent::CredentialRequested { response_tx, .. } => {
+                let tx = response_tx
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("credential response channel");
+                tx.send(Err(khaslana::GitError::Credential(
+                    "测试取消凭据输入".into(),
+                )))
+                .unwrap();
+            }
+            _ => panic!("expected credential request"),
+        }
+    }
 
     #[test]
     fn session_json_round_trips_multiple_repositories() {
@@ -9327,6 +9420,7 @@ mod app_tests {
             allowed_types: git2::CredentialType::USER_PASS_PLAINTEXT,
             repo_path: Some(PathBuf::from("C:/work/a")),
             remote_name: Some("origin".into()),
+            operation_id: None,
         };
 
         assert_eq!(
@@ -9344,6 +9438,7 @@ mod app_tests {
             allowed_types: git2::CredentialType::USER_PASS_PLAINTEXT,
             repo_path: Some(PathBuf::from("C:/work/a")),
             remote_name: Some("origin".into()),
+            operation_id: None,
         };
 
         set_remote_binding_for_request(
@@ -9365,6 +9460,91 @@ mod app_tests {
             remote_binding_for_request(&bindings, &changed_url),
             RemoteCredentialPolicy::AutoMatch
         );
+    }
+
+    #[test]
+    fn stored_host_credential_is_reused_across_workflow_remote_steps() {
+        let store = Arc::new(MemoryCredentialStore::new());
+        save_host_credential(&store);
+        let bindings = Arc::new(Mutex::new(RemoteCredentialBindings::default()));
+        let (provider, rx) = credential_provider_with_store(store.clone(), bindings);
+
+        let first = provider
+            .credential_for(credential_request(Some(1)))
+            .unwrap()
+            .unwrap();
+        let second = provider
+            .credential_for(credential_request(Some(2)))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(first.username(), "user@example.com");
+        assert_eq!(second.username(), "user@example.com");
+        assert!(rx.try_recv().is_err());
+        assert_eq!(store.list_records().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn same_remote_operation_retry_rejects_last_stored_record_without_deleting_it() {
+        let store = Arc::new(MemoryCredentialStore::new());
+        let record_id = save_host_credential(&store);
+        let bindings = Arc::new(Mutex::new(RemoteCredentialBindings::default()));
+        let (provider, rx) = credential_provider_with_store(store.clone(), bindings);
+
+        let first = provider
+            .credential_for(credential_request(Some(1)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.username(), "user@example.com");
+
+        let retry = provider.clone();
+        let handle = thread::spawn(move || retry.credential_for(credential_request(Some(1))));
+        expect_credential_prompt_cancelled(&rx);
+        assert!(handle.join().unwrap().is_err());
+        assert!(store.credential_for_record(&record_id).unwrap().is_some());
+    }
+
+    #[test]
+    fn no_credential_binding_still_skips_saved_credentials_for_workflow() {
+        let store = Arc::new(MemoryCredentialStore::new());
+        save_host_credential(&store);
+        let bindings = Arc::new(Mutex::new(RemoteCredentialBindings::default()));
+        set_remote_binding_for_request(
+            &bindings,
+            &credential_request(Some(1)),
+            RemoteCredentialPolicy::NoCredential,
+        );
+        let (provider, rx) = credential_provider_with_store(store, bindings);
+
+        let handle = thread::spawn(move || provider.credential_for(credential_request(Some(1))));
+        expect_credential_prompt_cancelled(&rx);
+        assert!(handle.join().unwrap().is_err());
+    }
+
+    #[test]
+    fn record_binding_is_reused_across_workflow_remote_steps() {
+        let store = Arc::new(MemoryCredentialStore::new());
+        let record_id = save_host_credential(&store);
+        let bindings = Arc::new(Mutex::new(RemoteCredentialBindings::default()));
+        set_remote_binding_for_request(
+            &bindings,
+            &credential_request(Some(1)),
+            RemoteCredentialPolicy::Record(record_id),
+        );
+        let (provider, rx) = credential_provider_with_store(store, bindings);
+
+        let first = provider
+            .credential_for(credential_request(Some(1)))
+            .unwrap()
+            .unwrap();
+        let second = provider
+            .credential_for(credential_request(Some(2)))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(first.username(), "user@example.com");
+        assert_eq!(second.username(), "user@example.com");
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
