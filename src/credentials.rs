@@ -20,6 +20,7 @@ pub struct CredentialRequest {
     pub allowed_types: CredentialType,
     pub repo_path: Option<PathBuf>,
     pub remote_name: Option<String>,
+    pub operation_id: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -809,6 +810,7 @@ pub fn test_credential_connection(
         },
         repo_path: None,
         remote_name: None,
+        operation_id: None,
     };
     let temp = tempfile_dir_for_credential_test()?;
     let repo = git2::Repository::init_bare(&temp)?;
@@ -1151,6 +1153,7 @@ mod tests {
             allowed_types,
             repo_path: None,
             remote_name: None,
+            operation_id: None,
         }
     }
 

@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 
 use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
 use encoding_rs::{BIG5, Encoding, GB18030, UTF_8};
@@ -41,11 +44,20 @@ impl ProgressEmitter for NoopProgress {
 pub struct GitService {
     credential_provider: Arc<dyn CredentialProvider>,
     progress: Arc<dyn ProgressEmitter>,
-    remote_context: Arc<Mutex<Option<(std::path::PathBuf, String)>>>,
+    remote_context: Arc<Mutex<Option<RemoteOperationContext>>>,
+    next_remote_operation_id: Arc<AtomicU64>,
+}
+
+#[derive(Clone, Debug)]
+struct RemoteOperationContext {
+    repo_path: std::path::PathBuf,
+    remote_name: String,
+    // 区分同一次 libgit2 认证重试和工作流中的连续远端步骤。
+    operation_id: u64,
 }
 
 struct RemoteContextGuard {
-    context: Arc<Mutex<Option<(std::path::PathBuf, String)>>>,
+    context: Arc<Mutex<Option<RemoteOperationContext>>>,
 }
 
 impl Drop for RemoteContextGuard {
@@ -65,6 +77,7 @@ impl GitService {
             credential_provider,
             progress,
             remote_context: Arc::new(Mutex::new(None)),
+            next_remote_operation_id: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -1402,7 +1415,14 @@ impl GitService {
     fn set_remote_context(&self, repo: &Repository, remote: &RemoteName) -> RemoteContextGuard {
         let repo_path = repo.path().parent().map(Path::to_path_buf);
         if let (Some(repo_path), Ok(mut context)) = (repo_path, self.remote_context.lock()) {
-            *context = Some((repo_path, remote.0.clone()));
+            let operation_id = self
+                .next_remote_operation_id
+                .fetch_add(1, Ordering::Relaxed);
+            *context = Some(RemoteOperationContext {
+                repo_path,
+                remote_name: remote.0.clone(),
+                operation_id,
+            });
         }
         RemoteContextGuard {
             context: self.remote_context.clone(),
@@ -1823,14 +1843,15 @@ fn credential_for_remote(
     url: &str,
     username_from_url: Option<&str>,
     allowed_types: CredentialType,
-    context: Option<(std::path::PathBuf, String)>,
+    context: Option<RemoteOperationContext>,
 ) -> std::result::Result<Cred, git2::Error> {
     let request = CredentialRequest {
         url: url.to_string(),
         username_from_url: username_from_url.map(str::to_string),
         allowed_types,
-        repo_path: context.as_ref().map(|(repo_path, _)| repo_path.clone()),
-        remote_name: context.map(|(_, remote_name)| remote_name),
+        repo_path: context.as_ref().map(|context| context.repo_path.clone()),
+        remote_name: context.as_ref().map(|context| context.remote_name.clone()),
+        operation_id: context.map(|context| context.operation_id),
     };
     match provider.credential_for(request.clone()) {
         Ok(Some(credential)) => to_git_credential(&request, credential),
