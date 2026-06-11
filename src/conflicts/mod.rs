@@ -1,15 +1,26 @@
 use std::path::Path;
 
-use gpui::{Context, IntoElement, MouseButton, MouseDownEvent, Window, div, prelude::*, px, rgb};
+use gpui::{
+    Context, IntoElement, MouseButton, MouseDownEvent, ScrollHandle, Window, div, prelude::*, px,
+    rgb,
+};
 use khaslana::{
-    ConflictBlockResolution, ConflictFileKind, ConflictFileView, ConflictResolutionSide,
-    RepositorySnapshot,
+    ConflictBlock, ConflictBlockResolution, ConflictBlockStatus, ConflictFileKind,
+    ConflictFileView, ConflictResolutionSide, RepositorySnapshot,
 };
 
 use crate::{
-    FieldId, MainMode, RepositoryView,
+    MainMode, RepositoryView,
     ui::{components::app_panel, theme as ui_theme},
+    ui_helpers::{ScrollbarMode, scrollable_frame_when},
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConflictDocumentPane {
+    Ours,
+    Result,
+    Theirs,
+}
 
 pub(crate) fn conflict_status_message(label: &str, count: usize) -> String {
     let operation = label.strip_suffix("完成").unwrap_or("操作");
@@ -20,6 +31,99 @@ fn conflict_paths(snapshot: Option<&RepositorySnapshot>) -> Vec<String> {
     snapshot
         .map(|snapshot| snapshot.conflicts.clone())
         .unwrap_or_default()
+}
+
+fn conflict_document_line_owners(
+    content: &str,
+    pane: ConflictDocumentPane,
+    view: &ConflictFileView,
+    line_count: usize,
+) -> Vec<Option<usize>> {
+    let mut owners = vec![None; line_count.max(1)];
+    for (index, block) in view.blocks.iter().enumerate() {
+        let (start, end) = conflict_document_byte_range(block, pane);
+        let range = conflict_byte_range_to_lines(content, start, end);
+        for line_index in range {
+            if let Some(owner) = owners.get_mut(line_index) {
+                *owner = Some(index);
+            }
+        }
+    }
+    owners
+}
+
+fn conflict_document_byte_range(
+    block: &ConflictBlock,
+    pane: ConflictDocumentPane,
+) -> (usize, usize) {
+    match pane {
+        ConflictDocumentPane::Ours => (block.ours_start, block.ours_end),
+        ConflictDocumentPane::Result => (block.start, block.end),
+        ConflictDocumentPane::Theirs => (block.theirs_start, block.theirs_end),
+    }
+}
+
+fn conflict_byte_range_to_lines(content: &str, start: usize, end: usize) -> std::ops::Range<usize> {
+    let start_line = content[..start.min(content.len())]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count();
+    let mut end_line = content[..end.min(content.len())]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count();
+    if end_line == start_line {
+        end_line += 1;
+    }
+    start_line..end_line
+}
+
+fn conflict_line_colors(
+    pane: ConflictDocumentPane,
+    block: &ConflictBlock,
+    active: bool,
+) -> (u32, u32) {
+    match block.status {
+        ConflictBlockStatus::Ignored => {
+            if active {
+                (ui_theme::SURFACE_MUTED, ui_theme::TEXT_MUTED)
+            } else {
+                (ui_theme::HEADER_BG, ui_theme::TEXT_MUTED)
+            }
+        }
+        ConflictBlockStatus::Resolved(_) => match pane {
+            ConflictDocumentPane::Ours | ConflictDocumentPane::Theirs => {
+                if active {
+                    (ui_theme::DANGER_SOFT, ui_theme::WARNING_TEXT)
+                } else {
+                    (ui_theme::HEADER_BG, ui_theme::TEXT)
+                }
+            }
+            ConflictDocumentPane::Result => {
+                if active {
+                    (ui_theme::ACCENT_SOFT, ui_theme::ACCENT_STRONG)
+                } else {
+                    (ui_theme::HEADER_BG, ui_theme::TEXT)
+                }
+            }
+        },
+        ConflictBlockStatus::Unresolved => match pane {
+            ConflictDocumentPane::Ours | ConflictDocumentPane::Theirs => {
+                if active {
+                    (ui_theme::DANGER_SOFT, ui_theme::WARNING_TEXT)
+                } else {
+                    (ui_theme::WARNING_SOFT, ui_theme::TEXT)
+                }
+            }
+            ConflictDocumentPane::Result => {
+                if active {
+                    (ui_theme::WARNING_SOFT, ui_theme::WARNING_TEXT)
+                } else {
+                    (ui_theme::HEADER_BG, ui_theme::TEXT)
+                }
+            }
+        },
+    }
 }
 
 impl RepositoryView {
@@ -187,7 +291,7 @@ impl RepositoryView {
             )
     }
 
-    fn render_conflict_detail(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_conflict_detail(&self, _window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let selected_path = self.conflict_workbench.selected_path.clone();
         let selected_view = selected_path
             .as_ref()
@@ -205,7 +309,7 @@ impl RepositoryView {
             .child(self.render_conflict_header(title, selected_view, cx))
             .child(match selected_view {
                 Some(view) if view.kind == ConflictFileKind::Text => self
-                    .render_text_conflict_detail(window, view, cx)
+                    .render_text_conflict_detail(view, cx)
                     .into_any_element(),
                 Some(view) => self
                     .render_fallback_conflict_detail(view, cx)
@@ -243,6 +347,12 @@ impl RepositoryView {
                     .unwrap_or_default()
             )
         };
+        let unresolved = view
+            .map(ConflictFileView::unresolved_block_count)
+            .unwrap_or_default();
+        let ignored = view
+            .map(ConflictFileView::ignored_block_count)
+            .unwrap_or_default();
 
         div()
             .flex_none()
@@ -294,6 +404,26 @@ impl RepositoryView {
                         |this, _, _| this.step_conflict_block(1),
                         cx,
                     ))
+                    .when(unresolved > 0, |this| {
+                        this.child(self.conflict_count_badge(
+                            format!("未处理 {unresolved}"),
+                            ui_theme::WARNING_SOFT,
+                            ui_theme::WARNING_TEXT,
+                        ))
+                    })
+                    .when(ignored > 0, |this| {
+                        this.child(self.conflict_count_badge(
+                            format!("已忽略 {ignored}"),
+                            ui_theme::ACCENT_SOFT,
+                            ui_theme::ACCENT_STRONG,
+                        ))
+                    })
+                    .child(self.button(
+                        "忽略该块",
+                        block_count > 0 && !self.busy,
+                        |this, _, _| this.ignore_selected_conflict_block(),
+                        cx,
+                    ))
                     .child(self.button(
                         if self.conflict_workbench.show_base {
                             "隐藏 Base"
@@ -323,19 +453,21 @@ impl RepositoryView {
 
     fn render_text_conflict_detail(
         &self,
-        window: &Window,
         view: &ConflictFileView,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let block = view.blocks.get(
-            self.conflict_workbench
-                .selected_block
-                .min(view.blocks.len().saturating_sub(1)),
-        );
-        let warning = (view.has_manual_blocks() || view.unresolved_block_count() > 0).then(|| {
-            "仍有未显式接受或手工改写的冲突块；你仍然可以直接应用并标记解决。".to_string()
-        });
-
+        let selected_block = self
+            .conflict_workbench
+            .selected_block
+            .min(view.blocks.len().saturating_sub(1));
+        let block = view.blocks.get(selected_block);
+        let warning =
+            (view.has_manual_blocks() || view.requires_resolution_confirmation()).then(|| {
+                format!(
+                    "仍有 {} 个代码块未处理；直接解决时会先弹出确认。",
+                    view.unresolved_block_count()
+                )
+            });
         div()
             .flex()
             .flex_col()
@@ -364,9 +496,14 @@ impl RepositoryView {
                     .min_h(px(0.0))
                     .gap_2()
                     .p_3()
-                    .child(self.render_conflict_side_pane(
+                    .child(self.render_conflict_document_pane(
                         "当前版本",
-                        block.map(|block| block.ours.as_str()).unwrap_or(""),
+                        "conflict-ours-scroll",
+                        crate::CONFLICT_OURS_SCROLL_HANDLE_ID,
+                        &view.ours_text,
+                        ConflictDocumentPane::Ours,
+                        view,
+                        selected_block,
                         vec![
                             self.button(
                                 "接受当前",
@@ -391,32 +528,27 @@ impl RepositoryView {
                             )
                             .into_any_element(),
                         ],
+                        cx,
                     ))
-                    .child(
-                        app_panel()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .h_full()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .px_3()
-                                    .py_2()
-                                    .border_b_1()
-                                    .border_color(rgb(ui_theme::BORDER_MUTED))
-                                    .bg(rgb(ui_theme::HEADER_BG))
-                                    .text_size(px(12.0))
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_color(rgb(ui_theme::ACCENT_STRONG))
-                                    .child("结果区"),
-                            )
-                            .child(self.input(FieldId::ConflictEditor, false, window, cx)),
-                    )
-                    .child(self.render_conflict_side_pane(
+                    .child(self.render_conflict_document_pane(
+                        "结果区",
+                        "conflict-result-scroll",
+                        crate::CONFLICT_RESULT_SCROLL_HANDLE_ID,
+                        &view.draft,
+                        ConflictDocumentPane::Result,
+                        view,
+                        selected_block,
+                        Vec::new(),
+                        cx,
+                    ))
+                    .child(self.render_conflict_document_pane(
                         "传入版本",
-                        block.map(|block| block.theirs.as_str()).unwrap_or(""),
+                        "conflict-theirs-scroll",
+                        crate::CONFLICT_THEIRS_SCROLL_HANDLE_ID,
+                        &view.theirs_text,
+                        ConflictDocumentPane::Theirs,
+                        view,
+                        selected_block,
                         vec![
                             self.button(
                                 "接受传入",
@@ -441,6 +573,7 @@ impl RepositoryView {
                             )
                             .into_any_element(),
                         ],
+                        cx,
                     )),
             )
             .when(
@@ -456,16 +589,31 @@ impl RepositoryView {
                                 div()
                                     .px_3()
                                     .py_2()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
                                     .border_b_1()
                                     .border_color(rgb(ui_theme::BORDER_MUTED))
                                     .bg(rgb(ui_theme::HEADER_BG))
-                                    .text_size(px(12.0))
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_color(rgb(ui_theme::TEXT))
-                                    .child("Base"),
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .text_color(rgb(ui_theme::TEXT))
+                                            .child("Base"),
+                                    )
+                                    .when_some(block, |this, block| {
+                                        this.child(self.conflict_block_status_badge(
+                                            block.status,
+                                            block.has_manual_edits,
+                                        ))
+                                    }),
                             )
-                            .child(self.render_conflict_text_lines(
+                            .child(self.render_conflict_plain_text(
+                                "conflict-base-scroll",
                                 block.and_then(|block| block.base.as_deref()).unwrap_or(""),
+                                None,
+                                cx,
                             )),
                     )
                 },
@@ -542,48 +690,87 @@ impl RepositoryView {
             .into_any_element()
     }
 
-    fn render_conflict_side_pane(
+    fn render_conflict_document_pane(
         &self,
         title: &'static str,
+        scroll_id: &'static str,
+        handle_id: &'static str,
         content: &str,
+        pane: ConflictDocumentPane,
+        view: &ConflictFileView,
+        selected_block: usize,
         actions: Vec<gpui::AnyElement>,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let active_block = view.blocks.get(selected_block);
+        let has_actions = !actions.is_empty();
         app_panel()
             .flex()
             .flex_col()
-            .flex_none()
-            .w(px(280.0))
-            .min_w(px(240.0))
+            .flex_1()
+            .min_w(px(0.0))
             .h_full()
             .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
                     .flex_none()
                     .px_3()
                     .py_2()
                     .border_b_1()
                     .border_color(rgb(ui_theme::BORDER_MUTED))
                     .bg(rgb(ui_theme::HEADER_BG))
-                    .text_size(px(12.0))
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(rgb(ui_theme::TEXT))
-                    .child(title),
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(rgb(ui_theme::TEXT))
+                            .child(title),
+                    )
+                    .when_some(active_block, |this, block| {
+                        this.child(
+                            self.conflict_block_status_badge(block.status, block.has_manual_edits),
+                        )
+                    }),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .flex_wrap()
-                    .gap_1()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(ui_theme::BORDER_MUTED))
-                    .children(actions),
-            )
-            .child(self.render_conflict_text_lines(content))
+            .when(has_actions, move |this| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .px_3()
+                        .py_2()
+                        .border_b_1()
+                        .border_color(rgb(ui_theme::BORDER_MUTED))
+                        .children(actions),
+                )
+            })
+            .child(self.render_conflict_document_text(
+                scroll_id,
+                handle_id,
+                content,
+                pane,
+                view,
+                selected_block,
+                cx,
+            ))
     }
 
-    fn render_conflict_text_lines(&self, content: &str) -> impl IntoElement {
+    fn render_conflict_document_text(
+        &self,
+        scroll_id: &'static str,
+        handle_id: &'static str,
+        content: &str,
+        pane: ConflictDocumentPane,
+        view: &ConflictFileView,
+        selected_block: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let handle = self.scroll_handle(handle_id);
         let lines = if content.is_empty() {
             vec![String::new()]
         } else {
@@ -592,13 +779,74 @@ impl RepositoryView {
                 .map(|line| line.to_string())
                 .collect::<Vec<_>>()
         };
-        div()
+        let line_owners = conflict_document_line_owners(content, pane, view, lines.len());
+        let content = div()
+            .id(scroll_id)
             .flex()
             .flex_col()
             .flex_1()
             .min_w(px(0.0))
             .min_h(px(0.0))
-            .overflow_hidden()
+            .overflow_y_scroll()
+            .track_scroll(&handle)
+            .p_3()
+            .font_family("Consolas, monospace")
+            .text_size(px(12.0))
+            .bg(rgb(ui_theme::SURFACE))
+            .children(lines.into_iter().enumerate().map(|(line_index, line)| {
+                let block = line_owners[line_index].and_then(|index| view.blocks.get(index));
+                let active = line_owners[line_index] == Some(selected_block);
+                let (bg, fg) = block
+                    .map(|block| conflict_line_colors(pane, block, active))
+                    .unwrap_or((ui_theme::SURFACE, ui_theme::TEXT));
+                div()
+                    .min_h(px(18.0))
+                    .px_1()
+                    .rounded_sm()
+                    .bg(rgb(bg))
+                    .text_color(rgb(fg))
+                    .child(if line.is_empty() {
+                        " ".to_string()
+                    } else {
+                        line
+                    })
+            }))
+            .into_any_element();
+        scrollable_frame_when(
+            scroll_id,
+            ScrollbarMode::Vertical,
+            content,
+            handle,
+            true,
+            cx,
+        )
+    }
+
+    fn render_conflict_plain_text(
+        &self,
+        scroll_id: &'static str,
+        content: &str,
+        shared_handle: Option<ScrollHandle>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let handle = shared_handle.unwrap_or_else(|| self.scroll_handle(scroll_id));
+        let lines = if content.is_empty() {
+            vec![String::new()]
+        } else {
+            content
+                .split('\n')
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>()
+        };
+        let content = div()
+            .id(scroll_id)
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .track_scroll(&handle)
             .p_3()
             .font_family("Consolas, monospace")
             .text_size(px(12.0))
@@ -613,6 +861,59 @@ impl RepositoryView {
                         line
                     })
             }))
+            .into_any_element();
+        scrollable_frame_when(
+            scroll_id,
+            ScrollbarMode::Vertical,
+            content,
+            handle,
+            true,
+            cx,
+        )
+    }
+
+    fn conflict_count_badge(&self, label: String, bg: u32, fg: u32) -> impl IntoElement {
+        div()
+            .flex_none()
+            .px_2()
+            .py(px(2.0))
+            .rounded_sm()
+            .bg(rgb(bg))
+            .text_size(px(10.0))
+            .font_weight(gpui::FontWeight::BOLD)
+            .text_color(rgb(fg))
+            .child(label)
+    }
+
+    fn conflict_block_status_badge(
+        &self,
+        status: ConflictBlockStatus,
+        has_manual_edits: bool,
+    ) -> impl IntoElement {
+        let (label, bg, fg) = match status {
+            ConflictBlockStatus::Ignored => {
+                ("已忽略", ui_theme::SURFACE_MUTED, ui_theme::TEXT_MUTED)
+            }
+            ConflictBlockStatus::Resolved(_) => {
+                ("已处理", ui_theme::ACCENT_SOFT, ui_theme::ACCENT_STRONG)
+            }
+            ConflictBlockStatus::Unresolved if has_manual_edits => {
+                ("手工修改", ui_theme::WARNING_SOFT, ui_theme::WARNING_TEXT)
+            }
+            ConflictBlockStatus::Unresolved => {
+                ("未处理", ui_theme::WARNING_SOFT, ui_theme::WARNING_TEXT)
+            }
+        };
+        div()
+            .flex_none()
+            .px_2()
+            .py(px(2.0))
+            .rounded_sm()
+            .bg(rgb(bg))
+            .text_size(px(10.0))
+            .font_weight(gpui::FontWeight::BOLD)
+            .text_color(rgb(fg))
+            .child(label)
     }
 
     fn resolve_conflict_with_side(&mut self, path: String, side: ConflictResolutionSide) {
@@ -745,6 +1046,7 @@ impl RepositoryView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use khaslana::{ConflictBlockStatus, ConflictDraftStatus};
 
     #[test]
     fn conflict_paths_follow_snapshot_conflict_order() {
@@ -768,5 +1070,40 @@ mod tests {
             conflict_status_message("正在同步", 1),
             "操作产生冲突，请在左侧“冲突”区域解决（1 个文件）"
         );
+    }
+
+    #[test]
+    fn result_pane_uses_draft_ranges_for_line_ownership() {
+        let view = ConflictFileView {
+            path: "file.txt".into(),
+            kind: ConflictFileKind::Text,
+            draft: "before\nresult\nafter\n".into(),
+            ours_text: "before\nours\nafter\n".into(),
+            theirs_text: "before\ntheirs\nafter\n".into(),
+            blocks: vec![ConflictBlock {
+                base: Some("before\nbase\nafter\n".into()),
+                ours: "ours\n".into(),
+                theirs: "theirs\n".into(),
+                start: 7,
+                end: 14,
+                ours_start: 7,
+                ours_end: 12,
+                theirs_start: 7,
+                theirs_end: 14,
+                status: ConflictBlockStatus::Unresolved,
+                has_manual_edits: false,
+            }],
+            draft_status: ConflictDraftStatus::Dirty,
+            fallback_reason: None,
+        };
+
+        let owners = conflict_document_line_owners(
+            &view.draft,
+            ConflictDocumentPane::Result,
+            &view,
+            view.draft.lines().count(),
+        );
+
+        assert_eq!(owners, vec![None, Some(0), None]);
     }
 }

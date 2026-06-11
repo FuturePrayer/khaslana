@@ -6,8 +6,8 @@ use thiserror::Error;
 mod conflicts;
 
 pub use conflicts::{
-    ConflictBlock, ConflictBlockResolution, ConflictDraftStatus, ConflictFileKind,
-    ConflictFileView, ConflictResolutionSide,
+    ConflictBlock, ConflictBlockResolution, ConflictBlockStatus, ConflictDraftStatus,
+    ConflictFileKind, ConflictFileView, ConflictResolutionSide,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

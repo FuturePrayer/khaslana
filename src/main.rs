@@ -116,6 +116,9 @@ const ENCODING_MENU_WIDTH: f32 = 170.0;
 const MENU_VIEWPORT_MARGIN: f32 = 8.0;
 const MAX_CONCURRENT_REPO_LOADS: usize = 2;
 const LARGE_DIFF_CACHE_LINE_LIMIT: usize = 20_000;
+const CONFLICT_OURS_SCROLL_HANDLE_ID: &str = "conflict-ours-scroll-handle";
+const CONFLICT_RESULT_SCROLL_HANDLE_ID: &str = "conflict-result-scroll-handle";
+const CONFLICT_THEIRS_SCROLL_HANDLE_ID: &str = "conflict-theirs-scroll-handle";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FieldId {
@@ -211,6 +214,7 @@ pub(crate) enum DialogState {
     RemoteBranchOperation {
         kind: RemoteBranchOperationKind,
     },
+    ConfirmConflictResolve,
 }
 
 #[derive(Clone, Debug)]
@@ -432,6 +436,35 @@ fn diff_render_model_for(diff: Option<&FileDiff>, headers_expanded: bool) -> Dif
     }
 }
 
+fn line_index_for_byte_offset(text: &str, offset: usize) -> usize {
+    let clamped = offset.min(text.len());
+    text[..clamped]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+}
+
+fn conflict_workbench_scroll_handle_ids() -> [&'static str; 3] {
+    [
+        CONFLICT_OURS_SCROLL_HANDLE_ID,
+        CONFLICT_RESULT_SCROLL_HANDLE_ID,
+        CONFLICT_THEIRS_SCROLL_HANDLE_ID,
+    ]
+}
+
+fn conflict_result_pane_uses_editor() -> bool {
+    false
+}
+
+fn multiline_input_should_scroll(id: FieldId, value: &str) -> bool {
+    id == FieldId::ConflictEditor || visual_line_count(value) > 4
+}
+
+#[cfg(test)]
+fn multiline_input_uses_input_frame(id: FieldId) -> bool {
+    id != FieldId::ConflictEditor
+}
+
 #[cfg(test)]
 fn diff_render_rows_for(diff: Option<&FileDiff>, headers_expanded: bool) -> Vec<DiffRenderRow> {
     let model = diff_render_model_for(diff, headers_expanded);
@@ -445,12 +478,37 @@ struct DiffEncodingPreferences {
     repositories: BTreeMap<String, DiffEncodingChoice>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PendingConflictResolve {
+    path: String,
+    unresolved_count: usize,
+}
+
 #[derive(Clone, Debug, Default)]
 struct ConflictWorkbenchState {
     selected_path: Option<String>,
     selected_block: usize,
     show_base: bool,
+    pending_resolve: Option<PendingConflictResolve>,
     files: BTreeMap<String, ConflictFileView>,
+}
+
+impl ConflictWorkbenchState {
+    fn request_resolve_confirmation(&mut self, path: String, unresolved_count: usize) -> bool {
+        if unresolved_count == 0 {
+            self.pending_resolve = None;
+            return false;
+        }
+        self.pending_resolve = Some(PendingConflictResolve {
+            path,
+            unresolved_count,
+        });
+        true
+    }
+
+    fn clear_pending_resolve(&mut self) {
+        self.pending_resolve = None;
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -471,6 +529,13 @@ fn sync_conflict_state_from_paths(
     state
         .files
         .retain(|path, _| conflict_paths.iter().any(|candidate| candidate == path));
+    if state
+        .pending_resolve
+        .as_ref()
+        .is_some_and(|pending| !conflict_paths.iter().any(|path| path == &pending.path))
+    {
+        state.pending_resolve = None;
+    }
 
     if conflict_paths.is_empty() {
         *state = ConflictWorkbenchState::default();
@@ -491,6 +556,7 @@ fn sync_conflict_state_from_paths(
         state.selected_path = conflict_paths.first().cloned();
         state.selected_block = 0;
         state.show_base = false;
+        state.pending_resolve = None;
     }
 }
 
@@ -2500,11 +2566,25 @@ impl RepositoryView {
         else {
             return;
         };
+        let draft = view.draft.clone();
         self.conflict_editor.move_caret_to(block.start, false);
         self.conflict_editor.move_caret_to(block.end, true);
+        self.scroll_conflict_panes_to_selected_block(&draft, block.start);
+    }
+
+    fn scroll_conflict_panes_to_selected_block(&self, text: &str, offset: usize) {
+        let line_index = line_index_for_byte_offset(text, offset);
+        let top_line = line_index.saturating_sub(4) as f32;
+        let target = point(px(0.0), px(-(top_line * 18.0)));
+        for handle_id in conflict_workbench_scroll_handle_ids() {
+            self.scroll_handle(handle_id).set_offset(target);
+        }
     }
 
     fn sync_conflict_editor_into_state(&mut self) {
+        if !conflict_result_pane_uses_editor() {
+            return;
+        }
         let Some(path) = self.conflict_workbench.selected_path.clone() else {
             return;
         };
@@ -2525,6 +2605,7 @@ impl RepositoryView {
         self.conflict_workbench.selected_path = Some(path.clone());
         self.conflict_workbench.selected_block = 0;
         self.conflict_workbench.show_base = false;
+        self.conflict_workbench.clear_pending_resolve();
         self.ensure_conflict_views_loaded();
         if self.conflict_workbench.files.contains_key(&path) {
             self.sync_conflict_editor_from_state();
@@ -2544,6 +2625,7 @@ impl RepositoryView {
         } else {
             self.conflict_workbench.selected_block = index.min(view.blocks.len() - 1);
         }
+        self.conflict_workbench.clear_pending_resolve();
         self.sync_conflict_editor_from_state();
     }
 
@@ -2574,6 +2656,19 @@ impl RepositoryView {
         self.sync_conflict_editor_from_state();
     }
 
+    fn ignore_selected_conflict_block(&mut self) {
+        self.sync_conflict_editor_into_state();
+        let Some(path) = self.conflict_workbench.selected_path.clone() else {
+            return;
+        };
+        let selected_block = self.conflict_workbench.selected_block;
+        if let Some(view) = self.conflict_workbench.files.get_mut(&path) {
+            view.ignore_block(selected_block);
+        }
+        self.conflict_workbench.clear_pending_resolve();
+        self.sync_conflict_editor_from_state();
+    }
+
     fn apply_selected_conflict_draft(&mut self, resolve: bool) {
         self.sync_conflict_editor_into_state();
         let Some(path) = self.conflict_workbench.selected_path.clone() else {
@@ -2584,10 +2679,48 @@ impl RepositoryView {
             self.last_error = Some("冲突文件详情尚未加载".into());
             return;
         };
+        let unresolved_count = view.unresolved_block_count();
         let draft = view.draft.clone();
         if !resolve {
             view.mark_applied();
+        } else if self
+            .conflict_workbench
+            .request_resolve_confirmation(path.clone(), unresolved_count)
+        {
+            self.active_dialog = Some(DialogState::ConfirmConflictResolve);
+            return;
         }
+        self.apply_conflict_draft_operation(path, draft, resolve);
+    }
+
+    fn confirm_pending_conflict_resolve(&mut self) {
+        self.sync_conflict_editor_into_state();
+        let Some(pending) = self.conflict_workbench.pending_resolve.clone() else {
+            self.active_dialog = None;
+            return;
+        };
+        let Some(draft) = self
+            .conflict_workbench
+            .files
+            .get(&pending.path)
+            .map(|view| view.draft.clone())
+        else {
+            self.conflict_workbench.clear_pending_resolve();
+            self.active_dialog = None;
+            self.last_error = Some("冲突文件详情尚未加载".into());
+            return;
+        };
+        self.conflict_workbench.clear_pending_resolve();
+        self.active_dialog = None;
+        self.apply_conflict_draft_operation(pending.path, draft, true);
+    }
+
+    fn cancel_pending_conflict_resolve(&mut self) {
+        self.conflict_workbench.clear_pending_resolve();
+        self.active_dialog = None;
+    }
+
+    fn apply_conflict_draft_operation(&mut self, path: String, draft: String, resolve: bool) {
         let path_for_op = path.clone();
         let label = if resolve {
             "冲突结果已应用并标记解决"
@@ -5445,6 +5578,9 @@ impl RepositoryView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        if id == FieldId::ConflictEditor {
+            return self.conflict_editor_input(window, cx).into_any_element();
+        }
         if Self::is_multiline_field(id) {
             return self.multi_line_input(id, window, cx).into_any_element();
         }
@@ -5556,7 +5692,7 @@ impl RepositoryView {
     ) -> impl IntoElement {
         let field = self.field(id);
         let focused = field.focus.is_focused(window);
-        let multiline_overflows = visual_line_count(&field.value) > 4;
+        let multiline_overflows = multiline_input_should_scroll(id, &field.value);
         input_frame(format!("field-{id:?}"), focused, InputFrameSize::Multiline)
             .track_focus(&field.focus)
             .key_context("TextInput")
@@ -5627,12 +5763,12 @@ impl RepositoryView {
             .py_2()
             .overflow_hidden()
             .child({
-                let scroll_id = if id == FieldId::ConflictEditor {
-                    "conflict-editor-scroll"
+                let (scroll_id, handle_id) = if id == FieldId::ConflictEditor {
+                    ("conflict-editor-scroll", CONFLICT_RESULT_SCROLL_HANDLE_ID)
                 } else {
-                    "commit-message-input-scroll"
+                    ("commit-message-input-scroll", "commit-message-input-scroll")
                 };
-                let handle = self.scroll_handle(scroll_id);
+                let handle = self.scroll_handle(handle_id);
                 let content = div()
                     .id(scroll_id)
                     .flex()
@@ -5649,6 +5785,114 @@ impl RepositoryView {
                     .into_any_element();
                 scrollable_frame_when(
                     scroll_id,
+                    ScrollbarMode::Vertical,
+                    content,
+                    handle,
+                    multiline_overflows,
+                    cx,
+                )
+            })
+    }
+
+    fn conflict_editor_input(&self, _window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let field = self.field(FieldId::ConflictEditor);
+        let multiline_overflows =
+            multiline_input_should_scroll(FieldId::ConflictEditor, &field.value);
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .track_focus(&field.focus)
+            .key_context("TextInput")
+            .on_action(cx.listener(Self::text_backspace))
+            .on_action(cx.listener(Self::text_delete))
+            .on_action(cx.listener(Self::text_left))
+            .on_action(cx.listener(Self::text_right))
+            .on_action(cx.listener(Self::text_select_left))
+            .on_action(cx.listener(Self::text_select_right))
+            .on_action(cx.listener(Self::text_select_all))
+            .on_action(cx.listener(Self::text_home))
+            .on_action(cx.listener(Self::text_end))
+            .on_action(cx.listener(Self::text_paste))
+            .on_action(cx.listener(Self::text_copy))
+            .on_action(cx.listener(Self::text_cut))
+            .on_action(cx.listener(Self::text_submit))
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _window, cx| {
+                if event.keystroke.key.as_str() == "enter"
+                    && !event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.platform
+                {
+                    this.field_mut(FieldId::ConflictEditor)
+                        .insert_text("\n", true);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    window.focus(&this.field(FieldId::ConflictEditor).focus);
+                    let position = this
+                        .field(FieldId::ConflictEditor)
+                        .index_for_mouse_position(event.position);
+                    let field = this.field_mut(FieldId::ConflictEditor);
+                    field.is_selecting = true;
+                    if event.modifiers.shift {
+                        field.select_to(position);
+                    } else {
+                        field.move_to(position);
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _event, _window, cx| {
+                    this.field_mut(FieldId::ConflictEditor).is_selecting = false;
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(move |this, _event, _window, cx| {
+                    this.field_mut(FieldId::ConflictEditor).is_selecting = false;
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(
+                cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
+                    if !this.field(FieldId::ConflictEditor).is_selecting {
+                        return;
+                    }
+                    let position = this
+                        .field(FieldId::ConflictEditor)
+                        .index_for_mouse_position(event.position);
+                    this.field_mut(FieldId::ConflictEditor).select_to(position);
+                    cx.notify();
+                }),
+            )
+            .p_2()
+            .child({
+                let handle = self.scroll_handle(CONFLICT_RESULT_SCROLL_HANDLE_ID);
+                let content = div()
+                    .id("conflict-editor-scroll")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .track_scroll(&handle)
+                    .child(MultiLineInputElement {
+                        field_id: FieldId::ConflictEditor,
+                        entity: cx.entity(),
+                    })
+                    .into_any_element();
+                scrollable_frame_when(
+                    "conflict-editor-scroll",
                     ScrollbarMode::Vertical,
                     content,
                     handle,
@@ -7258,6 +7502,9 @@ impl RepositoryView {
             DialogState::RemoteBranchOperation { kind } => self
                 .render_remote_branch_operation_dialog(kind, window, cx)
                 .into_any_element(),
+            DialogState::ConfirmConflictResolve => self
+                .render_confirm_conflict_resolve_dialog(cx)
+                .into_any_element(),
         };
 
         dialog_overlay()
@@ -7549,6 +7796,52 @@ impl RepositoryView {
                                 this.discard_change(paths.clone(), scope.clone(), target.clone())
                             }
                         },
+                        cx,
+                    )),
+            )
+    }
+
+    fn render_confirm_conflict_resolve_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let pending = self.conflict_workbench.pending_resolve.clone();
+        let unresolved_count = pending
+            .as_ref()
+            .map(|item| item.unresolved_count)
+            .unwrap_or(0);
+        let path = pending
+            .as_ref()
+            .map(|item| item.path.clone())
+            .unwrap_or_else(|| "当前冲突文件".to_string());
+
+        self.dialog_panel("仍有未处理代码块", cx)
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(ui_theme::TEXT))
+                    .child(path),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(ui_theme::TEXT_MUTED))
+                    .child(format!(
+                        "还有 {unresolved_count} 个代码块未处理，是否继续标记已解决？"
+                    )),
+            )
+            .child(danger_callout(
+                "继续后会直接把当前结果写入工作区并从索引中移除冲突标记。",
+            ))
+            .child(
+                dialog_actions()
+                    .child(self.button(
+                        "返回继续处理",
+                        !self.busy,
+                        |this, _, _| this.cancel_pending_conflict_resolve(),
+                        cx,
+                    ))
+                    .child(self.danger_button(
+                        "继续解决",
+                        !self.busy,
+                        |this, _, _| this.confirm_pending_conflict_resolve(),
                         cx,
                     )),
             )
@@ -9134,13 +9427,19 @@ mod app_tests {
             path: path.to_string(),
             kind: ConflictFileKind::Text,
             draft: "main\n".to_string(),
+            ours_text: "main\n".to_string(),
+            theirs_text: "feature\n".to_string(),
             blocks: vec![khaslana::ConflictBlock {
                 base: Some("base\n".to_string()),
                 ours: "main\n".to_string(),
                 theirs: "feature\n".to_string(),
                 start: 0,
                 end: 5,
-                resolution: None,
+                ours_start: 0,
+                ours_end: 5,
+                theirs_start: 0,
+                theirs_end: 8,
+                status: khaslana::ConflictBlockStatus::Unresolved,
                 has_manual_edits: false,
             }],
             draft_status: khaslana::ConflictDraftStatus::Dirty,
@@ -9168,6 +9467,10 @@ mod app_tests {
             selected_path: Some("a.txt".into()),
             selected_block: 1,
             show_base: true,
+            pending_resolve: Some(PendingConflictResolve {
+                path: "a.txt".into(),
+                unresolved_count: 1,
+            }),
             files: BTreeMap::from([(String::from("a.txt"), sample_conflict_view("a.txt"))]),
         };
 
@@ -9175,6 +9478,7 @@ mod app_tests {
 
         assert_eq!(mode, MainMode::Worktree);
         assert!(state.selected_path.is_none());
+        assert!(state.pending_resolve.is_none());
         assert!(state.files.is_empty());
     }
 
@@ -9185,6 +9489,10 @@ mod app_tests {
             selected_path: Some("b.txt".into()),
             selected_block: 0,
             show_base: false,
+            pending_resolve: Some(PendingConflictResolve {
+                path: "a.txt".into(),
+                unresolved_count: 1,
+            }),
             files: BTreeMap::from([
                 (String::from("a.txt"), sample_conflict_view("a.txt")),
                 (String::from("b.txt"), sample_conflict_view("b.txt")),
@@ -9199,7 +9507,70 @@ mod app_tests {
             state.files.get("b.txt").map(|view| view.draft.as_str()),
             Some("main\n")
         );
+        assert!(state.pending_resolve.is_none());
         assert!(!state.files.contains_key("a.txt"));
+    }
+
+    #[test]
+    fn conflict_state_requests_resolve_confirmation_only_for_unresolved_blocks() {
+        let mut state = ConflictWorkbenchState::default();
+        let unresolved = sample_conflict_view("a.txt");
+        assert!(state.request_resolve_confirmation(
+            unresolved.path.clone(),
+            unresolved.unresolved_block_count()
+        ));
+        assert_eq!(
+            state.pending_resolve,
+            Some(PendingConflictResolve {
+                path: "a.txt".into(),
+                unresolved_count: 1,
+            })
+        );
+
+        let mut resolved = sample_conflict_view("b.txt");
+        resolved.blocks[0].status =
+            khaslana::ConflictBlockStatus::Resolved(khaslana::ConflictBlockResolution::Ours);
+        resolved.draft = "main\n".into();
+        state.pending_resolve = None;
+
+        assert!(!state.request_resolve_confirmation(
+            resolved.path.clone(),
+            resolved.unresolved_block_count()
+        ));
+        assert!(state.pending_resolve.is_none());
+    }
+
+    #[test]
+    fn conflict_workbench_uses_distinct_scroll_handles_per_pane() {
+        let handles = conflict_workbench_scroll_handle_ids();
+        let unique = handles
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(unique.len(), 3);
+    }
+
+    #[test]
+    fn conflict_result_pane_uses_document_view_instead_of_editor() {
+        assert!(!conflict_result_pane_uses_editor());
+    }
+
+    #[test]
+    fn conflict_editor_always_uses_scrollable_multiline_viewport() {
+        assert!(multiline_input_should_scroll(
+            FieldId::ConflictEditor,
+            "short"
+        ));
+        assert!(!multiline_input_should_scroll(
+            FieldId::CommitMessage,
+            "short"
+        ));
+    }
+
+    #[test]
+    fn conflict_editor_multiline_frame_expands_to_allow_scroll_viewport() {
+        assert!(!multiline_input_uses_input_frame(FieldId::ConflictEditor));
+        assert!(multiline_input_uses_input_frame(FieldId::CommitMessage));
     }
 
     fn test_diff(lines: Vec<khaslana::DiffLine>, is_binary: bool) -> FileDiff {
