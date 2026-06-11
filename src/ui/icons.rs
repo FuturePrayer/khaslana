@@ -13,6 +13,7 @@ pub(crate) enum ToolbarIcon {
     Workflow,
     Stash,
     Submodule,
+    More,
 }
 
 impl ToolbarIcon {
@@ -29,6 +30,7 @@ impl ToolbarIcon {
             Self::Workflow => "icons/workflow.svg",
             Self::Stash => "icons/stash.svg",
             Self::Submodule => "icons/submodule.svg",
+            Self::More => "icons/more.svg",
         }
     }
 }
@@ -60,6 +62,7 @@ mod tests {
     fn toolbar_icon_paths_match_embedded_asset_root() {
         assert_eq!(ToolbarIcon::Open.path(), "icons/open.svg");
         assert_eq!(ToolbarIcon::Stash.path(), "icons/stash.svg");
+        assert_eq!(ToolbarIcon::More.path(), "icons/more.svg");
     }
 
     #[test]
@@ -76,6 +79,7 @@ mod tests {
             ToolbarIcon::Workflow,
             ToolbarIcon::Stash,
             ToolbarIcon::Submodule,
+            ToolbarIcon::More,
         ] {
             let asset_path = format!("assets/{}", icon.path());
             let svg = fs::read_to_string(&asset_path).unwrap_or_else(|err| {

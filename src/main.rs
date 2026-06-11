@@ -24,11 +24,12 @@ use std::time::{Duration, Instant};
 use async_channel::{Receiver, Sender};
 use git2::Repository;
 use gpui::{
-    App, Application, Bounds, ClipboardItem, Context, CursorStyle, FocusHandle, Focusable,
-    KeyBinding, KeyDownEvent, ListHorizontalSizingBehavior, ListSizingBehavior, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollHandle, ScrollStrategy,
-    TitlebarOptions, UTF16Selection, UniformListScrollHandle, WeakEntity, Window, WindowBounds,
-    WindowOptions, actions, canvas, div, point, prelude::*, px, rgb, rgba, size, uniform_list,
+    App, Application, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle, FocusHandle,
+    Focusable, KeyBinding, KeyDownEvent, ListHorizontalSizingBehavior, ListSizingBehavior,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollHandle,
+    ScrollStrategy, TitlebarOptions, UTF16Selection, UniformListScrollHandle, WeakEntity, Window,
+    WindowBounds, WindowOptions, actions, canvas, div, point, prelude::*, px, rgb, rgba, size,
+    uniform_list,
 };
 use khaslana::{
     BranchKind, BranchName, BranchSyncStatus, CommitFileChange, CommitInfo, CommitMessage,
@@ -119,6 +120,11 @@ const COMMIT_MENU_HEIGHT: f32 = 230.0;
 const COMMIT_UNPUSHED_MENU_HEIGHT: f32 = 265.0;
 const ENCODING_MENU_WIDTH: f32 = 170.0;
 const MENU_VIEWPORT_MARGIN: f32 = 8.0;
+const TOOLBAR_FULL_LAYOUT_MIN_WIDTH: f32 = 1540.0;
+const TOOLBAR_MORE_MENU_WIDTH: f32 = 190.0;
+const TOOLBAR_MORE_MENU_HEIGHT: f32 = 156.0;
+const TOOLBAR_MORE_BUTTON_ANCHOR_WIDTH: f32 = 76.0;
+const TOOLBAR_MORE_MENU_VERTICAL_OFFSET: f32 = 20.0;
 const MAX_CONCURRENT_REPO_LOADS: usize = 2;
 const LARGE_DIFF_CACHE_LINE_LIMIT: usize = 20_000;
 const CONFLICT_OURS_SCROLL_HANDLE_ID: &str = "conflict-ours-scroll-handle";
@@ -478,8 +484,80 @@ fn default_clone_recursive_submodules() -> bool {
     true
 }
 
-fn submodule_toolbar_enabled(repo_open: bool, busy: bool) -> bool {
-    repo_open && !busy
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolbarMoreAction {
+    Stash,
+    Submodule,
+    Credentials,
+    Proxy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolbarLayoutMode {
+    Compact,
+    Full,
+}
+
+#[derive(Clone, Debug)]
+struct ToolbarMoreMenu {
+    x: f32,
+    y: f32,
+    button_x: f32,
+    button_y: f32,
+}
+
+fn toolbar_more_action_enabled(action: ToolbarMoreAction, repo_open: bool, busy: bool) -> bool {
+    match action {
+        ToolbarMoreAction::Stash | ToolbarMoreAction::Submodule => repo_open && !busy,
+        ToolbarMoreAction::Credentials | ToolbarMoreAction::Proxy => !busy,
+    }
+}
+
+fn toolbar_layout_mode(viewport_width: f32) -> ToolbarLayoutMode {
+    if viewport_width >= TOOLBAR_FULL_LAYOUT_MIN_WIDTH {
+        ToolbarLayoutMode::Full
+    } else {
+        ToolbarLayoutMode::Compact
+    }
+}
+
+fn toolbar_more_menu_position(
+    click_x: f32,
+    click_y: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> (f32, f32) {
+    // 以“更多”按钮右侧作为锚点，根层渲染下拉菜单，避免被工具栏裁剪。
+    let anchor_right = click_x + TOOLBAR_MORE_BUTTON_ANCHOR_WIDTH / 2.0;
+    let raw_x = anchor_right - TOOLBAR_MORE_MENU_WIDTH;
+    let raw_y = click_y + TOOLBAR_MORE_MENU_VERTICAL_OFFSET;
+    let max_x =
+        (viewport_width - TOOLBAR_MORE_MENU_WIDTH - MENU_VIEWPORT_MARGIN).max(MENU_VIEWPORT_MARGIN);
+    let max_y = (viewport_height - TOOLBAR_MORE_MENU_HEIGHT - MENU_VIEWPORT_MARGIN)
+        .max(MENU_VIEWPORT_MARGIN);
+
+    (
+        raw_x.clamp(MENU_VIEWPORT_MARGIN, max_x),
+        raw_y.clamp(MENU_VIEWPORT_MARGIN, max_y),
+    )
+}
+
+fn point_in_toolbar_more_menu(x: f32, y: f32, menu: &ToolbarMoreMenu) -> bool {
+    point_in_menu(
+        x,
+        y,
+        menu.x,
+        menu.y,
+        TOOLBAR_MORE_MENU_WIDTH,
+        TOOLBAR_MORE_MENU_HEIGHT,
+    ) || point_in_menu(
+        x,
+        y,
+        menu.button_x,
+        menu.button_y,
+        TOOLBAR_MORE_BUTTON_ANCHOR_WIDTH,
+        44.0,
+    )
 }
 
 fn submodule_request_matches(
@@ -1444,6 +1522,7 @@ pub(crate) struct RepositoryView {
     pub(crate) commit_context_menu: Option<CommitContextMenu>,
     pub(crate) encoding_menu_target: Option<EncodingMenuTarget>,
     encoding_menu_closed_by_capture: Option<EncodingMenuTarget>,
+    toolbar_more_menu: Option<ToolbarMoreMenu>,
     save_credential: bool,
     credential_scope: CredentialScope,
     credential_form_mode: CredentialFormMode,
@@ -1542,6 +1621,7 @@ impl RepositoryView {
             commit_context_menu: None,
             encoding_menu_target: None,
             encoding_menu_closed_by_capture: None,
+            toolbar_more_menu: None,
             save_credential: false,
             credential_scope: CredentialScope::RemoteUrl,
             credential_form_mode: CredentialFormMode::Https,
@@ -3472,6 +3552,7 @@ impl RepositoryView {
         self.commit_context_menu = None;
         self.encoding_menu_target = None;
         self.encoding_menu_closed_by_capture = None;
+        self.toolbar_more_menu = None;
     }
 
     pub(crate) fn toggle_sidebar_section(&mut self, section: SidebarSection) {
@@ -5396,6 +5477,10 @@ impl RepositoryView {
             .commit_context_menu
             .as_ref()
             .is_some_and(|menu| point_in_menu(x, y, menu.x, menu.y, COMMIT_MENU_WIDTH, menu.height))
+            || self
+                .toolbar_more_menu
+                .as_ref()
+                .is_some_and(|menu| point_in_toolbar_more_menu(x, y, menu))
     }
 
     pub(crate) fn open_commit_context_menu(
@@ -6551,9 +6636,11 @@ impl RepositoryView {
             })
     }
 
-    fn render_toolbar(&self, _window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let repo_open = self.repo_path.is_some();
         let remote_open = !self.loading.remote() && self.current_remote().is_some();
+        let viewport_width = f32::from(window.viewport_size().width);
+        let layout_mode = toolbar_layout_mode(viewport_width);
         let pull_badge = self
             .branch_sync_status
             .as_ref()
@@ -6566,12 +6653,12 @@ impl RepositoryView {
             .id("repo-tab-bar")
             .flex()
             .items_center()
-            .justify_between()
             .gap_3()
             .px_4()
             .py_3()
             .child(
                 div()
+                    .flex_none()
                     .flex()
                     .items_center()
                     .gap_2()
@@ -6624,54 +6711,57 @@ impl RepositoryView {
                         },
                         cx,
                     ))
-                    .child(self.toolbar_button(
-                        "贮藏",
-                        ToolbarIcon::Stash,
-                        repo_open && !self.busy,
-                        |this, _, _| this.open_stash_dialog(),
-                        cx,
-                    ))
-                    .child(self.toolbar_button(
-                        "子模块",
-                        ToolbarIcon::Submodule,
-                        submodule_toolbar_enabled(repo_open, self.busy),
-                        |this, _, _| this.open_submodule_manager(),
-                        cx,
-                    ))
-                    .child(self.toolbar_button(
-                        "凭据管理",
-                        ToolbarIcon::Credentials,
-                        !self.busy,
-                        |this, _, _| this.open_credential_manager(),
-                        cx,
-                    ))
-                    .child(self.toolbar_button(
-                        "代理设置",
-                        ToolbarIcon::Proxy,
-                        !self.busy,
-                        |this, _, _| this.open_network_proxy_settings(),
-                        cx,
-                    ))
-                    .child(
-                        div()
-                            .ml_3()
-                            .px_3()
-                            .py_1()
-                            .rounded_full()
-                            .border_1()
-                            .border_color(rgb(ui_theme::GLASS_BORDER))
-                            .bg(rgba(ui_theme::GLASS_BG))
-                            .text_size(px(12.0))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(rgb(ui_theme::TEXT))
-                            .child(
-                                self.repo_path
-                                    .as_ref()
-                                    .map(|path| path.display().to_string())
-                                    .unwrap_or_else(|| "未打开仓库".into()),
+                    .when(layout_mode == ToolbarLayoutMode::Full, |this| {
+                        this.child(self.toolbar_button(
+                            "贮藏",
+                            ToolbarIcon::Stash,
+                            toolbar_more_action_enabled(
+                                ToolbarMoreAction::Stash,
+                                repo_open,
+                                self.busy,
                             ),
-                    ),
+                            |this, _, _| this.open_stash_dialog(),
+                            cx,
+                        ))
+                        .child(self.toolbar_button(
+                            "子模块",
+                            ToolbarIcon::Submodule,
+                            toolbar_more_action_enabled(
+                                ToolbarMoreAction::Submodule,
+                                repo_open,
+                                self.busy,
+                            ),
+                            |this, _, _| this.open_submodule_manager(),
+                            cx,
+                        ))
+                        .child(self.toolbar_button(
+                            "凭据管理",
+                            ToolbarIcon::Credentials,
+                            toolbar_more_action_enabled(
+                                ToolbarMoreAction::Credentials,
+                                repo_open,
+                                self.busy,
+                            ),
+                            |this, _, _| this.open_credential_manager(),
+                            cx,
+                        ))
+                        .child(self.toolbar_button(
+                            "代理设置",
+                            ToolbarIcon::Proxy,
+                            toolbar_more_action_enabled(
+                                ToolbarMoreAction::Proxy,
+                                repo_open,
+                                self.busy,
+                            ),
+                            |this, _, _| this.open_network_proxy_settings(),
+                            cx,
+                        ))
+                    })
+                    .when(layout_mode == ToolbarLayoutMode::Compact, |this| {
+                        this.child(self.render_toolbar_more_button(cx))
+                    }),
             )
+            .child(self.render_toolbar_path_pill())
             .child(
                 div()
                     .flex()
@@ -6694,6 +6784,156 @@ impl RepositoryView {
                         cx,
                     )),
             )
+    }
+
+    fn render_toolbar_path_pill(&self) -> impl IntoElement {
+        div().flex_1().min_w(px(0.0)).flex().justify_center().child(
+            div()
+                .min_w(px(0.0))
+                .max_w(px(520.0))
+                .px_3()
+                .py_1()
+                .rounded_full()
+                .border_1()
+                .border_color(rgb(ui_theme::GLASS_BORDER))
+                .bg(rgba(ui_theme::GLASS_BG))
+                .text_size(px(12.0))
+                .font_weight(gpui::FontWeight::BOLD)
+                .text_color(rgb(ui_theme::TEXT))
+                .truncate()
+                .child(
+                    self.repo_path
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "未打开仓库".into()),
+                ),
+        )
+    }
+
+    fn render_toolbar_more_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div().relative().child(self.toolbar_button_with_click_event(
+            "更多",
+            ToolbarIcon::More,
+            !self.busy,
+            |this, event: &ClickEvent, window, cx| {
+                if this.toolbar_more_menu.is_some() {
+                    this.toolbar_more_menu = None;
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+
+                let position = event.position();
+                let viewport_size = window.viewport_size();
+                let (x, y) = toolbar_more_menu_position(
+                    position.x.into(),
+                    position.y.into(),
+                    f32::from(viewport_size.width),
+                    f32::from(viewport_size.height),
+                );
+                let button_x =
+                    (f32::from(position.x) - TOOLBAR_MORE_BUTTON_ANCHOR_WIDTH / 2.0).max(0.0);
+                let button_y = (f32::from(position.y) - 22.0).max(0.0);
+                this.toolbar_more_menu = Some(ToolbarMoreMenu {
+                    x,
+                    y,
+                    button_x,
+                    button_y,
+                });
+                cx.stop_propagation();
+                cx.notify();
+            },
+            cx,
+        ))
+    }
+
+    fn render_toolbar_more_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(menu) = self.toolbar_more_menu.as_ref() else {
+            return div().into_any_element();
+        };
+        let repo_open = self.repo_path.is_some();
+        glass_menu()
+            .absolute()
+            .left(px(menu.x))
+            .top(px(menu.y))
+            .w(px(TOOLBAR_MORE_MENU_WIDTH))
+            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .child(self.toolbar_more_menu_item(
+                "贮藏",
+                ToolbarIcon::Stash,
+                toolbar_more_action_enabled(ToolbarMoreAction::Stash, repo_open, self.busy),
+                |this, _, _| this.open_stash_dialog(),
+                cx,
+            ))
+            .child(self.toolbar_more_menu_item(
+                "子模块",
+                ToolbarIcon::Submodule,
+                toolbar_more_action_enabled(ToolbarMoreAction::Submodule, repo_open, self.busy),
+                |this, _, _| this.open_submodule_manager(),
+                cx,
+            ))
+            .child(self.toolbar_more_menu_item(
+                "凭据管理",
+                ToolbarIcon::Credentials,
+                toolbar_more_action_enabled(ToolbarMoreAction::Credentials, repo_open, self.busy),
+                |this, _, _| this.open_credential_manager(),
+                cx,
+            ))
+            .child(self.toolbar_more_menu_item(
+                "代理设置",
+                ToolbarIcon::Proxy,
+                toolbar_more_action_enabled(ToolbarMoreAction::Proxy, repo_open, self.busy),
+                |this, _, _| this.open_network_proxy_settings(),
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn toolbar_more_menu_item(
+        &self,
+        label: &'static str,
+        icon: ToolbarIcon,
+        enabled: bool,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .id(format!("toolbar-more-{label}"))
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .text_size(px(12.0))
+            .text_color(rgb(if enabled {
+                ui_theme::TEXT
+            } else {
+                ui_theme::TEXT_FAINT
+            }))
+            .cursor(if enabled {
+                CursorStyle::PointingHand
+            } else {
+                CursorStyle::Arrow
+            })
+            .when(enabled, |this| {
+                this.hover(|this| this.bg(rgb(ui_theme::ACCENT_VIVID_SOFT)))
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.toolbar_more_menu = None;
+                        on_click(this, window, cx);
+                        cx.notify();
+                    }))
+            })
+            .child(ui::icons::toolbar_icon(
+                icon,
+                if enabled {
+                    ui_theme::TEXT_MUTED
+                } else {
+                    ui_theme::TEXT_FAINT
+                },
+            ))
+            .child(label)
     }
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -9815,6 +10055,11 @@ impl DerefMut for RepositoryView {
 impl Render for RepositoryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.drain_pending_events(cx);
+        if toolbar_layout_mode(f32::from(window.viewport_size().width)) == ToolbarLayoutMode::Full
+            && self.toolbar_more_menu.is_some()
+        {
+            self.toolbar_more_menu = None;
+        }
 
         app_shell_surface()
             .relative()
@@ -9834,6 +10079,7 @@ impl Render for RepositoryView {
                     || this.stash_context_menu.is_some()
                     || this.commit_context_menu.is_some()
                     || this.encoding_menu_target.is_some()
+                    || this.toolbar_more_menu.is_some()
                 {
                     let closed_encoding_menu = this.encoding_menu_target;
                     this.branch_context_menu = None;
@@ -9845,6 +10091,7 @@ impl Render for RepositoryView {
                     this.commit_context_menu = None;
                     this.encoding_menu_target = None;
                     this.encoding_menu_closed_by_capture = closed_encoding_menu;
+                    this.toolbar_more_menu = None;
                     cx.notify();
                 }
             }))
@@ -9885,6 +10132,7 @@ impl Render for RepositoryView {
             .child(self.render_commit_context_menu(cx))
             .child(self.render_tag_context_menu(cx))
             .child(self.render_stash_context_menu(cx))
+            .child(self.render_toolbar_more_menu(cx))
             .child(self.render_dialogs(window, cx))
             .child(self.render_credential_context_menu(cx))
             .child(self.render_credentials(window, cx))
@@ -10268,10 +10516,84 @@ mod app_tests {
     }
 
     #[test]
-    fn submodule_toolbar_is_enabled_for_open_repo_without_loaded_list() {
-        assert!(submodule_toolbar_enabled(true, false));
-        assert!(!submodule_toolbar_enabled(false, false));
-        assert!(!submodule_toolbar_enabled(true, true));
+    fn toolbar_more_menu_actions_keep_original_enabled_rules() {
+        assert!(toolbar_more_action_enabled(
+            ToolbarMoreAction::Stash,
+            true,
+            false
+        ));
+        assert!(!toolbar_more_action_enabled(
+            ToolbarMoreAction::Stash,
+            false,
+            false
+        ));
+        assert!(toolbar_more_action_enabled(
+            ToolbarMoreAction::Submodule,
+            true,
+            false
+        ));
+        assert!(!toolbar_more_action_enabled(
+            ToolbarMoreAction::Submodule,
+            true,
+            true
+        ));
+        assert!(toolbar_more_action_enabled(
+            ToolbarMoreAction::Credentials,
+            false,
+            false
+        ));
+        assert!(toolbar_more_action_enabled(
+            ToolbarMoreAction::Proxy,
+            false,
+            false
+        ));
+        assert!(!toolbar_more_action_enabled(
+            ToolbarMoreAction::Credentials,
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn toolbar_layout_switches_hidden_actions_by_width() {
+        assert_eq!(
+            toolbar_layout_mode(TOOLBAR_FULL_LAYOUT_MIN_WIDTH - 1.0),
+            ToolbarLayoutMode::Compact
+        );
+        assert_eq!(
+            toolbar_layout_mode(TOOLBAR_FULL_LAYOUT_MIN_WIDTH),
+            ToolbarLayoutMode::Full
+        );
+        assert_eq!(toolbar_layout_mode(1920.0), ToolbarLayoutMode::Full);
+    }
+
+    #[test]
+    fn toolbar_more_menu_position_stays_inside_viewport() {
+        assert_eq!(
+            toolbar_more_menu_position(700.0, 58.0, 1280.0, 720.0),
+            (548.0, 78.0)
+        );
+        assert_eq!(
+            toolbar_more_menu_position(1268.0, 58.0, 1280.0, 720.0),
+            (
+                1280.0 - TOOLBAR_MORE_MENU_WIDTH - MENU_VIEWPORT_MARGIN,
+                78.0
+            )
+        );
+    }
+
+    #[test]
+    fn toolbar_more_menu_hit_test_includes_menu_and_button_anchor() {
+        let menu = ToolbarMoreMenu {
+            x: 548.0,
+            y: 78.0,
+            button_x: 662.0,
+            button_y: 36.0,
+        };
+
+        assert!(point_in_toolbar_more_menu(560.0, 90.0, &menu));
+        assert!(point_in_toolbar_more_menu(700.0, 58.0, &menu));
+        assert!(!point_in_toolbar_more_menu(500.0, 58.0, &menu));
     }
 
     #[test]

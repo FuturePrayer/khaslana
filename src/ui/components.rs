@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Context, CursorStyle, Div, IntoElement, MouseButton, Render, Stateful, Window, div,
-    prelude::*, px, rgb, rgba,
+    App, ClickEvent, Context, CursorStyle, Div, IntoElement, MouseButton, Render, Stateful, Window,
+    div, prelude::*, px, rgb, rgba,
 };
 use yororen_ui::component::{IconName, icon};
 
@@ -830,6 +830,25 @@ impl RepositoryView {
         )
     }
 
+    pub(crate) fn toolbar_button_with_click_event(
+        &self,
+        label: &'static str,
+        icon: ToolbarIcon,
+        enabled: bool,
+        on_click: impl Fn(&mut Self, &ClickEvent, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        self.app_button_with_click_event(
+            label,
+            Some(icon),
+            None,
+            ButtonTone::Neutral,
+            enabled,
+            on_click,
+            cx,
+        )
+    }
+
     pub(crate) fn primary_button(
         &self,
         label: &'static str,
@@ -866,6 +885,27 @@ impl RepositoryView {
         tone: ButtonTone,
         enabled: bool,
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        self.app_button_with_click_event(
+            label,
+            icon,
+            badge,
+            tone,
+            enabled,
+            move |this, _event, window, cx| on_click(this, window, cx),
+            cx,
+        )
+    }
+
+    fn app_button_with_click_event(
+        &self,
+        label: &'static str,
+        icon: Option<ToolbarIcon>,
+        badge: Option<usize>,
+        tone: ButtonTone,
+        enabled: bool,
+        on_click: impl Fn(&mut Self, &ClickEvent, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let palette = app_button_palette(tone, enabled);
@@ -911,12 +951,12 @@ impl RepositoryView {
             .when_some(disabled_reason, |this, tooltip| {
                 this.tooltip(move |_window, cx| tooltip_text(tooltip, cx))
             })
-            .on_click(cx.listener(move |this, _event, window, cx| {
+            .on_click(cx.listener(move |this, event, window, cx| {
                 if enabled {
                     let previous_status = this.status.clone();
                     let previous_busy = this.busy;
                     let previous_feedback_count = this.feedbacks.len();
-                    on_click(this, window, cx);
+                    on_click(this, event, window, cx);
                     if this.feedbacks.len() == previous_feedback_count {
                         if let Some(error) = this.last_error.clone() {
                             this.notify_error(error, cx);
