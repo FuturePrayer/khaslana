@@ -1,8 +1,8 @@
-use std::path::Path;
+use std::{ops::Range, path::Path, sync::Arc};
 
 use gpui::{
-    Context, IntoElement, MouseButton, MouseDownEvent, ScrollHandle, Window, div, prelude::*, px,
-    rgb,
+    Context, IntoElement, ListHorizontalSizingBehavior, ListSizingBehavior, MouseButton,
+    MouseDownEvent, Window, div, prelude::*, px, rgb, uniform_list,
 };
 use khaslana::{
     ConflictBlock, ConflictBlockResolution, ConflictBlockStatus, ConflictFileKind,
@@ -12,7 +12,7 @@ use khaslana::{
 use crate::{
     MainMode, RepositoryView,
     ui::{components::app_panel, theme as ui_theme},
-    ui_helpers::{ScrollbarMode, scrollable_frame_when},
+    ui_helpers::{ScrollbarMode, scrollable_uniform_frame},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +76,82 @@ fn conflict_byte_range_to_lines(content: &str, start: usize, end: usize) -> std:
         end_line += 1;
     }
     start_line..end_line
+}
+
+#[derive(Clone, Debug)]
+struct ConflictDocumentLineModel {
+    content: Arc<str>,
+    ranges: Arc<[Range<usize>]>,
+    owners: Arc<[Option<usize>]>,
+}
+
+#[derive(Clone, Debug)]
+struct ConflictPlainLineModel {
+    content: Arc<str>,
+    ranges: Arc<[Range<usize>]>,
+}
+
+impl ConflictPlainLineModel {
+    fn new(content: &str) -> Self {
+        Self {
+            content: Arc::from(content),
+            ranges: Arc::from(conflict_document_line_ranges(content)),
+        }
+    }
+
+    fn line_count(&self) -> usize {
+        self.ranges.len().max(1)
+    }
+
+    fn line_text(&self, index: usize) -> &str {
+        let Some(range) = self.ranges.get(index) else {
+            return "";
+        };
+        &self.content[range.clone()]
+    }
+}
+
+impl ConflictDocumentLineModel {
+    fn new(content: &str, pane: ConflictDocumentPane, view: &ConflictFileView) -> Self {
+        let ranges = conflict_document_line_ranges(content);
+        let owners = conflict_document_line_owners(content, pane, view, ranges.len());
+        Self {
+            content: Arc::from(content),
+            ranges: Arc::from(ranges),
+            owners: Arc::from(owners),
+        }
+    }
+
+    fn line_count(&self) -> usize {
+        self.ranges.len().max(1)
+    }
+
+    fn line_text(&self, index: usize) -> &str {
+        let Some(range) = self.ranges.get(index) else {
+            return "";
+        };
+        &self.content[range.clone()]
+    }
+
+    fn owner_at(&self, index: usize) -> Option<usize> {
+        self.owners.get(index).copied().flatten()
+    }
+}
+
+fn conflict_document_line_ranges(content: &str) -> Vec<Range<usize>> {
+    if content.is_empty() {
+        return vec![0..0];
+    }
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    for (index, ch) in content.char_indices() {
+        if ch == '\n' {
+            ranges.push(start..index);
+            start = index + ch.len_utf8();
+        }
+    }
+    ranges.push(start..content.len());
+    ranges
 }
 
 fn conflict_line_colors(
@@ -612,7 +688,6 @@ impl RepositoryView {
                             .child(self.render_conflict_plain_text(
                                 "conflict-base-scroll",
                                 block.and_then(|block| block.base.as_deref()).unwrap_or(""),
-                                None,
                                 cx,
                             )),
                     )
@@ -770,16 +845,12 @@ impl RepositoryView {
         selected_block: usize,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let handle = self.scroll_handle(handle_id);
-        let lines = if content.is_empty() {
-            vec![String::new()]
-        } else {
-            content
-                .split('\n')
-                .map(|line| line.to_string())
-                .collect::<Vec<_>>()
-        };
-        let line_owners = conflict_document_line_owners(content, pane, view, lines.len());
+        let handle = self.uniform_scroll_handle(handle_id);
+        let list_handle = handle.clone();
+        let model = Arc::new(ConflictDocumentLineModel::new(content, pane, view));
+        let row_count = model.line_count();
+        let model_for_list = model.clone();
+        let blocks = Arc::<[ConflictBlock]>::from(view.blocks.clone());
         let content = div()
             .id(scroll_id)
             .flex()
@@ -788,31 +859,49 @@ impl RepositoryView {
             .min_w(px(0.0))
             .min_h(px(0.0))
             .overflow_y_scroll()
-            .track_scroll(&handle)
             .p_3()
             .font_family("Consolas, monospace")
             .text_size(px(12.0))
             .bg(rgb(ui_theme::SURFACE))
-            .children(lines.into_iter().enumerate().map(|(line_index, line)| {
-                let block = line_owners[line_index].and_then(|index| view.blocks.get(index));
-                let active = line_owners[line_index] == Some(selected_block);
-                let (bg, fg) = block
-                    .map(|block| conflict_line_colors(pane, block, active))
-                    .unwrap_or((ui_theme::SURFACE, ui_theme::TEXT));
-                div()
-                    .min_h(px(18.0))
-                    .px_1()
-                    .rounded_sm()
-                    .bg(rgb(bg))
-                    .text_color(rgb(fg))
-                    .child(if line.is_empty() {
-                        " ".to_string()
-                    } else {
-                        line
-                    })
-            }))
+            .child(
+                uniform_list(
+                    scroll_id,
+                    row_count,
+                    cx.processor(move |_this, range: Range<usize>, _window, _cx| {
+                        range
+                            .map(|line_index| {
+                                let owner = model_for_list.owner_at(line_index);
+                                let block = owner.and_then(|index| blocks.get(index));
+                                let active = owner == Some(selected_block);
+                                let (bg, fg) = block
+                                    .map(|block| conflict_line_colors(pane, block, active))
+                                    .unwrap_or((ui_theme::SURFACE, ui_theme::TEXT));
+                                let line = model_for_list.line_text(line_index);
+                                div()
+                                    .min_h(px(18.0))
+                                    .px_1()
+                                    .rounded_sm()
+                                    .bg(rgb(bg))
+                                    .text_color(rgb(fg))
+                                    .child(if line.is_empty() {
+                                        " ".to_string()
+                                    } else {
+                                        line.to_string()
+                                    })
+                                    .into_any_element()
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(&list_handle)
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+                .flex_1()
+                .min_w(px(0.0))
+                .min_h(px(0.0)),
+            )
             .into_any_element();
-        scrollable_frame_when(
+        scrollable_uniform_frame(
             scroll_id,
             ScrollbarMode::Vertical,
             content,
@@ -826,18 +915,13 @@ impl RepositoryView {
         &self,
         scroll_id: &'static str,
         content: &str,
-        shared_handle: Option<ScrollHandle>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let handle = shared_handle.unwrap_or_else(|| self.scroll_handle(scroll_id));
-        let lines = if content.is_empty() {
-            vec![String::new()]
-        } else {
-            content
-                .split('\n')
-                .map(|line| line.to_string())
-                .collect::<Vec<_>>()
-        };
+        let handle = self.uniform_scroll_handle(scroll_id);
+        let list_handle = handle.clone();
+        let model = Arc::new(ConflictPlainLineModel::new(content));
+        let row_count = model.line_count();
+        let model_for_list = model.clone();
         let content = div()
             .id(scroll_id)
             .flex()
@@ -846,23 +930,40 @@ impl RepositoryView {
             .min_w(px(0.0))
             .min_h(px(0.0))
             .overflow_y_scroll()
-            .track_scroll(&handle)
             .p_3()
             .font_family("Consolas, monospace")
             .text_size(px(12.0))
             .bg(rgb(ui_theme::SURFACE))
-            .children(lines.into_iter().map(|line| {
-                div()
-                    .min_h(px(18.0))
-                    .text_color(rgb(ui_theme::TEXT))
-                    .child(if line.is_empty() {
-                        " ".to_string()
-                    } else {
-                        line
-                    })
-            }))
+            .child(
+                uniform_list(
+                    scroll_id,
+                    row_count,
+                    cx.processor(move |_this, range: Range<usize>, _window, _cx| {
+                        range
+                            .map(|line_index| {
+                                let line = model_for_list.line_text(line_index);
+                                div()
+                                    .min_h(px(18.0))
+                                    .text_color(rgb(ui_theme::TEXT))
+                                    .child(if line.is_empty() {
+                                        " ".to_string()
+                                    } else {
+                                        line.to_string()
+                                    })
+                                    .into_any_element()
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(&list_handle)
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+                .flex_1()
+                .min_w(px(0.0))
+                .min_h(px(0.0)),
+            )
             .into_any_element();
-        scrollable_frame_when(
+        scrollable_uniform_frame(
             scroll_id,
             ScrollbarMode::Vertical,
             content,
@@ -1105,5 +1206,52 @@ mod tests {
         );
 
         assert_eq!(owners, vec![None, Some(0), None]);
+    }
+
+    #[test]
+    fn conflict_document_line_model_preserves_empty_and_trailing_lines() {
+        let view = ConflictFileView {
+            path: "file.txt".into(),
+            kind: ConflictFileKind::Text,
+            draft: "before\n\nresult\n".into(),
+            ours_text: "before\n\nours\n".into(),
+            theirs_text: "before\n\ntheirs\n".into(),
+            blocks: vec![ConflictBlock {
+                base: Some("before\n\nbase\n".into()),
+                ours: "ours\n".into(),
+                theirs: "theirs\n".into(),
+                start: 8,
+                end: 15,
+                ours_start: 8,
+                ours_end: 13,
+                theirs_start: 8,
+                theirs_end: 15,
+                status: ConflictBlockStatus::Unresolved,
+                has_manual_edits: false,
+            }],
+            draft_status: ConflictDraftStatus::Dirty,
+            fallback_reason: None,
+        };
+
+        let model =
+            ConflictDocumentLineModel::new(&view.draft, ConflictDocumentPane::Result, &view);
+
+        assert_eq!(model.line_count(), 4);
+        assert_eq!(model.line_text(0), "before");
+        assert_eq!(model.line_text(1), "");
+        assert_eq!(model.line_text(2), "result");
+        assert_eq!(model.line_text(3), "");
+        assert_eq!(model.owner_at(2), Some(0));
+    }
+
+    #[test]
+    fn conflict_plain_line_model_preserves_empty_and_trailing_lines() {
+        let model = ConflictPlainLineModel::new("base\n\nend\n");
+
+        assert_eq!(model.line_count(), 4);
+        assert_eq!(model.line_text(0), "base");
+        assert_eq!(model.line_text(1), "");
+        assert_eq!(model.line_text(2), "end");
+        assert_eq!(model.line_text(3), "");
     }
 }

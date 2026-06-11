@@ -26,9 +26,9 @@ use git2::Repository;
 use gpui::{
     App, Application, Bounds, ClipboardItem, Context, CursorStyle, FocusHandle, Focusable,
     KeyBinding, KeyDownEvent, ListHorizontalSizingBehavior, ListSizingBehavior, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollHandle, TitlebarOptions,
-    UTF16Selection, UniformListScrollHandle, WeakEntity, Window, WindowBounds, WindowOptions,
-    actions, canvas, div, point, prelude::*, px, rgb, rgba, size, uniform_list,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollHandle, ScrollStrategy,
+    TitlebarOptions, UTF16Selection, UniformListScrollHandle, WeakEntity, Window, WindowBounds,
+    WindowOptions, actions, canvas, div, point, prelude::*, px, rgb, rgba, size, uniform_list,
 };
 use khaslana::{
     BranchKind, BranchName, BranchSyncStatus, CommitFileChange, CommitInfo, CommitMessage,
@@ -104,6 +104,8 @@ const MAX_HISTORY_FILES_WIDTH: f32 = 720.0;
 const HISTORY_PAGE_SIZE: usize = 50;
 pub(crate) const BRANCH_MENU_WIDTH: f32 = 190.0;
 pub(crate) const BRANCH_MENU_HEIGHT: f32 = 340.0;
+pub(crate) const REMOTE_MENU_WIDTH: f32 = 170.0;
+pub(crate) const REMOTE_MENU_HEIGHT: f32 = 80.0;
 const CHANGE_MENU_WIDTH: f32 = 210.0;
 const CHANGE_MENU_HEIGHT: f32 = 255.0;
 const CREDENTIAL_MENU_WIDTH: f32 = 180.0;
@@ -235,6 +237,13 @@ pub(crate) struct BranchContextMenu {
     pub(crate) branch: String,
     pub(crate) kind: BranchKind,
     pub(crate) is_head: bool,
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RemoteContextMenu {
+    pub(crate) remote: String,
     pub(crate) x: f32,
     pub(crate) y: f32,
 }
@@ -468,6 +477,10 @@ fn conflict_workbench_scroll_handle_ids() -> [&'static str; 3] {
 
 fn conflict_result_pane_uses_editor() -> bool {
     false
+}
+
+fn conflict_editor_should_store_draft(kind: ConflictFileKind) -> bool {
+    kind == ConflictFileKind::Text && conflict_result_pane_uses_editor()
 }
 
 fn multiline_input_should_scroll(id: FieldId, value: &str) -> bool {
@@ -1347,6 +1360,7 @@ fn started_message_for_label(label: &'static str) -> &'static str {
         "远端已更新" => "正在更新远端",
         "远端已新增" => "正在新增远端",
         "远端已删除" => "正在删除远端",
+        "远端已刷新" => "正在刷新远端",
         "冲突已标记为解决" => "正在标记冲突解决",
         _ => label,
     }
@@ -1388,6 +1402,7 @@ pub(crate) struct RepositoryView {
     progress_phase: u64,
     pub(crate) active_dialog: Option<DialogState>,
     pub(crate) branch_context_menu: Option<BranchContextMenu>,
+    pub(crate) remote_context_menu: Option<RemoteContextMenu>,
     change_context_menu: Option<ChangeContextMenu>,
     credential_context_menu: Option<CredentialContextMenu>,
     pub(crate) tag_context_menu: Option<TagContextMenu>,
@@ -1468,6 +1483,7 @@ impl RepositoryView {
             progress_phase: 0,
             active_dialog: None,
             branch_context_menu: None,
+            remote_context_menu: None,
             change_context_menu: None,
             credential_context_menu: None,
             tag_context_menu: None,
@@ -2677,10 +2693,37 @@ impl RepositoryView {
             self.conflict_editor.clear();
             return;
         }
+        if !conflict_editor_should_store_draft(kind) {
+            self.conflict_editor.clear();
+            self.scroll_conflict_panes_to_selected_block(
+                &draft,
+                self.selected_conflict_block_start(),
+            );
+            return;
+        }
         if self.conflict_editor.value != draft {
             self.conflict_editor.set_value(draft);
         }
         self.highlight_selected_conflict_block();
+    }
+
+    fn selected_conflict_block_start(&self) -> usize {
+        let Some(path) = self.conflict_workbench.selected_path.as_ref() else {
+            return 0;
+        };
+        self.conflict_workbench
+            .files
+            .get(path)
+            .and_then(|view| {
+                view.blocks
+                    .get(
+                        self.conflict_workbench
+                            .selected_block
+                            .min(view.blocks.len().saturating_sub(1)),
+                    )
+                    .map(|block| block.start)
+            })
+            .unwrap_or(0)
     }
 
     fn highlight_selected_conflict_block(&mut self) {
@@ -2702,17 +2745,18 @@ impl RepositoryView {
             return;
         };
         let draft = view.draft.clone();
-        self.conflict_editor.move_caret_to(block.start, false);
-        self.conflict_editor.move_caret_to(block.end, true);
+        if conflict_editor_should_store_draft(view.kind) {
+            self.conflict_editor.move_caret_to(block.start, false);
+            self.conflict_editor.move_caret_to(block.end, true);
+        }
         self.scroll_conflict_panes_to_selected_block(&draft, block.start);
     }
 
     fn scroll_conflict_panes_to_selected_block(&self, text: &str, offset: usize) {
         let line_index = line_index_for_byte_offset(text, offset);
-        let top_line = line_index.saturating_sub(4) as f32;
-        let target = point(px(0.0), px(-(top_line * 18.0)));
         for handle_id in conflict_workbench_scroll_handle_ids() {
-            self.scroll_handle(handle_id).set_offset(target);
+            self.uniform_scroll_handle(handle_id)
+                .scroll_to_item_strict_with_offset(line_index, ScrollStrategy::Top, 4);
         }
     }
 
@@ -3270,6 +3314,7 @@ impl RepositoryView {
         self.remote_branch_operation.branch_dropdown_open = false;
         self.remote_branch_search.clear();
         self.branch_context_menu = None;
+        self.remote_context_menu = None;
         self.change_context_menu = None;
         self.credential_context_menu = None;
         self.tag_context_menu = None;
@@ -3839,12 +3884,6 @@ impl RepositoryView {
             self.last_error = Some("请先打开一个仓库".into());
             return;
         };
-        if let Some(remote) = self.current_remote() {
-            self.with_repo("已刷新", move |service, repo| {
-                service.refresh(repo, Some(&RemoteName::new(remote)))
-            });
-            return;
-        }
         self.queue_repository_load(tab_id, path, "正在刷新仓库", "已刷新", LoadPriority::User);
     }
 
@@ -4363,6 +4402,14 @@ impl RepositoryView {
         });
     }
 
+    pub(crate) fn refresh_remote(&mut self, remote: String) {
+        self.remote_context_menu = None;
+        self.selected_remote = Some(remote.clone());
+        self.with_repo("远端已刷新", move |service, repo| {
+            service.refresh(repo, Some(&RemoteName::new(remote)))
+        });
+    }
+
     fn open_remote_branch_operation(&mut self, kind: RemoteBranchOperationKind) {
         let Some(snapshot) = self.snapshot.as_ref() else {
             self.last_error = Some("请先打开一个仓库".into());
@@ -4800,6 +4847,7 @@ impl RepositoryView {
         }
         self.encoding_menu_closed_by_capture = None;
         self.branch_context_menu = None;
+        self.remote_context_menu = None;
         self.change_context_menu = None;
         self.tag_context_menu = None;
         self.stash_context_menu = None;
@@ -4976,6 +5024,7 @@ impl RepositoryView {
     ) {
         self.ensure_change_context_selection(path.clone(), scope.clone());
         self.branch_context_menu = None;
+        self.remote_context_menu = None;
         self.tag_context_menu = None;
         self.stash_context_menu = None;
         self.commit_context_menu = None;
@@ -4990,6 +5039,8 @@ impl RepositoryView {
         let y: f32 = event.position.y.into();
         self.branch_context_menu.as_ref().is_some_and(|menu| {
             point_in_menu(x, y, menu.x, menu.y, BRANCH_MENU_WIDTH, BRANCH_MENU_HEIGHT)
+        }) || self.remote_context_menu.as_ref().is_some_and(|menu| {
+            point_in_menu(x, y, menu.x, menu.y, REMOTE_MENU_WIDTH, REMOTE_MENU_HEIGHT)
         }) || self.change_context_menu.as_ref().is_some_and(|menu| {
             point_in_menu(x, y, menu.x, menu.y, CHANGE_MENU_WIDTH, CHANGE_MENU_HEIGHT)
         }) || self.credential_context_menu.as_ref().is_some_and(|menu| {
@@ -9159,6 +9210,7 @@ impl Render for RepositoryView {
                     return;
                 }
                 if this.branch_context_menu.is_some()
+                    || this.remote_context_menu.is_some()
                     || this.change_context_menu.is_some()
                     || this.credential_context_menu.is_some()
                     || this.tag_context_menu.is_some()
@@ -9168,6 +9220,7 @@ impl Render for RepositoryView {
                 {
                     let closed_encoding_menu = this.encoding_menu_target;
                     this.branch_context_menu = None;
+                    this.remote_context_menu = None;
                     this.change_context_menu = None;
                     this.credential_context_menu = None;
                     this.tag_context_menu = None;
@@ -9210,6 +9263,7 @@ impl Render for RepositoryView {
             )
             .child(self.render_status())
             .child(self.render_branch_context_menu(cx))
+            .child(self.render_remote_context_menu(cx))
             .child(self.render_change_context_menu(cx))
             .child(self.render_commit_context_menu(cx))
             .child(self.render_tag_context_menu(cx))
@@ -10015,6 +10069,11 @@ mod app_tests {
     #[test]
     fn conflict_result_pane_uses_document_view_instead_of_editor() {
         assert!(!conflict_result_pane_uses_editor());
+    }
+
+    #[test]
+    fn conflict_editor_does_not_store_text_conflict_draft_when_result_is_document() {
+        assert!(!conflict_editor_should_store_draft(ConflictFileKind::Text));
     }
 
     #[test]

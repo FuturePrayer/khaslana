@@ -4,10 +4,11 @@ use gpui::{
 use khaslana::{BranchInfo, BranchKind, RemoteInfo, StashInfo, TagInfo};
 
 use crate::{
-    BRANCH_MENU_HEIGHT, BRANCH_MENU_WIDTH, BranchContextMenu, NAV_ROW_HEIGHT, RepositoryView,
-    STASH_MENU_HEIGHT, STASH_MENU_WIDTH, SidebarSection, StashContextMenu, TAG_MENU_HEIGHT,
-    TAG_MENU_WIDTH, TagContextMenu, clamped_menu_position, context_menu_item,
-    context_menu_item_with_context, menu_separator, nav_list, nav_row, placeholder_row,
+    BRANCH_MENU_HEIGHT, BRANCH_MENU_WIDTH, BranchContextMenu, NAV_ROW_HEIGHT, REMOTE_MENU_HEIGHT,
+    REMOTE_MENU_WIDTH, RemoteContextMenu, RepositoryView, STASH_MENU_HEIGHT, STASH_MENU_WIDTH,
+    SidebarSection, StashContextMenu, TAG_MENU_HEIGHT, TAG_MENU_WIDTH, TagContextMenu,
+    clamped_menu_position, context_menu_item, context_menu_item_with_context, menu_separator,
+    nav_list, nav_row, placeholder_row,
     ui::{components::glass_menu, theme as ui_theme},
 };
 
@@ -242,6 +243,7 @@ impl RepositoryView {
     fn remote_row(&self, remote: RemoteInfo, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.current_remote().as_deref() == Some(remote.name.as_str());
         let name = remote.name.clone();
+        let right_click_name = remote.name.clone();
 
         nav_row(format!("remote-{}", remote.name), false, selected)
             .hover(move |this| {
@@ -286,6 +288,50 @@ impl RepositoryView {
                 }
                 cx.notify();
             }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    this.selected_remote = Some(right_click_name.clone());
+                    this.active_dialog = None;
+                    this.branch_context_menu = None;
+                    this.change_context_menu = None;
+                    this.credential_context_menu = None;
+                    this.tag_context_menu = None;
+                    this.stash_context_menu = None;
+                    this.commit_context_menu = None;
+                    this.encoding_menu_target = None;
+                    let (x, y) =
+                        clamped_menu_position(event, window, REMOTE_MENU_WIDTH, REMOTE_MENU_HEIGHT);
+                    this.remote_context_menu = Some(RemoteContextMenu {
+                        remote: right_click_name.clone(),
+                        x,
+                        y,
+                    });
+                    cx.notify();
+                }),
+            )
+    }
+
+    pub(crate) fn render_remote_context_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(menu) = self.remote_context_menu.clone() else {
+            return div().into_any_element();
+        };
+
+        glass_menu()
+            .absolute()
+            .left(px(menu.x))
+            .top(px(menu.y))
+            .w(px(REMOTE_MENU_WIDTH))
+            .child(context_menu_item(
+                "刷新",
+                !self.busy,
+                {
+                    let remote = menu.remote.clone();
+                    move |this| this.refresh_remote(remote.clone())
+                },
+                cx,
+            ))
+            .into_any_element()
     }
 
     fn tag_row(&self, tag: TagInfo, cx: &mut Context<Self>) -> impl IntoElement {
