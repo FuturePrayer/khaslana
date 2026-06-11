@@ -9,6 +9,10 @@ use crate::{
     BranchName, GitError, GitService, RemoteName, RepositorySnapshot, Result, WorktreeChange,
 };
 
+mod expressions;
+
+use expressions::evaluate_workflow_expression;
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowDefinition {
@@ -674,6 +678,17 @@ impl<'a, 'repo> WorkflowResolver<'a, 'repo> {
         expression: &str,
         stack: &mut BTreeSet<String>,
     ) -> Result<String> {
+        evaluate_workflow_expression(expression, |primary| {
+            self.resolve_primary_expression(primary, stack)
+        })?
+        .into_string(expression)
+    }
+
+    fn resolve_primary_expression(
+        &mut self,
+        expression: &str,
+        stack: &mut BTreeSet<String>,
+    ) -> Result<String> {
         if let Some(format) = expression.strip_prefix("date:") {
             return Ok(self.context.started_at.format(format).to_string());
         }
@@ -988,6 +1003,88 @@ mod tests {
             .unwrap();
 
         assert_eq!(default, "feature/main");
+    }
+
+    #[test]
+    fn workflow_methods_can_build_branch_names_from_variables() {
+        let (dir, repo, service) = init_repo();
+        write_file(dir.path(), "README.md", "hello\n");
+        commit_all(&repo, "initial");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              vars: {
+                rawBranch: "feature/User Story_123",
+                target: "tmp/${rawBranch | split:'/' | last | slug | truncate:12}",
+              },
+              steps: [{ op: "createBranch", name: "${target}" }],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let preview = WorkflowExecutor::new(&service)
+            .preview(&repo, &definition, &WorkflowRunOptions::default())
+            .unwrap();
+
+        assert_eq!(
+            preview.steps[0].summary,
+            "基于 当前 HEAD 创建分支 tmp/user-story-1并切换"
+        );
+    }
+
+    #[test]
+    fn workflow_methods_work_in_input_defaults() {
+        let (dir, repo, service) = init_repo();
+        write_file(dir.path(), "README.md", "hello\n");
+        commit_all(&repo, "initial");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              inputs: {
+                target: { default: "feature/${git.initialBranch | split:'/' | last | slug}" },
+              },
+              steps: [{ op: "assertBranch", branch: "${target}" }],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let default = WorkflowExecutor::new(&service)
+            .resolve_template(
+                &repo,
+                &definition,
+                &WorkflowRunOptions::default(),
+                definition.inputs["target"].default.as_deref().unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(default, "feature/main");
+    }
+
+    #[test]
+    fn final_array_workflow_expression_is_rejected() {
+        let (dir, repo, service) = init_repo();
+        write_file(dir.path(), "README.md", "hello\n");
+        commit_all(&repo, "initial");
+        let definition = parse_workflow_json5(
+            r#"
+            {
+              version: 1,
+              vars: { target: "${git.initialBranch | split:'/'}" },
+              steps: [{ op: "createBranch", name: "${target}" }],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = WorkflowExecutor::new(&service)
+            .preview(&repo, &definition, &WorkflowRunOptions::default())
+            .unwrap_err();
+
+        assert!(err.to_string().contains("最终结果是数组"));
     }
 
     #[test]
