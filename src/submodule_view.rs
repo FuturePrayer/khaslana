@@ -370,12 +370,47 @@ impl RepositoryView {
             .text_size(px(11.0))
             .font_weight(gpui::FontWeight::BOLD)
             .text_color(rgb(ui_theme::TEXT_MUTED))
-            .child(div().flex_1().min_w(px(0.0)).child("路径"))
-            .child(div().flex_none().child("状态"))
-            .child(div().flex_none().w(px(86.0)).child("目标"))
-            .child(div().flex_none().w(px(86.0)).child("当前"))
-            .child(div().flex_1().min_w(px(0.0)).child("URL"))
-            .child(div().flex_none().w(px(92.0)).child("操作"))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex()
+                    .justify_center()
+                    .child("路径"),
+            )
+            .child(div().flex_none().flex().justify_center().child("状态"))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(86.0))
+                    .flex()
+                    .justify_center()
+                    .child("目标"),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(86.0))
+                    .flex()
+                    .justify_center()
+                    .child("当前"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex()
+                    .justify_center()
+                    .child("URL"),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(92.0))
+                    .flex()
+                    .justify_center()
+                    .child("操作"),
+            )
     }
 
     fn submodule_dialog_row(
