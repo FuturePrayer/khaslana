@@ -227,6 +227,8 @@ cargo run
 cargo build
 ```
 
+Windows MSVC target 通过 `.cargo/config.toml` 启用静态 CRT 链接，发布 `khaslana.exe` 时优先避免依赖目标机器已安装 VC++ 运行库。
+
 ## 7. 测试现状
 
 项目已有较多单元测试，重点覆盖：

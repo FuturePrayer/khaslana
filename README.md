@@ -78,6 +78,8 @@ cargo run
 cargo build --release
 ```
 
+Windows 下项目会通过 `.cargo/config.toml` 为 `x86_64-pc-windows-msvc` 启用静态 CRT 链接，发布给未安装 VC++ 运行库的机器时可减少 `VCRUNTIME140_1.dll` 缺失问题。
+
 构建后的主程序位于：
 
 ```text
