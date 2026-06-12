@@ -1,31 +1,38 @@
-use std::thread;
+use std::{collections::BTreeMap, thread};
 
 use git2::Repository;
 use gpui::{Context, CursorStyle, IntoElement, MouseButton, div, prelude::*, px, rgb, rgba};
-use khaslana::SubmoduleInfo;
+use khaslana::{SubmoduleInfo, SubmoduleRemoteSyncStatus, SubmoduleState};
 
 use crate::{
     DialogState, RepositoryView, ScrollbarMode, UiEvent, placeholder_row, scrollable_frame_when,
-    send_ui_event,
-    ui::{components::status_pill, theme as ui_theme},
+    send_ui_event, ui::theme as ui_theme,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SubmoduleDialogState {
     pub(crate) items: Vec<SubmoduleInfo>,
+    pub(crate) remote_statuses: BTreeMap<String, SubmoduleRemoteSyncStatus>,
     pub(crate) loading: bool,
+    pub(crate) remote_loading: bool,
     pub(crate) loaded: bool,
     pub(crate) request_id: u64,
+    pub(crate) remote_request_id: u64,
     pub(crate) error: Option<String>,
+    pub(crate) remote_error: Option<String>,
 }
 
 impl SubmoduleDialogState {
     pub(crate) fn invalidate(&mut self) {
         self.items.clear();
+        self.remote_statuses.clear();
         self.loading = false;
+        self.remote_loading = false;
         self.loaded = false;
         self.request_id = self.request_id.wrapping_add(1).max(1);
+        self.remote_request_id = self.remote_request_id.wrapping_add(1).max(1);
         self.error = None;
+        self.remote_error = None;
     }
 }
 
@@ -36,6 +43,15 @@ pub(crate) fn submodule_request_matches(
     request_id: u64,
 ) -> bool {
     load_id == repository_load_id && request_id == state.request_id
+}
+
+pub(crate) fn submodule_remote_request_matches(
+    state: &SubmoduleDialogState,
+    repository_load_id: u64,
+    load_id: u64,
+    request_id: u64,
+) -> bool {
+    load_id == repository_load_id && request_id == state.remote_request_id
 }
 
 pub(crate) fn operation_refreshes_submodule_dialog(message: &str) -> bool {
@@ -74,8 +90,12 @@ impl RepositoryView {
         let request_id = {
             let state = &mut self.submodule_dialog;
             state.request_id = state.request_id.wrapping_add(1).max(1);
+            state.remote_request_id = state.remote_request_id.wrapping_add(1).max(1);
             state.loading = true;
+            state.remote_loading = false;
+            state.remote_statuses.clear();
             state.error = None;
+            state.remote_error = None;
             state.request_id
         };
         self.status = "正在加载子模块列表".into();
@@ -98,6 +118,62 @@ impl RepositoryView {
                 Err(err) => send_ui_event(
                     &tx,
                     UiEvent::SubmodulesLoadFailed {
+                        tab_id,
+                        error: err.to_string(),
+                        load_id,
+                        request_id,
+                    },
+                ),
+            }
+        });
+    }
+
+    pub(crate) fn load_submodule_remote_statuses(&mut self) {
+        let Some(tab_id) = self.active_tab_id() else {
+            return;
+        };
+        let Some(repo_path) = self.repo_path.clone() else {
+            return;
+        };
+        if !self.submodule_dialog.loaded || self.submodule_dialog.items.is_empty() {
+            return;
+        }
+
+        let service = self.service_for_tab(tab_id);
+        let tx = self.tx.clone();
+        let load_id = self.repository_load_id;
+        let request_id = {
+            let state = &mut self.submodule_dialog;
+            state.remote_request_id = state.remote_request_id.wrapping_add(1).max(1);
+            state.remote_loading = true;
+            state.remote_error = None;
+            state.remote_statuses = state
+                .items
+                .iter()
+                .map(|module| (module.name.clone(), SubmoduleRemoteSyncStatus::Checking))
+                .collect();
+            state.remote_request_id
+        };
+        self.status = "正在检查子模块远端状态".into();
+
+        thread::spawn(move || {
+            let result = (|| -> khaslana::Result<Vec<(String, SubmoduleRemoteSyncStatus)>> {
+                let repo = Repository::open(repo_path)?;
+                service.submodule_remote_sync_statuses(&repo)
+            })();
+            match result {
+                Ok(statuses) => send_ui_event(
+                    &tx,
+                    UiEvent::SubmoduleRemoteStatusesLoaded {
+                        tab_id,
+                        statuses,
+                        load_id,
+                        request_id,
+                    },
+                ),
+                Err(err) => send_ui_event(
+                    &tx,
+                    UiEvent::SubmoduleRemoteStatusesLoadFailed {
                         tab_id,
                         error: err.to_string(),
                         load_id,
@@ -219,9 +295,11 @@ impl RepositoryView {
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::TEXT_MUTED))
-                    .child(
-                        "列表仅在打开弹窗时读取；同步记录版本会检出父仓库记录的提交，更新到远端最新会修改父仓库子模块指针，需要后续提交该变更。",
-                    ),
+                    .child(if state.remote_loading {
+                        "列表仅在打开弹窗时读取；正在后台检查子模块相对远端分支的超前/落后状态。"
+                    } else {
+                        "列表仅在打开弹窗时读取；同步记录版本会检出父仓库记录的提交，更新到远端最新会修改父仓库子模块指针，需要后续提交该变更。"
+                    }),
             )
             .child(
                 div()
@@ -293,7 +371,7 @@ impl RepositoryView {
             .font_weight(gpui::FontWeight::BOLD)
             .text_color(rgb(ui_theme::TEXT_MUTED))
             .child(div().flex_1().min_w(px(0.0)).child("路径"))
-            .child(div().flex_none().w(px(92.0)).child("状态"))
+            .child(div().flex_none().child("状态"))
             .child(div().flex_none().w(px(86.0)).child("目标"))
             .child(div().flex_none().w(px(86.0)).child("当前"))
             .child(div().flex_1().min_w(px(0.0)).child("URL"))
@@ -309,6 +387,8 @@ impl RepositoryView {
         let current = module.workdir_id.as_deref().map(short_oid).unwrap_or("-");
         let url = module.url.as_deref().unwrap_or("未配置 URL");
         let module_name = module.name.clone();
+        let remote_status = self.submodule_dialog.remote_statuses.get(&module.name);
+        let (status_label, status_tone) = submodule_status_display(module, remote_status);
         div()
             .id(format!("submodule-manager-row-{}", module.path.display()))
             .flex()
@@ -347,8 +427,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(92.0))
-                    .child(status_pill(module.status.label(), module.status.is_ready())),
+                    .child(submodule_status_pill(status_label, status_tone)),
             )
             .child(
                 div()
@@ -383,6 +462,196 @@ impl RepositoryView {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SubmoduleStatusTone {
+    Ready,
+    Info,
+    Warning,
+    Danger,
+    Muted,
+}
+
+pub(crate) fn submodule_status_display(
+    module: &SubmoduleInfo,
+    remote_status: Option<&SubmoduleRemoteSyncStatus>,
+) -> (String, SubmoduleStatusTone) {
+    if let Some(label) = submodule_local_issue_label(&module.status) {
+        return (label.to_string(), SubmoduleStatusTone::Warning);
+    }
+
+    match remote_status {
+        Some(SubmoduleRemoteSyncStatus::UpToDate) => {
+            ("远端同步".to_string(), SubmoduleStatusTone::Ready)
+        }
+        Some(SubmoduleRemoteSyncStatus::Behind(behind)) => {
+            (format!("落后 {behind}"), SubmoduleStatusTone::Info)
+        }
+        Some(SubmoduleRemoteSyncStatus::Ahead(ahead)) => {
+            (format!("超前 {ahead}"), SubmoduleStatusTone::Warning)
+        }
+        Some(SubmoduleRemoteSyncStatus::Diverged { ahead, behind }) => (
+            format!("分叉 {ahead}/{behind}"),
+            SubmoduleStatusTone::Danger,
+        ),
+        Some(SubmoduleRemoteSyncStatus::Unavailable(_)) => {
+            ("远端未知".to_string(), SubmoduleStatusTone::Muted)
+        }
+        Some(SubmoduleRemoteSyncStatus::Unknown | SubmoduleRemoteSyncStatus::Checking) | None => {
+            let ready = module.status.is_ready();
+            (
+                module.status.label().to_string(),
+                if ready {
+                    SubmoduleStatusTone::Ready
+                } else {
+                    SubmoduleStatusTone::Warning
+                },
+            )
+        }
+    }
+}
+
+fn submodule_local_issue_label(status: &SubmoduleState) -> Option<&'static str> {
+    if !status.initialized {
+        Some("未初始化")
+    } else if !status.checked_out {
+        Some("未检出")
+    } else if status.workdir_modified {
+        Some("有改动")
+    } else if status.workdir_untracked {
+        Some("有未跟踪文件")
+    } else {
+        None
+    }
+}
+
+fn submodule_status_pill(label: String, tone: SubmoduleStatusTone) -> impl IntoElement {
+    let (bg, border, text) = match tone {
+        SubmoduleStatusTone::Ready => (
+            ui_theme::SUCCESS_SOFT,
+            ui_theme::FEEDBACK_SUCCESS_BORDER,
+            ui_theme::FEEDBACK_SUCCESS_TEXT,
+        ),
+        SubmoduleStatusTone::Info => (
+            ui_theme::ACCENT_SOFT,
+            ui_theme::FEEDBACK_INFO_BORDER,
+            ui_theme::ACCENT_STRONG,
+        ),
+        SubmoduleStatusTone::Warning => (
+            ui_theme::WARNING_SOFT,
+            ui_theme::FEEDBACK_WARNING_BORDER,
+            ui_theme::WARNING_TEXT,
+        ),
+        SubmoduleStatusTone::Danger => (
+            ui_theme::DANGER_SOFT,
+            ui_theme::DANGER_BORDER_SOFT,
+            ui_theme::DANGER_TEXT,
+        ),
+        SubmoduleStatusTone::Muted => (
+            ui_theme::SURFACE_MUTED,
+            ui_theme::BORDER,
+            ui_theme::TEXT_MUTED,
+        ),
+    };
+    div()
+        .flex_none()
+        .px_2()
+        .py_1()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(border))
+        .bg(rgb(bg))
+        .text_color(rgb(text))
+        .text_size(px(11.0))
+        .font_weight(gpui::FontWeight::BOLD)
+        .child(label)
+}
+
 fn short_oid(oid: &str) -> &str {
     oid.get(..8).unwrap_or(oid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn module_with_status(status: SubmoduleState) -> SubmoduleInfo {
+        SubmoduleInfo {
+            name: "deps/sub".to_string(),
+            path: "deps/sub".into(),
+            url: None,
+            branch: None,
+            head_id: None,
+            index_id: None,
+            workdir_id: None,
+            status,
+        }
+    }
+
+    fn ready_status() -> SubmoduleState {
+        SubmoduleState {
+            initialized: true,
+            checked_out: true,
+            head_matches_index: true,
+            workdir_modified: false,
+            workdir_untracked: false,
+        }
+    }
+
+    #[test]
+    fn submodule_status_display_prioritizes_local_worktree_problems() {
+        let module = module_with_status(SubmoduleState {
+            workdir_modified: true,
+            ..ready_status()
+        });
+
+        assert_eq!(
+            submodule_status_display(&module, Some(&SubmoduleRemoteSyncStatus::Behind(3))),
+            ("有改动".to_string(), SubmoduleStatusTone::Warning)
+        );
+    }
+
+    #[test]
+    fn submodule_status_display_maps_remote_ahead_behind() {
+        let module = module_with_status(ready_status());
+
+        assert_eq!(
+            submodule_status_display(&module, Some(&SubmoduleRemoteSyncStatus::UpToDate)),
+            ("远端同步".to_string(), SubmoduleStatusTone::Ready)
+        );
+        assert_eq!(
+            submodule_status_display(&module, Some(&SubmoduleRemoteSyncStatus::Behind(2))),
+            ("落后 2".to_string(), SubmoduleStatusTone::Info)
+        );
+        assert_eq!(
+            submodule_status_display(&module, Some(&SubmoduleRemoteSyncStatus::Ahead(1))),
+            ("超前 1".to_string(), SubmoduleStatusTone::Warning)
+        );
+        assert_eq!(
+            submodule_status_display(
+                &module,
+                Some(&SubmoduleRemoteSyncStatus::Diverged {
+                    ahead: 1,
+                    behind: 2,
+                }),
+            ),
+            ("分叉 1/2".to_string(), SubmoduleStatusTone::Danger)
+        );
+    }
+
+    #[test]
+    fn submodule_status_display_keeps_local_label_before_remote_check_finishes() {
+        let module = module_with_status(SubmoduleState {
+            head_matches_index: false,
+            ..ready_status()
+        });
+
+        assert_eq!(
+            submodule_status_display(&module, Some(&SubmoduleRemoteSyncStatus::Checking)),
+            ("需更新".to_string(), SubmoduleStatusTone::Warning)
+        );
+        assert_eq!(
+            submodule_status_display(&module, None),
+            ("需更新".to_string(), SubmoduleStatusTone::Warning)
+        );
+    }
 }

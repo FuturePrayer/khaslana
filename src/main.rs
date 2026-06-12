@@ -40,9 +40,10 @@ use khaslana::{
     GitService, HistoryScope, KeyringCredentialStore, NetworkProxyMode, NetworkProxySettings,
     OperationEvent, ProgressEmitter, RemoteCredentialBinding, RemoteCredentialBindings,
     RemoteCredentialPolicy, RemoteInfo, RemoteName, RepoPath, RepositorySnapshot, ResetMode,
-    SessionState, SubmoduleInfo, TagName, credential_display_target, credential_key_filename,
-    credential_kind_label, credential_record_is_compatible_with_url, credential_record_label,
-    credential_record_matches_remote_url, credential_scope_label, test_credential_connection,
+    SessionState, SubmoduleInfo, SubmoduleRemoteSyncStatus, TagName, credential_display_target,
+    credential_key_filename, credential_kind_label, credential_record_is_compatible_with_url,
+    credential_record_label, credential_record_matches_remote_url, credential_scope_label,
+    test_credential_connection,
 };
 use remote_branch_operation::{
     RemoteBranchOperationKind, RemoteBranchOperationState, default_remote_branch_for,
@@ -50,7 +51,8 @@ use remote_branch_operation::{
 };
 use stash_view::StashPreviewState;
 use submodule_view::{
-    SubmoduleDialogState, operation_refreshes_submodule_dialog, submodule_request_matches,
+    SubmoduleDialogState, operation_refreshes_submodule_dialog, submodule_remote_request_matches,
+    submodule_request_matches,
 };
 use text_input::{MultiLineInputElement, SingleLineInputElement, TextFieldState};
 use ui::{
@@ -1064,6 +1066,18 @@ pub(crate) enum UiEvent {
         request_id: u64,
     },
     SubmodulesLoadFailed {
+        tab_id: RepoTabId,
+        error: String,
+        load_id: u64,
+        request_id: u64,
+    },
+    SubmoduleRemoteStatusesLoaded {
+        tab_id: RepoTabId,
+        statuses: Vec<(String, SubmoduleRemoteSyncStatus)>,
+        load_id: u64,
+        request_id: u64,
+    },
+    SubmoduleRemoteStatusesLoadFailed {
         tab_id: RepoTabId,
         error: String,
         load_id: u64,
@@ -2632,6 +2646,7 @@ impl RepositoryView {
                 load_id,
                 request_id,
             } => {
+                let mut should_load_remote_statuses = false;
                 self.with_tab_context(tab_id, |this| {
                     if submodule_request_matches(
                         &this.submodule_dialog,
@@ -2640,12 +2655,22 @@ impl RepositoryView {
                         request_id,
                     ) {
                         this.submodule_dialog.items = items;
+                        this.submodule_dialog.remote_statuses.clear();
+                        this.submodule_dialog.remote_loading = false;
                         this.submodule_dialog.loading = false;
                         this.submodule_dialog.loaded = true;
                         this.submodule_dialog.error = None;
+                        this.submodule_dialog.remote_error = None;
+                        should_load_remote_statuses = !this.submodule_dialog.items.is_empty()
+                            && this.active_dialog == Some(DialogState::SubmoduleManager);
                         this.status = "子模块列表已加载".to_string();
                     }
                 });
+                if should_load_remote_statuses {
+                    let _ = self.with_tab_context(tab_id, |this| {
+                        this.load_submodule_remote_statuses();
+                    });
+                }
             }
             UiEvent::SubmodulesLoadFailed {
                 tab_id,
@@ -2661,11 +2686,65 @@ impl RepositoryView {
                         request_id,
                     ) {
                         this.submodule_dialog.items.clear();
+                        this.submodule_dialog.remote_statuses.clear();
                         this.submodule_dialog.loading = false;
+                        this.submodule_dialog.remote_loading = false;
                         this.submodule_dialog.loaded = false;
                         this.submodule_dialog.error = Some(error.clone());
+                        this.submodule_dialog.remote_error = None;
                         this.status = "子模块列表加载失败".to_string();
                         this.last_error = Some(error);
+                    }
+                });
+            }
+            UiEvent::SubmoduleRemoteStatusesLoaded {
+                tab_id,
+                statuses,
+                load_id,
+                request_id,
+            } => {
+                self.with_tab_context(tab_id, |this| {
+                    if submodule_remote_request_matches(
+                        &this.submodule_dialog,
+                        this.repository_load_id,
+                        load_id,
+                        request_id,
+                    ) {
+                        this.submodule_dialog.remote_statuses = statuses.into_iter().collect();
+                        this.submodule_dialog.remote_loading = false;
+                        this.submodule_dialog.remote_error = None;
+                        this.status = "子模块远端状态已检查".to_string();
+                    }
+                });
+            }
+            UiEvent::SubmoduleRemoteStatusesLoadFailed {
+                tab_id,
+                error,
+                load_id,
+                request_id,
+            } => {
+                self.with_tab_context(tab_id, |this| {
+                    if submodule_remote_request_matches(
+                        &this.submodule_dialog,
+                        this.repository_load_id,
+                        load_id,
+                        request_id,
+                    ) {
+                        this.submodule_dialog.remote_statuses = this
+                            .submodule_dialog
+                            .items
+                            .iter()
+                            .map(|module| {
+                                (
+                                    module.name.clone(),
+                                    SubmoduleRemoteSyncStatus::Unavailable(error.clone()),
+                                )
+                            })
+                            .collect();
+                        this.submodule_dialog.remote_loading = false;
+                        this.submodule_dialog.remote_error = Some(error.clone());
+                        this.status = "子模块远端状态检查失败".to_string();
+                        tracing::warn!("submodule remote status skipped: {error}");
                     }
                 });
             }
@@ -10309,6 +10388,16 @@ mod app_tests {
         assert!(submodule_request_matches(&state, 3, 3, 8));
         assert!(!submodule_request_matches(&state, 3, 2, 8));
         assert!(!submodule_request_matches(&state, 3, 3, 7));
+    }
+
+    #[test]
+    fn stale_submodule_remote_status_requests_do_not_match_current_state() {
+        let mut state = SubmoduleDialogState::default();
+        state.remote_request_id = 12;
+
+        assert!(submodule_remote_request_matches(&state, 3, 3, 12));
+        assert!(!submodule_remote_request_matches(&state, 3, 2, 12));
+        assert!(!submodule_remote_request_matches(&state, 3, 3, 11));
     }
 
     #[test]

@@ -53,7 +53,7 @@ Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中
 - `src/conflicts/`：冲突解决相关 UI、交互动作和轻量状态 helper，作为 `main.rs` 的子模块实现 `RepositoryView` 的冲突区域。
 - `src/proxy_view.rs`：网络代理设置弹窗，包括模式切换、自定义代理输入、保存和测试代理入口。
 - `src/stash_view.rs`：贮藏完整工作流 UI，包括创建贮藏、查看贮藏文件、加载贮藏 diff 和删除确认。
-- `src/submodule_view.rs`：子模块弹窗 UI 和按需加载/更新动作，包括同步记录版本、更新全部到远端最新和更新单个子模块到远端最新。
+- `src/submodule_view.rs`：子模块弹窗 UI 和按需加载/更新动作，包括远端超前/落后状态展示、同步记录版本、更新全部到远端最新和更新单个子模块到远端最新。
 - `src/ui/`：前端设计系统适配层。`theme.rs` 定义 Khaslana 语义色值和状态 token，`components.rs` 封装按钮、toast、tooltip、section header 等项目级 UI helper，`mod.rs` 统一导出。
 - `src/sidebar_view.rs`：侧边栏 UI，包括本地分支、远端、远端分支、标签、贮藏和相关右键菜单。
 - `src/history_view.rs`：提交历史 UI、提交图渲染、提交文件列表、历史 diff。
@@ -150,7 +150,8 @@ UI 线程通过 `async-channel` 接收后台线程发回的 `UiEvent`。重型 G
 - 多仓库标签页
 - 自动保存和恢复会话
 - 刷新仓库状态
-- 通过子模块弹窗按需查看状态，可手动同步父仓库记录版本，也可全量或单个快进更新到子模块远端最新
+- 通过子模块弹窗按需查看状态，并在弹窗打开后后台检查子模块相对远端分支的超前/落后状态
+- 可手动同步父仓库记录版本，也可全量或单个快进更新到子模块远端最新
 
 ### 5.2 工作区
 

@@ -7,7 +7,10 @@ use git2::{
 };
 
 use super::{GitService, remote_fetch_url};
-use crate::{GitError, OperationEvent, RepositorySnapshot, Result, SubmoduleInfo, SubmoduleState};
+use crate::{
+    GitError, OperationEvent, RepositorySnapshot, Result, SubmoduleInfo, SubmoduleRemoteSyncStatus,
+    SubmoduleState,
+};
 
 impl GitService {
     pub fn submodules(&self, repo: &Repository) -> Result<Vec<SubmoduleInfo>> {
@@ -28,6 +31,26 @@ impl GitService {
         }
         modules.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(modules)
+    }
+
+    pub fn submodule_remote_sync_statuses(
+        &self,
+        repo: &Repository,
+    ) -> Result<Vec<(String, SubmoduleRemoteSyncStatus)>> {
+        let mut statuses = Vec::new();
+        for submodule in repo.submodules()? {
+            let name = submodule.name()?.to_string();
+            let status = match self.submodule_remote_sync_status(repo, &submodule, &name) {
+                Ok(status) => status,
+                Err(err) => {
+                    tracing::warn!("submodule remote sync status skipped: {err}");
+                    SubmoduleRemoteSyncStatus::Unavailable(err.to_string())
+                }
+            };
+            statuses.push((name, status));
+        }
+        statuses.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(statuses)
     }
 
     pub fn update_submodules(&self, repo: &mut Repository) -> Result<RepositorySnapshot> {
@@ -121,6 +144,36 @@ impl GitService {
         let target = self.fetch_submodule_remote_latest(repo, &subrepo, name)?;
         self.fast_forward_submodule_to(&subrepo, target, &path)?;
         self.update_submodules_to_remote_latest_recursive(&subrepo)
+    }
+
+    fn submodule_remote_sync_status(
+        &self,
+        repo: &Repository,
+        submodule: &git2::Submodule<'_>,
+        name: &str,
+    ) -> Result<SubmoduleRemoteSyncStatus> {
+        let parent_status = repo.submodule_status(name, SubmoduleIgnore::None)?;
+        let state = submodule_state(parent_status, submodule.index_id(), submodule.workdir_id());
+        if !state.initialized {
+            return Ok(SubmoduleRemoteSyncStatus::Unavailable(
+                "子模块未初始化".to_string(),
+            ));
+        }
+        if !state.checked_out {
+            return Ok(SubmoduleRemoteSyncStatus::Unavailable(
+                "子模块未检出".to_string(),
+            ));
+        }
+
+        let subrepo = submodule.open()?;
+        let head = subrepo.head()?;
+        let current = head
+            .target()
+            .or_else(|| head.peel_to_commit().ok().map(|commit| commit.id()))
+            .ok_or_else(|| GitError::Message(format!("子模块 {name} 当前 HEAD 无法解析")))?;
+        let target = self.fetch_submodule_remote_latest(repo, &subrepo, name)?;
+        let (ahead, behind) = subrepo.graph_ahead_behind(current, target)?;
+        Ok(SubmoduleRemoteSyncStatus::from_ahead_behind(ahead, behind))
     }
 
     fn checkout_submodule_recorded_commit(

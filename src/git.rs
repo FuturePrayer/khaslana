@@ -2078,6 +2078,7 @@ mod tests {
 
     use super::*;
     use crate::credentials::PromptCredentialProvider;
+    use crate::types::SubmoduleRemoteSyncStatus;
 
     fn service() -> GitService {
         GitService::new(
@@ -2419,6 +2420,15 @@ mod tests {
     fn submodule_head_oid(root: &Path, path: &str) -> Oid {
         let repo = Repository::open(root.join(path)).unwrap();
         repo.head().unwrap().target().unwrap()
+    }
+
+    fn single_submodule_remote_status(
+        service: &GitService,
+        repo: &Repository,
+    ) -> SubmoduleRemoteSyncStatus {
+        let statuses = service.submodule_remote_sync_statuses(repo).unwrap();
+        assert_eq!(statuses.len(), 1);
+        statuses[0].1.clone()
     }
 
     struct NestedSubmoduleFixture {
@@ -2874,6 +2884,153 @@ mod tests {
             leaf_target
         );
         assert_file_text(&clone_path, "deps/mid/deps/leaf/sub.txt", "leaf v2\n");
+    }
+
+    #[test]
+    fn submodule_remote_sync_status_reports_up_to_date() {
+        let fixture = create_super_remote_with_named_submodules(&[("sub", "sub v1\n", None)]);
+        let (_clone_dir, _clone_path, repo) = clone_super_repo(&fixture, true);
+
+        assert_eq!(
+            single_submodule_remote_status(&fixture.service, &repo),
+            SubmoduleRemoteSyncStatus::UpToDate
+        );
+    }
+
+    #[test]
+    fn submodule_remote_sync_status_reports_behind() {
+        let fixture = create_super_remote_with_named_submodules(&[("sub", "sub v1\n", None)]);
+        let (_clone_dir, _clone_path, repo) = clone_super_repo(&fixture, true);
+        advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "sub v2\n",
+            "main",
+        );
+
+        assert_eq!(
+            single_submodule_remote_status(&fixture.service, &repo),
+            SubmoduleRemoteSyncStatus::Behind(1)
+        );
+    }
+
+    #[test]
+    fn submodule_remote_sync_status_reports_ahead() {
+        let fixture = create_super_remote_with_named_submodules(&[("sub", "sub v1\n", None)]);
+        let (_clone_dir, clone_path, repo) = clone_super_repo(&fixture, true);
+        let subrepo = Repository::open(clone_path.join("deps/sub")).unwrap();
+        configure_user(&subrepo);
+        write_file(&clone_path, "deps/sub/sub.txt", "local v2\n");
+        commit_all(&subrepo, "local submodule commit");
+
+        assert_eq!(
+            single_submodule_remote_status(&fixture.service, &repo),
+            SubmoduleRemoteSyncStatus::Ahead(1)
+        );
+    }
+
+    #[test]
+    fn submodule_remote_sync_status_reports_diverged() {
+        let fixture = create_super_remote_with_named_submodules(&[("sub", "sub v1\n", None)]);
+        let (_clone_dir, clone_path, repo) = clone_super_repo(&fixture, true);
+        let subrepo = Repository::open(clone_path.join("deps/sub")).unwrap();
+        configure_user(&subrepo);
+        write_file(&clone_path, "deps/sub/sub.txt", "local v2\n");
+        commit_all(&subrepo, "local submodule commit");
+        advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "remote v2\n",
+            "main",
+        );
+
+        assert_eq!(
+            single_submodule_remote_status(&fixture.service, &repo),
+            SubmoduleRemoteSyncStatus::Diverged {
+                ahead: 1,
+                behind: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn submodule_remote_sync_status_uses_gitmodules_branch() {
+        let fixture =
+            create_super_remote_with_named_submodules(&[("sub", "sub v1\n", Some("develop"))]);
+        let (_clone_dir, _clone_path, repo) = clone_super_repo(&fixture, true);
+        advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "develop v2\n",
+            "develop",
+        );
+        advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "main v2\n",
+            "main",
+        );
+        advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "main v3\n",
+            "main",
+        );
+
+        assert_eq!(
+            single_submodule_remote_status(&fixture.service, &repo),
+            SubmoduleRemoteSyncStatus::Behind(1)
+        );
+    }
+
+    #[test]
+    fn submodule_remote_sync_status_branch_dot_uses_parent_branch() {
+        let fixture = create_super_remote_with_named_submodules(&[("sub", "sub v1\n", Some("."))]);
+        let (_clone_dir, _clone_path, mut repo) = clone_super_repo(&fixture, true);
+        fixture
+            .service
+            .create_branch(&mut repo, &BranchName::new("release"))
+            .unwrap();
+        fixture
+            .service
+            .checkout_branch(&mut repo, &BranchName::new("release"))
+            .unwrap();
+        advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "release v2\n",
+            "release",
+        );
+        advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "main v2\n",
+            "main",
+        );
+        advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "main v3\n",
+            "main",
+        );
+
+        assert_eq!(
+            single_submodule_remote_status(&fixture.service, &repo),
+            SubmoduleRemoteSyncStatus::Behind(1)
+        );
+    }
+
+    #[test]
+    fn submodule_remote_sync_status_does_not_initialize_unchecked_out_submodule() {
+        let fixture = create_super_remote_with_named_submodules(&[("sub", "sub v1\n", None)]);
+        let (_clone_dir, clone_path, repo) = clone_super_repo(&fixture, false);
+        assert!(!clone_path.join("deps/sub/sub.txt").exists());
+
+        assert!(matches!(
+            single_submodule_remote_status(&fixture.service, &repo),
+            SubmoduleRemoteSyncStatus::Unavailable(_)
+        ));
+        assert!(!clone_path.join("deps/sub/sub.txt").exists());
     }
 
     #[test]

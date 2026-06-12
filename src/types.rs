@@ -113,6 +113,28 @@ pub struct SubmoduleInfo {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SubmoduleRemoteSyncStatus {
+    Unknown,
+    Checking,
+    UpToDate,
+    Behind(usize),
+    Ahead(usize),
+    Diverged { ahead: usize, behind: usize },
+    Unavailable(String),
+}
+
+impl SubmoduleRemoteSyncStatus {
+    pub fn from_ahead_behind(ahead: usize, behind: usize) -> Self {
+        match (ahead, behind) {
+            (0, 0) => Self::UpToDate,
+            (0, behind) => Self::Behind(behind),
+            (ahead, 0) => Self::Ahead(ahead),
+            (ahead, behind) => Self::Diverged { ahead, behind },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubmoduleState {
     pub initialized: bool,
     pub checked_out: bool,
