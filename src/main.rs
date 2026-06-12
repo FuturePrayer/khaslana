@@ -7,6 +7,7 @@ mod proxy_view;
 mod remote_branch_operation;
 mod sidebar_view;
 mod stash_view;
+mod submodule_view;
 mod text_input;
 mod ui;
 mod ui_helpers;
@@ -48,6 +49,9 @@ use remote_branch_operation::{
     local_branch_by_name, remote_branch_dialog_defaults, remote_branch_exists,
 };
 use stash_view::StashPreviewState;
+use submodule_view::{
+    SubmoduleDialogState, operation_refreshes_submodule_dialog, submodule_request_matches,
+};
 use text_input::{MultiLineInputElement, SingleLineInputElement, TextFieldState};
 use ui::{
     components::{
@@ -560,15 +564,6 @@ fn point_in_toolbar_more_menu(x: f32, y: f32, menu: &ToolbarMoreMenu) -> bool {
     )
 }
 
-fn submodule_request_matches(
-    state: &SubmoduleDialogState,
-    repository_load_id: u64,
-    load_id: u64,
-    request_id: u64,
-) -> bool {
-    load_id == repository_load_id && request_id == state.request_id
-}
-
 fn column_splitter_accepts_mouse_events(active_dialog: bool) -> bool {
     !active_dialog
 }
@@ -794,25 +789,6 @@ impl RepoTabState {
             self.history_diff = None;
             self.history_diff_headers_expanded = false;
         }
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct SubmoduleDialogState {
-    pub(crate) items: Vec<SubmoduleInfo>,
-    pub(crate) loading: bool,
-    pub(crate) loaded: bool,
-    pub(crate) request_id: u64,
-    pub(crate) error: Option<String>,
-}
-
-impl SubmoduleDialogState {
-    fn invalidate(&mut self) {
-        self.items.clear();
-        self.loading = false;
-        self.loaded = false;
-        self.request_id = self.request_id.wrapping_add(1).max(1);
-        self.error = None;
     }
 }
 
@@ -1472,7 +1448,20 @@ fn started_message_for_label(label: &'static str) -> &'static str {
         "远端已删除" => "正在删除远端",
         "远端已刷新" => "正在刷新远端",
         "冲突已标记为解决" => "正在标记冲突解决",
+        "子模块已同步记录版本" => "正在同步子模块记录版本",
+        "子模块已更新到远端最新" => "正在更新子模块到远端最新",
         _ => label,
+    }
+}
+
+fn started_message_for_label_text(label: &str) -> String {
+    if label.starts_with("子模块 ") && label.ends_with(" 已更新到远端最新") {
+        return "正在更新子模块到远端最新".to_string();
+    }
+    match label {
+        "子模块已同步记录版本" => "正在同步子模块记录版本".to_string(),
+        "子模块已更新到远端最新" => "正在更新子模块到远端最新".to_string(),
+        _ => label.to_string(),
     }
 }
 
@@ -2351,7 +2340,7 @@ impl RepositoryView {
                 diff,
             } => {
                 let toast_message = message.clone();
-                let should_refresh_submodules = message == "子模块已更新"
+                let should_refresh_submodules = operation_refreshes_submodule_dialog(&message)
                     && self.active_dialog == Some(DialogState::SubmoduleManager);
                 let has_snapshot = snapshot.is_some();
                 let has_diff = diff.is_some();
@@ -3593,69 +3582,6 @@ impl RepositoryView {
         self.last_error = None;
     }
 
-    fn open_submodule_manager(&mut self) {
-        if self.repo_path.is_none() {
-            self.last_error = Some("请先打开一个仓库".into());
-            return;
-        }
-        self.close_popups();
-        self.active_dialog = Some(DialogState::SubmoduleManager);
-        self.status = "子模块已打开".into();
-        self.last_error = None;
-        if !self.submodule_dialog.loaded && !self.submodule_dialog.loading {
-            self.load_submodules();
-        }
-    }
-
-    fn load_submodules(&mut self) {
-        let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
-            return;
-        };
-        let Some(repo_path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
-            return;
-        };
-        let service = self.service_for_tab(tab_id);
-        let tx = self.tx.clone();
-        let load_id = self.repository_load_id;
-        let request_id = {
-            let state = &mut self.submodule_dialog;
-            state.request_id = state.request_id.wrapping_add(1).max(1);
-            state.loading = true;
-            state.error = None;
-            state.request_id
-        };
-        self.status = "正在加载子模块列表".into();
-
-        thread::spawn(move || {
-            let result = (|| -> khaslana::Result<Vec<SubmoduleInfo>> {
-                let repo = Repository::open(repo_path)?;
-                service.submodules(&repo)
-            })();
-            match result {
-                Ok(items) => send_ui_event(
-                    &tx,
-                    UiEvent::SubmodulesLoaded {
-                        tab_id,
-                        items,
-                        load_id,
-                        request_id,
-                    },
-                ),
-                Err(err) => send_ui_event(
-                    &tx,
-                    UiEvent::SubmodulesLoadFailed {
-                        tab_id,
-                        error: err.to_string(),
-                        load_id,
-                        request_id,
-                    },
-                ),
-            }
-        });
-    }
-
     pub(crate) fn reset_proxy_form_from_settings(&mut self) {
         let custom = self.proxy_settings.custom.normalized();
         self.proxy_mode = self.proxy_settings.mode;
@@ -4293,16 +4219,6 @@ impl RepositoryView {
         self.queue_repository_load(tab_id, path, "正在刷新仓库", "已刷新", LoadPriority::User);
     }
 
-    fn update_submodules(&mut self) {
-        if self.repo_path.is_none() {
-            self.last_error = Some("请先打开一个仓库".into());
-            return;
-        }
-        self.with_repo_keep_dialog("子模块已更新", move |service, repo| {
-            service.update_submodules(repo)
-        });
-    }
-
     fn queue_repository_load(
         &mut self,
         tab_id: RepoTabId,
@@ -4716,6 +4632,15 @@ impl RepositoryView {
             + Send
             + 'static,
     {
+        self.with_repo_keep_dialog_owned(label.to_string(), f)
+    }
+
+    fn with_repo_keep_dialog_owned<F>(&mut self, label: String, f: F)
+    where
+        F: FnOnce(GitService, &mut Repository) -> khaslana::Result<RepositorySnapshot>
+            + Send
+            + 'static,
+    {
         let Some(tab_id) = self.active_tab_id() else {
             self.last_error = Some("请先打开一个仓库".into());
             return;
@@ -4729,7 +4654,7 @@ impl RepositoryView {
             return;
         }
         let service = self.service_for_tab(tab_id);
-        let started = started_message_for_label(label).to_string();
+        let started = started_message_for_label_text(&label);
         self.apply_status_event(Some(tab_id), |this| {
             this.repository_load_id = this.repository_load_id.wrapping_add(1);
             this.loading = RepositoryLoading::default();
@@ -4755,7 +4680,7 @@ impl RepositoryView {
                     &tx,
                     UiEvent::OperationFinished {
                         tab_id: Some(tab_id),
-                        message: label.to_string(),
+                        message: label,
                         snapshot: Some(snapshot),
                         diff: None,
                     },
@@ -8814,226 +8739,6 @@ impl RepositoryView {
             )
     }
 
-    fn render_submodule_manager_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = &self.submodule_dialog;
-        let rows = if state.loading && !state.loaded {
-            vec![placeholder_row("正在加载子模块列表...").into_any_element()]
-        } else if let Some(error) = state.error.as_ref() {
-            vec![self.submodule_dialog_placeholder(format!("子模块列表加载失败：{error}"))]
-        } else if state.loaded && state.items.is_empty() {
-            vec![placeholder_row("当前仓库没有子模块").into_any_element()]
-        } else {
-            state
-                .items
-                .iter()
-                .map(|module| self.submodule_dialog_row(module).into_any_element())
-                .collect::<Vec<_>>()
-        };
-        let can_update = state.loaded && !state.items.is_empty() && !self.busy && !state.loading;
-
-        div()
-            .id("dialog-子模块")
-            .w(px(860.0))
-            .max_h(px(640.0))
-            .p_4()
-            .rounded_sm()
-            .border_1()
-            .border_color(rgb(ui_theme::GLASS_BORDER))
-            .bg(rgba(ui_theme::GLASS_BG_STRONG))
-            .shadow_lg()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .cursor(CursorStyle::Arrow)
-            .occlude()
-            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                cx.stop_propagation();
-            })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_size(px(14.0))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(rgb(ui_theme::TEXT))
-                            .child("子模块"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(self.button(
-                                "刷新",
-                                !self.busy && !state.loading,
-                                |this, _, _| this.load_submodules(),
-                                cx,
-                            ))
-                            .child(self.primary_button(
-                                "更新全部",
-                                can_update,
-                                |this, _, _| this.update_submodules(),
-                                cx,
-                            )),
-                    ),
-            )
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(rgb(ui_theme::TEXT_MUTED))
-                    .child("列表仅在打开弹窗时读取；更新会复用当前凭据和代理设置。"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .min_h(px(0.0))
-                    .max_h(px(430.0))
-                    .border_1()
-                    .border_color(rgb(ui_theme::BORDER))
-                    .rounded_sm()
-                    .child(self.submodule_dialog_header())
-                    .child({
-                        let handle = self.scroll_handle("submodule-manager-list");
-                        let content = div()
-                            .id("submodule-manager-list")
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .gap_0()
-                            .min_w(px(0.0))
-                            .min_h(px(0.0))
-                            .overflow_y_scroll()
-                            .track_scroll(&handle)
-                            .children(rows)
-                            .into_any_element();
-                        scrollable_frame_when(
-                            "submodule-manager-list",
-                            ScrollbarMode::Vertical,
-                            content,
-                            handle,
-                            !state.items.is_empty(),
-                            cx,
-                        )
-                    }),
-            )
-            .child(div().flex().justify_end().child(self.button(
-                "关闭",
-                !self.busy,
-                |this, _, _| this.close_dialog(),
-                cx,
-            )))
-    }
-
-    fn submodule_dialog_placeholder(&self, text: String) -> gpui::AnyElement {
-        div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .px_3()
-            .py_4()
-            .text_size(px(12.0))
-            .text_color(rgb(ui_theme::TEXT_MUTED))
-            .child(text)
-            .into_any_element()
-    }
-
-    fn submodule_dialog_header(&self) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap_2()
-            .px_2()
-            .py_2()
-            .border_b_1()
-            .border_color(rgb(ui_theme::BORDER))
-            .bg(rgb(ui_theme::HEADER_BG))
-            .text_size(px(11.0))
-            .font_weight(gpui::FontWeight::BOLD)
-            .text_color(rgb(ui_theme::TEXT_MUTED))
-            .child(div().flex_1().min_w(px(0.0)).child("路径"))
-            .child(div().flex_none().w(px(92.0)).child("状态"))
-            .child(div().flex_none().w(px(86.0)).child("目标"))
-            .child(div().flex_none().w(px(86.0)).child("当前"))
-            .child(div().flex_1().min_w(px(0.0)).child("URL"))
-    }
-
-    fn submodule_dialog_row(&self, module: &SubmoduleInfo) -> impl IntoElement {
-        let target = module.index_id.as_deref().map(short_oid).unwrap_or("-");
-        let current = module.workdir_id.as_deref().map(short_oid).unwrap_or("-");
-        let url = module.url.as_deref().unwrap_or("未配置 URL");
-        div()
-            .id(format!("submodule-manager-row-{}", module.path.display()))
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap_2()
-            .px_2()
-            .py_2()
-            .border_b_1()
-            .border_color(rgb(ui_theme::BORDER))
-            .text_size(px(12.0))
-            .bg(rgba(ui_theme::GLASS_BG))
-            .hover(|this| this.bg(rgb(ui_theme::ACCENT_VIVID_SOFT)))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .truncate()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(rgb(ui_theme::TEXT))
-                            .child(module.path.display().to_string()),
-                    )
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(11.0))
-                            .text_color(rgb(ui_theme::TEXT_MUTED))
-                            .child(module.name.clone()),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(92.0))
-                    .child(status_pill(module.status.label(), module.status.is_ready())),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(86.0))
-                    .truncate()
-                    .text_color(rgb(ui_theme::TEXT_MUTED))
-                    .child(target.to_string()),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(86.0))
-                    .truncate()
-                    .text_color(rgb(ui_theme::TEXT_MUTED))
-                    .child(current.to_string()),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .truncate()
-                    .text_color(rgb(ui_theme::TEXT_MUTED))
-                    .child(url.to_string()),
-            )
-    }
-
     fn render_remote_manager_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let remotes = self
             .snapshot
@@ -10604,6 +10309,18 @@ mod app_tests {
         assert!(submodule_request_matches(&state, 3, 3, 8));
         assert!(!submodule_request_matches(&state, 3, 2, 8));
         assert!(!submodule_request_matches(&state, 3, 3, 7));
+    }
+
+    #[test]
+    fn submodule_dialog_refreshes_after_all_update_modes() {
+        assert!(operation_refreshes_submodule_dialog("子模块已同步记录版本"));
+        assert!(operation_refreshes_submodule_dialog(
+            "子模块已更新到远端最新"
+        ));
+        assert!(operation_refreshes_submodule_dialog(
+            "子模块 deps/core 已更新到远端最新"
+        ));
+        assert!(!operation_refreshes_submodule_dialog("已获取 origin"));
     }
 
     #[test]

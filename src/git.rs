@@ -11,9 +11,9 @@ use encoding_rs::{BIG5, Encoding, GB18030, UTF_8};
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use git2::{
     AnnotatedCommit, BranchType, Cred, CredentialType, Delta, DiffFormat, DiffOptions, ErrorCode,
-    FetchOptions, FetchPrune, IndexAddOption, MergeAnalysis, MergeOptions, PushOptions, Reference,
-    RemoteCallbacks, Repository, ResetType, Signature, Sort, Status, StatusOptions,
-    SubmoduleIgnore, SubmoduleStatus, SubmoduleUpdateOptions,
+    FetchOptions, FetchPrune, IndexAddOption, MergeAnalysis, MergeOptions, ProxyOptions,
+    PushOptions, Reference, RemoteCallbacks, Repository, ResetType, Signature, Sort, Status,
+    StatusOptions,
 };
 
 use crate::credentials::{CredentialProvider, CredentialRequest, to_git_credential};
@@ -23,11 +23,12 @@ use crate::types::{
     CommitFileChange, CommitInfo, CommitMessage, CommitRefInfo, CommitRefKind, DiffEncodingChoice,
     DiffEncodingInfo, DiffLine, DiffLineKind, DiffScope, FileDiff, GitError, HistoryScope,
     OperationEvent, RemoteInfo, RemoteName, RepoPath, RepositorySnapshot, ResetMode, Result,
-    StashInfo, SubmoduleInfo, SubmoduleState, TagInfo, TagName, WorktreeChange,
+    StashInfo, TagInfo, TagName, WorktreeChange,
 };
 
 mod conflicts;
 mod stash;
+mod submodule;
 
 pub(crate) const DIFF_CONTEXT_LINES: u32 = 3;
 
@@ -59,7 +60,7 @@ struct RemoteOperationContext {
     operation_id: u64,
 }
 
-struct RemoteContextGuard {
+pub(crate) struct RemoteContextGuard {
     context: Arc<Mutex<Option<RemoteOperationContext>>>,
 }
 
@@ -363,35 +364,6 @@ impl GitService {
         })?;
         infos.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(infos)
-    }
-
-    pub fn submodules(&self, repo: &Repository) -> Result<Vec<SubmoduleInfo>> {
-        let mut modules = Vec::new();
-        for submodule in repo.submodules()? {
-            let name = submodule.name()?.to_string();
-            let status = repo.submodule_status(&name, SubmoduleIgnore::None)?;
-            modules.push(SubmoduleInfo {
-                name,
-                path: submodule.path().to_path_buf(),
-                url: submodule.url()?.map(str::to_string),
-                branch: submodule.branch()?.map(str::to_string),
-                head_id: submodule.head_id().map(|oid| oid.to_string()),
-                index_id: submodule.index_id().map(|oid| oid.to_string()),
-                workdir_id: submodule.workdir_id().map(|oid| oid.to_string()),
-                status: submodule_state(status, submodule.index_id(), submodule.workdir_id()),
-            });
-        }
-        modules.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(modules)
-    }
-
-    pub fn update_submodules(&self, repo: &mut Repository) -> Result<RepositorySnapshot> {
-        self.progress
-            .emit(OperationEvent::Started("正在更新子模块".into()));
-        self.update_submodules_recursive(repo)?;
-        self.progress
-            .emit(OperationEvent::Finished("子模块已更新".into()));
-        self.snapshot_after_operation(repo)
     }
 
     pub fn add_remote(
@@ -1558,7 +1530,11 @@ impl GitService {
         }
     }
 
-    fn set_submodule_context(&self, repo: &Repository, name: &str) -> RemoteContextGuard {
+    pub(crate) fn set_submodule_context(
+        &self,
+        repo: &Repository,
+        name: &str,
+    ) -> RemoteContextGuard {
         let repo_path = repo.path().parent().map(Path::to_path_buf);
         if let (Some(repo_path), Ok(mut context)) = (repo_path, self.remote_context.lock()) {
             let operation_id = self
@@ -1575,54 +1551,6 @@ impl GitService {
         }
     }
 
-    fn update_submodules_recursive(&self, repo: &Repository) -> Result<()> {
-        self.update_submodules_in_repo(repo)?;
-        for submodule in repo.submodules()? {
-            let Ok(subrepo) = submodule.open() else {
-                continue;
-            };
-            self.update_submodules_recursive(&subrepo)?;
-        }
-        Ok(())
-    }
-
-    fn update_submodules_in_repo(&self, repo: &Repository) -> Result<()> {
-        for mut submodule in repo.submodules()? {
-            let name = submodule.name()?.to_string();
-            let path = submodule.path().to_path_buf();
-            self.ensure_submodule_clean(repo, &name, &path)?;
-            self.progress
-                .emit(OperationEvent::Progress(format!("正在更新子模块 {name}")));
-
-            submodule.init(true)?;
-            submodule.sync()?;
-
-            let _remote_context = self.set_submodule_context(repo, &name);
-            let mut fetch_options = FetchOptions::new();
-            fetch_options.remote_callbacks(self.remote_callbacks(Some(repo)));
-            let submodule_url = submodule.url()?.map(str::to_string);
-            self.apply_fetch_proxy(&mut fetch_options, submodule_url.as_deref())?;
-
-            let mut checkout = CheckoutBuilder::new();
-            checkout.safe();
-            let mut options = SubmoduleUpdateOptions::new();
-            options.fetch(fetch_options).checkout(checkout);
-            submodule.update(true, Some(&mut options))?;
-        }
-        Ok(())
-    }
-
-    fn ensure_submodule_clean(&self, repo: &Repository, name: &str, path: &Path) -> Result<()> {
-        let status = repo.submodule_status(name, SubmoduleIgnore::None)?;
-        if submodule_has_local_workdir_changes(status) {
-            return Err(GitError::Message(format!(
-                "子模块 {} 有本地改动，请先在子模块中提交、贮藏或清理后再更新",
-                path.display()
-            )));
-        }
-        Ok(())
-    }
-
     fn proxy_settings(&self) -> NetworkProxySettings {
         self.proxy_settings
             .lock()
@@ -1630,13 +1558,20 @@ impl GitService {
             .unwrap_or_default()
     }
 
-    fn apply_fetch_proxy<'a>(
+    pub(crate) fn apply_fetch_proxy<'a>(
         &self,
         options: &mut FetchOptions<'a>,
         remote_url: Option<&str>,
     ) -> Result<()> {
         self.proxy_settings()
             .apply_to_fetch_options(options, remote_url)
+    }
+
+    pub(crate) fn proxy_options_for_remote<'a>(
+        &self,
+        remote_url: Option<&str>,
+    ) -> Result<Option<ProxyOptions<'a>>> {
+        self.proxy_settings().proxy_options_for_remote(remote_url)
     }
 
     fn apply_push_proxy<'a>(
@@ -1648,7 +1583,10 @@ impl GitService {
             .apply_to_push_options(options, remote_url)
     }
 
-    fn remote_callbacks<'a>(&'a self, repo: Option<&'a Repository>) -> RemoteCallbacks<'a> {
+    pub(crate) fn remote_callbacks<'a>(
+        &'a self,
+        repo: Option<&'a Repository>,
+    ) -> RemoteCallbacks<'a> {
         let provider = self.credential_provider.clone();
         let progress = self.progress.clone();
         let config = repo.and_then(|repo| repo.config().ok());
@@ -1907,34 +1845,6 @@ fn remote_push_url(remote: &git2::Remote<'_>) -> Option<String> {
         .flatten()
         .or_else(|| remote.url().ok())
         .map(str::to_string)
-}
-
-fn submodule_state(
-    status: SubmoduleStatus,
-    index_id: Option<git2::Oid>,
-    workdir_id: Option<git2::Oid>,
-) -> SubmoduleState {
-    let initialized = !status.is_wd_uninitialized();
-    let checked_out = status.is_in_wd() && !status.is_wd_deleted() && workdir_id.is_some();
-    let head_matches_index = index_id.is_some() && workdir_id.is_some() && index_id == workdir_id;
-    SubmoduleState {
-        initialized,
-        checked_out,
-        head_matches_index,
-        workdir_modified: status.is_index_modified()
-            || status.is_wd_modified()
-            || status.is_wd_wd_modified()
-            || status.is_wd_added()
-            || status.is_wd_deleted(),
-        workdir_untracked: status.is_wd_untracked(),
-    }
-}
-
-fn submodule_has_local_workdir_changes(status: SubmoduleStatus) -> bool {
-    status.is_wd_wd_modified()
-        || status.is_wd_untracked()
-        || status.is_wd_added()
-        || status.is_wd_deleted()
 }
 
 fn remote_branch_name_parts(name: &str) -> Result<(&str, &str)> {
@@ -2214,6 +2124,66 @@ mod tests {
         assert_eq!(actual.replace("\r\n", "\n"), expected);
     }
 
+    fn set_gitmodules_branch(root: &Path, submodule_path: &str, branch: &str) {
+        let gitmodules_path = root.join(".gitmodules");
+        let mut content = fs::read_to_string(&gitmodules_path).unwrap();
+        let section = format!("[submodule \"{submodule_path}\"]");
+        let start = content.find(&section).unwrap();
+        let next_section = content[start + section.len()..]
+            .find("\n[submodule ")
+            .map(|offset| start + section.len() + offset)
+            .unwrap_or(content.len());
+        if content[start..next_section].contains("\n\tbranch = ") {
+            let section_body = content[start..next_section].to_string();
+            let replaced = section_body
+                .lines()
+                .map(|line| {
+                    if line.trim_start().starts_with("branch = ") {
+                        format!("\tbranch = {branch}")
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            content.replace_range(start..next_section, &replaced);
+        } else {
+            let insert_at = next_section;
+            let prefix = if insert_at > 0 && content.as_bytes()[insert_at - 1] == b'\n' {
+                ""
+            } else {
+                "\n"
+            };
+            content.insert_str(insert_at, &format!("{prefix}\tbranch = {branch}\n"));
+        }
+        fs::write(gitmodules_path, content).unwrap();
+    }
+
+    fn set_gitmodules_url(root: &Path, submodule_path: &str, url: &str) {
+        let gitmodules_path = root.join(".gitmodules");
+        let mut content = fs::read_to_string(&gitmodules_path).unwrap();
+        let section = format!("[submodule \"{submodule_path}\"]");
+        let start = content.find(&section).unwrap();
+        let next_section = content[start + section.len()..]
+            .find("\n[submodule ")
+            .map(|offset| start + section.len() + offset)
+            .unwrap_or(content.len());
+        let section_body = content[start..next_section].to_string();
+        let replaced = section_body
+            .lines()
+            .map(|line| {
+                if line.trim_start().starts_with("url = ") {
+                    format!("\turl = {url}")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        content.replace_range(start..next_section, &replaced);
+        fs::write(gitmodules_path, content).unwrap();
+    }
+
     fn commit_all(repo: &Repository, message: &str) -> Oid {
         let mut index = repo.index().unwrap();
         index
@@ -2323,6 +2293,208 @@ mod tests {
         service.push(&mut repo, &RemoteName::new("origin")).unwrap();
 
         (super_remote, sub_remote, service)
+    }
+
+    struct SuperRemoteWithSubmodules {
+        super_remote: TempDir,
+        sub_remotes: Vec<TempDir>,
+        service: GitService,
+    }
+
+    fn create_super_remote_with_named_submodules(
+        modules: &[(&str, &str, Option<&str>)],
+    ) -> SuperRemoteWithSubmodules {
+        let service = service();
+        let mut sub_remotes = Vec::new();
+        let mut sub_urls = Vec::new();
+        for (_name, initial_body, _branch) in modules {
+            let remote_dir = TempDir::new().unwrap();
+            let mut bare_opts = RepositoryInitOptions::new();
+            bare_opts.bare(true).initial_head("main");
+            Repository::init_opts(remote_dir.path(), &bare_opts).unwrap();
+
+            let (work_dir, mut repo, _seed_service) = init_repo();
+            write_file(work_dir.path(), "sub.txt", initial_body);
+            commit_all(&repo, "seed submodule");
+            repo.remote("origin", &path_url(remote_dir.path())).unwrap();
+            service.push(&mut repo, &RemoteName::new("origin")).unwrap();
+            sub_urls.push(path_url(remote_dir.path()));
+            sub_remotes.push(remote_dir);
+        }
+
+        let (super_remote, _super_service) = create_bare_remote_with_seed("README.md", "super\n");
+        let work_dir = TempDir::new().unwrap();
+        let work_path = work_dir.path().join("super-work");
+        service
+            .clone_repo(&path_url(super_remote.path()), &RepoPath::new(&work_path))
+            .unwrap();
+        let mut repo = Repository::open(&work_path).unwrap();
+        configure_user(&repo);
+        for ((name, _initial_body, branch), url) in modules.iter().zip(sub_urls.iter()) {
+            let path = format!("deps/{name}");
+            {
+                let mut submodule = repo.submodule(url, Path::new(&path), true).unwrap();
+                submodule.clone(None).unwrap();
+                submodule.add_finalize().unwrap();
+            }
+            if let Some(branch) = branch {
+                set_gitmodules_branch(&work_path, &path, branch);
+                let mut index = repo.index().unwrap();
+                index.add_path(Path::new(".gitmodules")).unwrap();
+                index.write().unwrap();
+            }
+        }
+        commit_all(&repo, "add submodules");
+        service.push(&mut repo, &RemoteName::new("origin")).unwrap();
+
+        SuperRemoteWithSubmodules {
+            super_remote,
+            sub_remotes,
+            service,
+        }
+    }
+
+    fn create_super_remote_with_two_submodules() -> SuperRemoteWithSubmodules {
+        create_super_remote_with_named_submodules(&[
+            ("one", "one v1\n", None),
+            ("two", "two v1\n", None),
+        ])
+    }
+
+    fn clone_super_repo(
+        fixture: &SuperRemoteWithSubmodules,
+        recursive_submodules: bool,
+    ) -> (TempDir, std::path::PathBuf, Repository) {
+        let clone_dir = TempDir::new().unwrap();
+        let clone_path = clone_dir.path().join("clone");
+        fixture
+            .service
+            .clone_repo_with_options(
+                &path_url(fixture.super_remote.path()),
+                &RepoPath::new(&clone_path),
+                CloneOptions {
+                    recursive_submodules,
+                },
+            )
+            .unwrap();
+        let repo = Repository::open(&clone_path).unwrap();
+        configure_user(&repo);
+        (clone_dir, clone_path, repo)
+    }
+
+    fn advance_submodule_remote(
+        remote_dir: &Path,
+        service: &GitService,
+        body: &str,
+        branch: &str,
+    ) -> Oid {
+        let work_dir = TempDir::new().unwrap();
+        let work_path = work_dir.path().join("sub-remote-work");
+        service
+            .clone_repo(&path_url(remote_dir), &RepoPath::new(&work_path))
+            .unwrap();
+        let mut repo = Repository::open(&work_path).unwrap();
+        configure_user(&repo);
+        if branch != "main" {
+            service
+                .create_branch(&mut repo, &BranchName::new(branch))
+                .unwrap();
+            service
+                .checkout_branch(&mut repo, &BranchName::new(branch))
+                .unwrap();
+        }
+        write_file(&work_path, "sub.txt", body);
+        let oid = commit_all(&repo, "advance submodule");
+        service
+            .push_branch(
+                &mut repo,
+                &RemoteName::new("origin"),
+                &BranchName::new(branch),
+                false,
+            )
+            .unwrap();
+        oid
+    }
+
+    fn submodule_head_oid(root: &Path, path: &str) -> Oid {
+        let repo = Repository::open(root.join(path)).unwrap();
+        repo.head().unwrap().target().unwrap()
+    }
+
+    struct NestedSubmoduleFixture {
+        super_remote: TempDir,
+        _middle_remote: TempDir,
+        leaf_remote: TempDir,
+        service: GitService,
+    }
+
+    fn create_nested_submodule_fixture() -> NestedSubmoduleFixture {
+        let service = service();
+        let (leaf_remote, _leaf_service) = create_bare_remote_with_seed("leaf.txt", "leaf v1\n");
+        let (middle_remote, _middle_service) =
+            create_bare_remote_with_seed("middle.txt", "middle\n");
+
+        let middle_work_dir = TempDir::new().unwrap();
+        let middle_work_path = middle_work_dir.path().join("middle-work");
+        service
+            .clone_repo(
+                &path_url(middle_remote.path()),
+                &RepoPath::new(&middle_work_path),
+            )
+            .unwrap();
+        let mut middle_repo = Repository::open(&middle_work_path).unwrap();
+        configure_user(&middle_repo);
+        {
+            let leaf_url = path_url(leaf_remote.path());
+            let mut submodule = middle_repo
+                .submodule(&leaf_url, Path::new("deps/leaf"), true)
+                .unwrap();
+            submodule.clone(None).unwrap();
+            submodule.add_finalize().unwrap();
+            set_gitmodules_url(&middle_work_path, "deps/leaf", &leaf_url);
+            let mut index = middle_repo.index().unwrap();
+            index.add_path(Path::new(".gitmodules")).unwrap();
+            index.write().unwrap();
+        }
+        commit_all(&middle_repo, "add nested leaf");
+        service
+            .push(&mut middle_repo, &RemoteName::new("origin"))
+            .unwrap();
+
+        let (super_remote, _super_service) = create_bare_remote_with_seed("README.md", "super\n");
+        let super_work_dir = TempDir::new().unwrap();
+        let super_work_path = super_work_dir.path().join("super-work");
+        service
+            .clone_repo(
+                &path_url(super_remote.path()),
+                &RepoPath::new(&super_work_path),
+            )
+            .unwrap();
+        let mut super_repo = Repository::open(&super_work_path).unwrap();
+        configure_user(&super_repo);
+        {
+            let middle_url = path_url(middle_remote.path());
+            let mut submodule = super_repo
+                .submodule(&middle_url, Path::new("deps/mid"), true)
+                .unwrap();
+            submodule.clone(None).unwrap();
+            submodule.add_finalize().unwrap();
+            set_gitmodules_url(&super_work_path, "deps/mid", &middle_url);
+            let mut index = super_repo.index().unwrap();
+            index.add_path(Path::new(".gitmodules")).unwrap();
+            index.write().unwrap();
+        }
+        commit_all(&super_repo, "add middle submodule");
+        service
+            .push(&mut super_repo, &RemoteName::new("origin"))
+            .unwrap();
+
+        NestedSubmoduleFixture {
+            super_remote,
+            _middle_remote: middle_remote,
+            leaf_remote,
+            service,
+        }
     }
 
     fn advance_remote_feature(remote_dir: &Path, service: &GitService) {
@@ -2482,6 +2654,226 @@ mod tests {
         let submodules = service.submodules(&repo).unwrap();
         assert_eq!(submodules.len(), 1);
         assert_eq!(submodules[0].path, Path::new("deps/sub"));
+    }
+
+    #[test]
+    fn update_submodules_to_remote_latest_advances_workdir_without_parent_commit() {
+        let fixture = create_super_remote_with_named_submodules(&[("sub", "sub v1\n", None)]);
+        let (_clone_dir, clone_path, mut repo) = clone_super_repo(&fixture, true);
+        let target = advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "sub v2\n",
+            "main",
+        );
+
+        fixture
+            .service
+            .update_submodules_to_remote_latest(&mut repo)
+            .unwrap();
+
+        let target_string = target.to_string();
+        assert_eq!(submodule_head_oid(&clone_path, "deps/sub"), target);
+        assert_file_text(&clone_path, "deps/sub/sub.txt", "sub v2\n");
+        let submodules = fixture.service.submodules(&repo).unwrap();
+        assert_eq!(submodules.len(), 1);
+        assert_eq!(
+            submodules[0].workdir_id.as_deref(),
+            Some(target_string.as_str())
+        );
+        assert_ne!(submodules[0].index_id, submodules[0].workdir_id);
+        assert_eq!(submodules[0].status.label(), "需更新");
+        let changes = fixture.service.status(&repo).unwrap();
+        assert!(
+            changes.iter().any(|change| change.path == "deps/sub"
+                && change.unstaged == Some(ChangeState::Modified))
+        );
+    }
+
+    #[test]
+    fn update_submodules_to_remote_latest_uses_gitmodules_branch() {
+        let fixture =
+            create_super_remote_with_named_submodules(&[("sub", "sub v1\n", Some("develop"))]);
+        let (_clone_dir, clone_path, mut repo) = clone_super_repo(&fixture, true);
+        let _main_target = advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "main v2\n",
+            "main",
+        );
+        let develop_target = advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "develop v2\n",
+            "develop",
+        );
+
+        fixture
+            .service
+            .update_submodules_to_remote_latest(&mut repo)
+            .unwrap();
+
+        assert_eq!(submodule_head_oid(&clone_path, "deps/sub"), develop_target);
+        assert_file_text(&clone_path, "deps/sub/sub.txt", "develop v2\n");
+    }
+
+    #[test]
+    fn update_submodules_to_remote_latest_branch_dot_uses_parent_branch() {
+        let fixture = create_super_remote_with_named_submodules(&[("sub", "sub v1\n", Some("."))]);
+        let (_clone_dir, clone_path, mut repo) = clone_super_repo(&fixture, true);
+        fixture
+            .service
+            .create_branch(&mut repo, &BranchName::new("release"))
+            .unwrap();
+        fixture
+            .service
+            .checkout_branch(&mut repo, &BranchName::new("release"))
+            .unwrap();
+        let target = advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "release v2\n",
+            "release",
+        );
+
+        fixture
+            .service
+            .update_submodules_to_remote_latest(&mut repo)
+            .unwrap();
+
+        assert_eq!(submodule_head_oid(&clone_path, "deps/sub"), target);
+        assert_file_text(&clone_path, "deps/sub/sub.txt", "release v2\n");
+    }
+
+    #[test]
+    fn update_submodules_to_remote_latest_branch_dot_rejects_detached_parent() {
+        let fixture = create_super_remote_with_named_submodules(&[("sub", "sub v1\n", Some("."))]);
+        let (_clone_dir, _clone_path, mut repo) = clone_super_repo(&fixture, true);
+        let head = repo.head().unwrap().target().unwrap();
+        repo.set_head_detached(head).unwrap();
+        advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "release v2\n",
+            "release",
+        );
+
+        let err = fixture
+            .service
+            .update_submodules_to_remote_latest(&mut repo)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("branch = ."));
+        assert!(err.to_string().contains("父仓库当前不是本地分支"));
+    }
+
+    #[test]
+    fn update_single_submodule_to_remote_latest_only_updates_named_module() {
+        let fixture = create_super_remote_with_two_submodules();
+        let (_clone_dir, clone_path, mut repo) = clone_super_repo(&fixture, true);
+        let target_one = advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "one v2\n",
+            "main",
+        );
+        let original_two = submodule_head_oid(&clone_path, "deps/two");
+        advance_submodule_remote(
+            fixture.sub_remotes[1].path(),
+            &fixture.service,
+            "two v2\n",
+            "main",
+        );
+
+        fixture
+            .service
+            .update_submodule_to_remote_latest(&mut repo, "deps/one")
+            .unwrap();
+
+        assert_eq!(submodule_head_oid(&clone_path, "deps/one"), target_one);
+        assert_eq!(submodule_head_oid(&clone_path, "deps/two"), original_two);
+        assert_file_text(&clone_path, "deps/one/sub.txt", "one v2\n");
+        assert_file_text(&clone_path, "deps/two/sub.txt", "two v1\n");
+    }
+
+    #[test]
+    fn update_submodules_to_remote_latest_rejects_dirty_submodule() {
+        let fixture = create_super_remote_with_named_submodules(&[("sub", "sub v1\n", None)]);
+        let (_clone_dir, clone_path, mut repo) = clone_super_repo(&fixture, true);
+        advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "sub v2\n",
+            "main",
+        );
+        write_file(&clone_path, "deps/sub/local.txt", "local\n");
+
+        let err = fixture
+            .service
+            .update_submodules_to_remote_latest(&mut repo)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("子模块"));
+        assert!(err.to_string().contains("本地改动"));
+    }
+
+    #[test]
+    fn update_submodules_to_remote_latest_rejects_non_fast_forward() {
+        let fixture = create_super_remote_with_named_submodules(&[("sub", "sub v1\n", None)]);
+        let (_clone_dir, clone_path, mut repo) = clone_super_repo(&fixture, true);
+        let subrepo = Repository::open(clone_path.join("deps/sub")).unwrap();
+        configure_user(&subrepo);
+        write_file(&clone_path, "deps/sub/sub.txt", "local v2\n");
+        commit_all(&subrepo, "local submodule commit");
+        advance_submodule_remote(
+            fixture.sub_remotes[0].path(),
+            &fixture.service,
+            "remote v2\n",
+            "main",
+        );
+
+        let err = fixture
+            .service
+            .update_submodules_to_remote_latest(&mut repo)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("不能快进到远端最新"));
+    }
+
+    #[test]
+    fn update_submodules_to_remote_latest_recurses_into_nested_submodules() {
+        let fixture = create_nested_submodule_fixture();
+        let clone_dir = TempDir::new().unwrap();
+        let clone_path = clone_dir.path().join("clone");
+        fixture
+            .service
+            .clone_repo_with_options(
+                &path_url(fixture.super_remote.path()),
+                &RepoPath::new(&clone_path),
+                CloneOptions {
+                    recursive_submodules: true,
+                },
+            )
+            .unwrap();
+        let mut repo = Repository::open(&clone_path).unwrap();
+        configure_user(&repo);
+        let leaf_target = advance_submodule_remote(
+            fixture.leaf_remote.path(),
+            &fixture.service,
+            "leaf v2\n",
+            "main",
+        );
+
+        fixture
+            .service
+            .update_submodules_to_remote_latest(&mut repo)
+            .unwrap();
+
+        assert_eq!(
+            submodule_head_oid(&clone_path, "deps/mid/deps/leaf"),
+            leaf_target
+        );
+        assert_file_text(&clone_path, "deps/mid/deps/leaf/sub.txt", "leaf v2\n");
     }
 
     #[test]

@@ -46,12 +46,14 @@ Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中
 - `src/assets.rs`：应用自有静态资源入口，将 `assets/icons/` 与 Yororen 内置资源合并注册给 GPUI。
 - `src/types.rs`：领域类型和错误类型的汇总入口；较独立的领域类型放到 `src/types/` 子目录，例如冲突解决类型在 `src/types/conflicts.rs`。
 - `src/git.rs`：核心 Git 服务层的汇总入口；大型或独立 Git 能力放到 `src/git/` 子目录，例如冲突解决服务在 `src/git/conflicts.rs`，贮藏服务在 `src/git/stash.rs`。
+- `src/git/submodule.rs`：子模块 Git 服务，包括状态读取、同步父仓库记录版本、快进到子模块远端最新以及递归子模块更新。
 - `src/credentials.rs`：凭据存储、匹配、Keyring 读写、凭据测试、旧存储兼容迁移和单元测试。
 - `src/proxy.rs`：网络代理设置类型、代理 URL 校验、远端协议到代理 URL 的选择，以及 `git2::ProxyOptions` 接入 helper。
 - `src/main.rs`：应用入口与主要 UI 状态机。包含 `RepositoryView`、多标签页状态、对话框、文本输入、事件泵、异步 Git 任务、工作区视图、diff、提交框、凭据/远端弹窗等。
 - `src/conflicts/`：冲突解决相关 UI、交互动作和轻量状态 helper，作为 `main.rs` 的子模块实现 `RepositoryView` 的冲突区域。
 - `src/proxy_view.rs`：网络代理设置弹窗，包括模式切换、自定义代理输入、保存和测试代理入口。
 - `src/stash_view.rs`：贮藏完整工作流 UI，包括创建贮藏、查看贮藏文件、加载贮藏 diff 和删除确认。
+- `src/submodule_view.rs`：子模块弹窗 UI 和按需加载/更新动作，包括同步记录版本、更新全部到远端最新和更新单个子模块到远端最新。
 - `src/ui/`：前端设计系统适配层。`theme.rs` 定义 Khaslana 语义色值和状态 token，`components.rs` 封装按钮、toast、tooltip、section header 等项目级 UI helper，`mod.rs` 统一导出。
 - `src/sidebar_view.rs`：侧边栏 UI，包括本地分支、远端、远端分支、标签、贮藏和相关右键菜单。
 - `src/history_view.rs`：提交历史 UI、提交图渲染、提交文件列表、历史 diff。
@@ -78,7 +80,7 @@ Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中
 已有能力包括：
 
 - 仓库：`open`、`open_fast`、`clone_repo`、`snapshot`、`snapshot_after_operation`
-- 子模块：状态读取、递归克隆、递归初始化和更新
+- 子模块：状态读取、递归克隆、递归同步父仓库记录版本、快进更新到子模块远端最新
 - 状态：`status_fast`、`status_full`
 - 分支：创建、删除、重命名、checkout、远端分支 checkout、merge
 - 远端：列表、添加、更新、删除、fetch、pull、push
@@ -148,7 +150,7 @@ UI 线程通过 `async-channel` 接收后台线程发回的 `UiEvent`。重型 G
 - 多仓库标签页
 - 自动保存和恢复会话
 - 刷新仓库状态
-- 通过子模块弹窗按需查看状态，并可手动递归初始化/更新子模块
+- 通过子模块弹窗按需查看状态，可手动同步父仓库记录版本，也可全量或单个快进更新到子模块远端最新
 
 ### 5.2 工作区
 
