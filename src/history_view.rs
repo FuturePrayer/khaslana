@@ -471,10 +471,12 @@ impl RepositoryView {
     }
 
     fn render_history_diff(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // 全文视图模式下标题前缀"全文："，提示当前展示整份文件
+        let prefix = if self.full_file_view { "全文：" } else { "" };
         let title = self
             .history_selected_file
             .as_ref()
-            .map(|path| format!("提交差异：{path}"))
+            .map(|path| format!("{prefix}提交差异：{path}"))
             .unwrap_or_else(|| "提交差异".to_string());
         let empty_message = if self.history_loading.diff {
             "提交差异加载中..."

@@ -115,10 +115,14 @@ impl GitService {
         repo: &Repository,
         stash_oid: &str,
         path: &Path,
+        full_context: bool,
         encoding: DiffEncodingChoice,
     ) -> Result<FileDiff> {
         let stash_commit = self.find_commit_by_oid(repo, stash_oid)?;
-        if let Some(diff) = self.stash_untracked_diff_for_path(repo, &stash_commit, path)? {
+        if let Some(diff) =
+            self.stash_untracked_diff_for_path(repo, &stash_commit, path, full_context)?
+        {
+            super::guard_full_file_size(&diff, full_context)?;
             return self.file_diff_from_diff(
                 diff,
                 super::path_to_git(path),
@@ -134,10 +138,11 @@ impl GitService {
         let stash_tree = stash_commit.tree()?;
         let mut options = DiffOptions::new();
         options
-            .context_lines(super::DIFF_CONTEXT_LINES)
+            .context_lines(super::diff_context_lines(full_context))
             .pathspec(path);
         let diff =
             repo.diff_tree_to_tree(base_tree.as_ref(), Some(&stash_tree), Some(&mut options))?;
+        super::guard_full_file_size(&diff, full_context)?;
         self.file_diff_from_diff(diff, super::path_to_git(path), DiffScope::Staged, encoding)
     }
 
@@ -216,6 +221,7 @@ impl GitService {
         repo: &'repo Repository,
         stash_commit: &git2::Commit<'repo>,
         path: &Path,
+        full_context: bool,
     ) -> Result<Option<git2::Diff<'repo>>> {
         let Some(untracked_tree) = stash_commit
             .parent(2)
@@ -229,7 +235,7 @@ impl GitService {
         }
         let mut options = DiffOptions::new();
         options
-            .context_lines(super::DIFF_CONTEXT_LINES)
+            .context_lines(super::diff_context_lines(full_context))
             .pathspec(path);
         Ok(Some(repo.diff_tree_to_tree(
             None,

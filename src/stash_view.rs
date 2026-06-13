@@ -203,6 +203,7 @@ impl RepositoryView {
             return;
         };
         let encoding = self.diff_encoding_choice_for_path(&repo_path);
+        let full_context = self.full_file_view;
         let cache_key = self.diff_cache_key(
             crate::DiffCacheKind::Stash {
                 stash_oid: stash_oid.clone(),
@@ -225,8 +226,13 @@ impl RepositoryView {
             let started = Instant::now();
             let result = (|| -> khaslana::Result<UiEvent> {
                 let repo = Repository::open(repo_path)?;
-                let diff =
-                    service.stash_file_diff(&repo, &stash_oid, Path::new(&path), encoding)?;
+                let diff = service.stash_file_diff(
+                    &repo,
+                    &stash_oid,
+                    Path::new(&path),
+                    full_context,
+                    encoding,
+                )?;
                 perf_log(
                     "stash.diff",
                     started,
@@ -452,11 +458,13 @@ impl RepositoryView {
     }
 
     fn render_stash_diff(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // 全文视图模式下标题前缀"全文："，提示当前展示整份文件
+        let prefix = if self.full_file_view { "全文：" } else { "" };
         let title = self
             .stash_preview
             .selected_file
             .as_ref()
-            .map(|path| format!("贮藏差异：{path}"))
+            .map(|path| format!("{prefix}贮藏差异：{path}"))
             .unwrap_or_else(|| "贮藏差异".to_string());
         let empty_message = if self.stash_preview.loading_diff {
             "贮藏差异加载中..."

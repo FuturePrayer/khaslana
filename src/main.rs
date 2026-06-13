@@ -2,6 +2,7 @@
 
 mod assets;
 mod conflicts;
+mod diff_view;
 mod history_view;
 mod proxy_view;
 mod remote_branch_operation;
@@ -748,6 +749,8 @@ struct RepoTabState {
     pub(crate) submodule_dialog: SubmoduleDialogState,
     pub(crate) conflict_workbench: ConflictWorkbenchState,
     pub(crate) sidebar_sections: SidebarSectionState,
+    // 是否以“全文视图”展示差异：开启后 diff 上下文行数拉满，展示整份文件并保留增删行高亮
+    pub(crate) full_file_view: bool,
     pub(crate) busy: bool,
     operation_kind: OperationKind,
     pub(crate) loading: RepositoryLoading,
@@ -788,6 +791,7 @@ impl RepoTabState {
             submodule_dialog: SubmoduleDialogState::default(),
             conflict_workbench: ConflictWorkbenchState::default(),
             sidebar_sections: SidebarSectionState::default(),
+            full_file_view: false,
             busy: false,
             operation_kind: OperationKind::Local,
             loading: RepositoryLoading::default(),
@@ -853,6 +857,8 @@ pub(crate) struct DiffCacheKey {
     load_id: u64,
     encoding: DiffEncodingChoice,
     kind: DiffCacheKind,
+    // 全文视图与紧凑差异分别缓存，互不污染
+    full_file: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -2698,6 +2704,8 @@ impl RepositoryView {
                             "提交记录加载失败".to_string()
                         };
                         this.last_error = Some(error);
+                        // 全文视图过大时自动回退到紧凑差异
+                        this.revert_full_file_if_too_large_error();
                     }
                 });
             }
@@ -2849,6 +2857,8 @@ impl RepositoryView {
                     this.loading = RepositoryLoading::default();
                     this.status = "操作失败".to_string();
                     this.last_error = Some(error);
+                    // 全文视图过大时自动回退到紧凑差异
+                    this.revert_full_file_if_too_large_error();
                 });
                 self.notify_error(toast_message, cx);
             }
@@ -5788,6 +5798,7 @@ impl RepositoryView {
             load_id: self.repository_load_id,
             encoding: self.diff_encoding_choice_for_path(repo_path),
             kind,
+            full_file: self.full_file_view,
         }
     }
 
@@ -5985,7 +5996,7 @@ impl RepositoryView {
         self.select_history_file_with_reload(path, false);
     }
 
-    fn select_history_file_with_reload(&mut self, path: String, force_reload: bool) {
+    pub(crate) fn select_history_file_with_reload(&mut self, path: String, force_reload: bool) {
         let Some(commit_oid) = self.history_selected_commit.clone() else {
             return;
         };
@@ -6010,6 +6021,7 @@ impl RepositoryView {
             return;
         };
         let encoding = self.diff_encoding_choice_for_path(&repo_path);
+        let full_context = self.full_file_view;
         let cache_key = self.diff_cache_key(
             DiffCacheKind::History {
                 commit_oid: commit_oid.clone(),
@@ -6032,8 +6044,13 @@ impl RepositoryView {
             let started = Instant::now();
             let result = (|| -> khaslana::Result<UiEvent> {
                 let repo = Repository::open(repo_path)?;
-                let diff =
-                    service.commit_file_diff(&repo, &commit_oid, Path::new(&path), encoding)?;
+                let diff = service.commit_file_diff(
+                    &repo,
+                    &commit_oid,
+                    Path::new(&path),
+                    full_context,
+                    encoding,
+                )?;
                 perf_log(
                     "history.diff",
                     started,
@@ -6175,7 +6192,7 @@ impl RepositoryView {
         });
     }
 
-    fn load_diff(&mut self, path: String, scope: DiffScope) {
+    pub(crate) fn load_diff(&mut self, path: String, scope: DiffScope) {
         self.reset_uniform_scroll("diff-scroll");
         let Some(tab_id) = self.active_tab_id() else {
             return;
@@ -6184,6 +6201,7 @@ impl RepositoryView {
             return;
         };
         let encoding = self.diff_encoding_choice_for_path(&repo_path);
+        let full_context = self.full_file_view;
         let cache_key = self.diff_cache_key(
             DiffCacheKind::Worktree {
                 scope: scope.clone(),
@@ -6206,7 +6224,7 @@ impl RepositoryView {
             let started = Instant::now();
             let repo = Repository::open(repo_path)?;
             let diff = service
-                .diff_for_path(&repo, Path::new(&path), scope, encoding)
+                .diff_for_path(&repo, Path::new(&path), scope, full_context, encoding)
                 .map_err(|err| {
                     if is_conflicted_path {
                         khaslana::GitError::Message(
@@ -8103,10 +8121,18 @@ impl RepositoryView {
     }
 
     fn render_diff(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // 全文视图模式下标题前缀"全文："，提示当前展示整份文件而非仅改动区域
+        let prefix = if self.full_file_view { "全文：" } else { "" };
         let title = self
             .diff
             .as_ref()
-            .map(|diff| format!("差异：{} ({})", diff.path, diff_scope_label(&diff.scope)))
+            .map(|diff| {
+                format!(
+                    "{prefix}差异：{} ({})",
+                    diff.path,
+                    diff_scope_label(&diff.scope)
+                )
+            })
             .unwrap_or_else(|| "差异".to_string());
 
         div()
@@ -8279,7 +8305,14 @@ impl RepositoryView {
                     .truncate()
                     .child(title),
             )
-            .child(self.encoding_button(diff, target, cx))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(self.full_file_toggle_button(target, cx))
+                    .child(self.encoding_button(diff, target, cx)),
+            )
     }
 
     fn encoding_button(

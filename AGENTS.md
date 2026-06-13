@@ -57,6 +57,7 @@ Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中
 - `src/ui/`：前端设计系统适配层。`theme.rs` 定义 Khaslana 语义色值和状态 token，`components.rs` 封装按钮、toast、tooltip、section header 等项目级 UI helper，`mod.rs` 统一导出。
 - `src/sidebar_view.rs`：侧边栏 UI，包括本地分支、远端、远端分支、标签、贮藏和相关右键菜单。
 - `src/history_view.rs`：提交历史 UI、提交图渲染、提交文件列表、历史 diff。
+- `src/diff_view.rs`：差异区域全文/紧凑视图切换模块，包括切换按钮渲染、扇出重新加载和文件过大自动回退。
 - `src/ui_helpers.rs`：通用 UI 常量、滚动条、列表行、diff 行号、作者头像等辅助渲染。
 
 ## 4. 核心架构
@@ -135,6 +136,12 @@ UI 线程通过 `async-channel` 接收后台线程发回的 `UiEvent`。重型 G
 
 diff 自动编码检测使用有限字节样本，UI 对最近查看的工作区 / 历史 / 贮藏 diff 使用有界 LRU 内存缓存；缓存不持久化，编码偏好变化或仓库加载代际变化时自然失效。
 
+全文差异视图常量（在 `src/git.rs` 中定义）：
+
+- `FULL_FILE_CONTEXT_LINES = 10_000_000`：全文视图拉满 diff 上下文行数，让 libgit2 输出整份文件作为上下文，改动行依旧高亮。不能使用 `u32::MAX`，libgit2 会将其当作 0。
+- `FULL_FILE_MAX_BYTES = 3 * 1024 * 1024`：全文视图的字节预检阈值，新旧侧文件体积超过该值则不生成全文差异，避免超大文件在分配逐行 String 时内存暴涨。
+- `FULL_FILE_TOO_LARGE_MESSAGE`：全文过大时返回的错误文案，UI 据此自动回退到紧凑差异。
+
 ### 4.5 持久化数据
 
 应用使用 `directories::ProjectDirs::from("", "", "Khaslana")` 生成配置目录，主程序持久化数据统一写入 `khaslana.sqlite3`。当前数据库保存：
@@ -167,9 +174,12 @@ diff 自动编码检测使用有限字节样本，UI 对最近查看的工作区
 - 取消暂存选中、取消暂存全部
 - 丢弃单个、选中或全部变更
 - 查看工作区 diff
+- 差异区域支持全文/紧凑切换：切换按钮位于标题栏编码按钮旁，开启后展示整份文件并保留增删行高亮
 - 大 diff 使用虚拟列表渲染
 - diff 头部可折叠
 - diff 编码可选
+- diff 区域支持左右滑动查看长行
+- 全文视图对超大文件（超过 `FULL_FILE_MAX_BYTES`）自动回退到紧凑差异并提示
 - 提交信息输入和 commit
 
 ### 5.3 分支、远端、标签、贮藏

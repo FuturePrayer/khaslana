@@ -36,6 +36,40 @@ mod submodule;
 pub(crate) const DIFF_CONTEXT_LINES: u32 = 3;
 const BRANCH_SYNC_UNPUSHED_OID_LIMIT: usize = 256;
 const DIFF_ENCODING_SAMPLE_LIMIT: usize = 256 * 1024;
+/// 全文差异视图使用的上下文行数：取一个足够大的安全值（远超字节预检阈值
+/// `FULL_FILE_MAX_BYTES` 所允许的最大行数），让 libgit2 输出整文件作为上下文，
+/// 改动行依旧按 Added/Removed 高亮，其余行作为 Context 展示。
+/// 注意不能使用 `u32::MAX`：libgit2 内部对该值处理后会把上下文行数当作 0。
+pub(crate) const FULL_FILE_CONTEXT_LINES: u32 = 10_000_000;
+/// 全文差异视图的字节预检阈值：新旧侧文件体积超过该值则不生成全文差异，
+/// 避免超大文件在分配逐行 String 时内存暴涨。UI 据此回退到紧凑差异。
+pub(crate) const FULL_FILE_MAX_BYTES: u64 = 3 * 1024 * 1024;
+/// 全文差异过大时返回的错误文案，UI 据此识别并回退到紧凑差异。
+pub const FULL_FILE_TOO_LARGE_MESSAGE: &str = "文件过大，无法显示全文视图";
+
+/// 全文差异的字节预检：仅在请求全文（`full_context`）时，于分配逐行 String 之前
+/// 检查新旧侧文件体积，超过 `FULL_FILE_MAX_BYTES` 则直接返回错误。
+fn guard_full_file_size(diff: &git2::Diff<'_>, full_context: bool) -> Result<()> {
+    if !full_context {
+        return Ok(());
+    }
+    let too_large = diff
+        .deltas()
+        .any(|delta| delta.old_file().size().max(delta.new_file().size()) > FULL_FILE_MAX_BYTES);
+    if too_large {
+        return Err(GitError::Message(FULL_FILE_TOO_LARGE_MESSAGE.into()));
+    }
+    Ok(())
+}
+
+/// 根据是否请求全文视图选择上下文行数。
+fn diff_context_lines(full_context: bool) -> u32 {
+    if full_context {
+        FULL_FILE_CONTEXT_LINES
+    } else {
+        DIFF_CONTEXT_LINES
+    }
+}
 
 pub trait ProgressEmitter: Send + Sync {
     fn emit(&self, event: OperationEvent);
@@ -1135,13 +1169,14 @@ impl GitService {
         repo: &Repository,
         path: &Path,
         scope: DiffScope,
+        full_context: bool,
         encoding: DiffEncodingChoice,
     ) -> Result<FileDiff> {
         let mut options = DiffOptions::new();
         options
             .pathspec(path)
             .include_untracked(true)
-            .context_lines(DIFF_CONTEXT_LINES);
+            .context_lines(diff_context_lines(full_context));
 
         let diff = match scope {
             DiffScope::Staged => {
@@ -1151,6 +1186,7 @@ impl GitService {
             DiffScope::Unstaged => repo.diff_index_to_workdir(None, Some(&mut options))?,
         };
 
+        guard_full_file_size(&diff, full_context)?;
         self.file_diff_from_diff(diff, path_to_git(path), scope, encoding)
     }
 
@@ -1525,7 +1561,7 @@ impl GitService {
         commit_oid: &str,
     ) -> Result<Vec<CommitFileChange>> {
         let commit = self.find_commit_by_oid(repo, commit_oid)?;
-        let diff = self.commit_diff(repo, &commit, None)?;
+        let diff = self.commit_diff(repo, &commit, None, false)?;
         let mut files = Vec::new();
         for delta in diff.deltas() {
             let Some(path) = delta
@@ -1552,10 +1588,12 @@ impl GitService {
         repo: &Repository,
         commit_oid: &str,
         path: &Path,
+        full_context: bool,
         encoding: DiffEncodingChoice,
     ) -> Result<FileDiff> {
         let commit = self.find_commit_by_oid(repo, commit_oid)?;
-        let diff = self.commit_diff(repo, &commit, Some(path))?;
+        let diff = self.commit_diff(repo, &commit, Some(path), full_context)?;
+        guard_full_file_size(&diff, full_context)?;
         self.file_diff_from_diff(diff, path_to_git(path), DiffScope::Staged, encoding)
     }
 
@@ -1574,6 +1612,7 @@ impl GitService {
         repo: &'repo Repository,
         commit: &git2::Commit<'repo>,
         path: Option<&Path>,
+        full_context: bool,
     ) -> Result<git2::Diff<'repo>> {
         let tree = commit.tree()?;
         let parent_tree = if commit.parent_count() > 0 {
@@ -1582,7 +1621,7 @@ impl GitService {
             None
         };
         let mut options = DiffOptions::new();
-        options.context_lines(DIFF_CONTEXT_LINES);
+        options.context_lines(diff_context_lines(full_context));
         if let Some(path) = path {
             options.pathspec(path);
         }
@@ -4530,6 +4569,7 @@ mod tests {
                 &repo,
                 Path::new("file.txt"),
                 DiffScope::Staged,
+                false,
                 DiffEncodingChoice::Auto,
             )
             .unwrap();
@@ -4570,6 +4610,7 @@ mod tests {
                 &repo,
                 Path::new("file.txt"),
                 DiffScope::Staged,
+                false,
                 DiffEncodingChoice::Auto,
             )
             .unwrap();
@@ -4587,6 +4628,103 @@ mod tests {
     }
 
     #[test]
+    fn diff_full_context_includes_entire_file() {
+        let (dir, mut repo, service) = init_repo();
+        let original = (1..=12)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        write_file(dir.path(), "file.txt", &original);
+        commit_all(&repo, "initial");
+
+        let modified = (1..=12)
+            .map(|line| {
+                if line == 8 {
+                    "line 8 changed\n".to_string()
+                } else {
+                    format!("line {line}\n")
+                }
+            })
+            .collect::<String>();
+        write_file(dir.path(), "file.txt", &modified);
+        service
+            .stage_path(&mut repo, Path::new("file.txt"))
+            .unwrap();
+
+        // 全文上下文应包含远离改动的整段未改行（紧凑 3 行上下文会排除它们）。
+        let diff = service
+            .diff_for_path(
+                &repo,
+                Path::new("file.txt"),
+                DiffScope::Staged,
+                true,
+                DiffEncodingChoice::Auto,
+            )
+            .unwrap();
+        let body: Vec<&str> = diff
+            .lines
+            .iter()
+            .filter(|line| line.kind != DiffLineKind::Header)
+            .map(|line| line.content.as_str())
+            .collect();
+
+        // "line 01" 这种独占前缀的断言避免与 "line 1X" 子串混淆。
+        assert!(body.iter().any(|line| *line == "line 1"));
+        assert!(body.iter().any(|line| *line == "line 12"));
+        // 改动行依旧按 Added/Removed 高亮。
+        assert!(
+            diff.lines
+                .iter()
+                .any(|line| { line.kind == DiffLineKind::Removed && line.content == "line 8" })
+        );
+        assert!(
+            diff.lines.iter().any(|line| {
+                line.kind == DiffLineKind::Added && line.content == "line 8 changed"
+            })
+        );
+    }
+
+    #[test]
+    fn diff_full_context_rejects_oversized_file() {
+        let (dir, mut repo, service) = init_repo();
+        // 生成一个超过全文阈值的文件并提交，再做一处改动后暂存。
+        let big = "a".repeat((FULL_FILE_MAX_BYTES + 1024) as usize) + "\n";
+        write_file(dir.path(), "big.txt", &big);
+        commit_all(&repo, "initial");
+        let mut modified = big.clone();
+        modified.push_str("tail change\n");
+        write_file(dir.path(), "big.txt", &modified);
+        service.stage_path(&mut repo, Path::new("big.txt")).unwrap();
+
+        // 全文视图应被字节预检拦截。
+        let err = service
+            .diff_for_path(
+                &repo,
+                Path::new("big.txt"),
+                DiffScope::Staged,
+                true,
+                DiffEncodingChoice::Auto,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains(FULL_FILE_TOO_LARGE_MESSAGE));
+
+        // 紧凑差异在该文件上仍可正常生成。
+        let compact = service
+            .diff_for_path(
+                &repo,
+                Path::new("big.txt"),
+                DiffScope::Staged,
+                false,
+                DiffEncodingChoice::Auto,
+            )
+            .unwrap();
+        assert!(
+            compact.lines.iter().any(
+                |line| line.kind == DiffLineKind::Added && line.content.contains("tail change")
+            )
+        );
+    }
+
+    #[test]
     fn diff_auto_detects_gb18030_text() {
         let (dir, mut repo, service) = init_repo();
         write_bytes(dir.path(), "cn.txt", b"hello\n");
@@ -4599,6 +4737,7 @@ mod tests {
                 &repo,
                 Path::new("cn.txt"),
                 DiffScope::Staged,
+                false,
                 DiffEncodingChoice::Auto,
             )
             .unwrap();
@@ -4632,6 +4771,7 @@ mod tests {
                 &repo,
                 Path::new("large-cn.txt"),
                 DiffScope::Staged,
+                false,
                 DiffEncodingChoice::Auto,
             )
             .unwrap();
@@ -4655,6 +4795,7 @@ mod tests {
                 &repo,
                 Path::new("big5.txt"),
                 DiffScope::Staged,
+                false,
                 DiffEncodingChoice::Utf8,
             )
             .unwrap();
@@ -4665,6 +4806,7 @@ mod tests {
                 &repo,
                 Path::new("big5.txt"),
                 DiffScope::Staged,
+                false,
                 DiffEncodingChoice::Big5,
             )
             .unwrap();
@@ -4713,6 +4855,7 @@ mod tests {
                 &repo,
                 &first_page[0].oid,
                 Path::new("file.txt"),
+                false,
                 DiffEncodingChoice::Auto,
             )
             .unwrap();
@@ -4733,6 +4876,7 @@ mod tests {
                 &repo,
                 &root_oid.to_string(),
                 Path::new("root.txt"),
+                false,
                 DiffEncodingChoice::Auto,
             )
             .unwrap();
@@ -5335,6 +5479,7 @@ mod tests {
                 &repo,
                 &snapshot.stashes[0].oid,
                 Path::new("file.txt"),
+                false,
                 DiffEncodingChoice::Auto,
             )
             .unwrap();
@@ -5376,6 +5521,7 @@ mod tests {
                 &repo,
                 &snapshot.stashes[0].oid,
                 Path::new("new.txt"),
+                false,
                 DiffEncodingChoice::Auto,
             )
             .unwrap();
