@@ -215,7 +215,7 @@ pub struct WorktreeChange {
     pub unstaged: Option<ChangeState>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DiffScope {
     Staged,
     Unstaged,
@@ -236,7 +236,7 @@ pub enum DiffLineKind {
     Header,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DiffEncodingChoice {
     #[default]
     Auto,
@@ -304,6 +304,7 @@ pub struct BranchSyncStatus {
     pub ahead: usize,
     pub behind: usize,
     pub unpushed_oids: Vec<String>,
+    pub unpushed_oids_truncated: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

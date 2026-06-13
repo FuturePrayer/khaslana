@@ -8,6 +8,7 @@ mod remote_branch_operation;
 mod sidebar_view;
 mod stash_view;
 mod submodule_view;
+mod tasks;
 mod text_input;
 mod ui;
 mod ui_helpers;
@@ -16,6 +17,7 @@ mod workflow_view;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs;
+use std::num::NonZeroUsize;
 use std::ops::{Deref, DerefMut, Range};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
@@ -37,14 +39,15 @@ use khaslana::{
     ConflictBlockResolution, ConflictFileKind, ConflictFileView, CredentialProvider,
     CredentialRecord, CredentialRequest, CredentialScope, CredentialStore, CustomProxySettings,
     DiffEncodingChoice, DiffEncodingPreferences, DiffLineKind, DiffScope, FileDiff, GitCredential,
-    GitService, HistoryScope, KeyringCredentialStore, NetworkProxyMode, NetworkProxySettings,
-    OperationEvent, ProgressEmitter, RemoteCredentialBinding, RemoteCredentialBindings,
-    RemoteCredentialPolicy, RemoteInfo, RemoteName, RepoPath, RepositorySnapshot, ResetMode,
-    SessionState, SubmoduleInfo, SubmoduleRemoteSyncStatus, TagName, credential_display_target,
-    credential_key_filename, credential_kind_label, credential_record_is_compatible_with_url,
-    credential_record_label, credential_record_matches_remote_url, credential_scope_label,
-    test_credential_connection,
+    GitService, HistoryRefsCache, HistoryScope, KeyringCredentialStore, NetworkProxyMode,
+    NetworkProxySettings, OperationEvent, ProgressEmitter, RemoteCredentialBinding,
+    RemoteCredentialBindings, RemoteCredentialPolicy, RemoteInfo, RemoteName, RepoPath,
+    RepositorySnapshot, ResetMode, SessionState, SubmoduleInfo, SubmoduleRemoteSyncStatus, TagName,
+    credential_display_target, credential_key_filename, credential_kind_label,
+    credential_record_is_compatible_with_url, credential_record_label,
+    credential_record_matches_remote_url, credential_scope_label, test_credential_connection,
 };
+use lru::LruCache;
 use remote_branch_operation::{
     RemoteBranchOperationKind, RemoteBranchOperationState, default_remote_branch_for,
     local_branch_by_name, remote_branch_dialog_defaults, remote_branch_exists,
@@ -54,6 +57,7 @@ use submodule_view::{
     SubmoduleDialogState, operation_refreshes_submodule_dialog, submodule_remote_request_matches,
     submodule_request_matches,
 };
+use tasks::{TaskExecutor, TaskKind};
 use text_input::{MultiLineInputElement, SingleLineInputElement, TextFieldState};
 use ui::{
     components::{
@@ -133,6 +137,7 @@ const TOOLBAR_MORE_BUTTON_ANCHOR_WIDTH: f32 = 76.0;
 const TOOLBAR_MORE_MENU_VERTICAL_OFFSET: f32 = 20.0;
 const MAX_CONCURRENT_REPO_LOADS: usize = 2;
 const LARGE_DIFF_CACHE_LINE_LIMIT: usize = 20_000;
+const DIFF_CACHE_CAPACITY: usize = 16;
 const CONFLICT_OURS_SCROLL_HANDLE_ID: &str = "conflict-ours-scroll-handle";
 const CONFLICT_RESULT_SCROLL_HANDLE_ID: &str = "conflict-result-scroll-handle";
 const CONFLICT_THEIRS_SCROLL_HANDLE_ID: &str = "conflict-theirs-scroll-handle";
@@ -703,6 +708,7 @@ struct RepoTabState {
     pub(crate) history_diff_headers_expanded: bool,
     pub(crate) history_loading: HistoryLoading,
     pub(crate) history_scope: HistoryScope,
+    pub(crate) history_refs_cache: Option<HistoryRefsCache>,
     pub(crate) history_graph_rows: Vec<history_view::CommitGraphRow>,
     pub(crate) stash_preview: StashPreviewState,
     pub(crate) branch_sync_status: Option<BranchSyncStatus>,
@@ -742,6 +748,7 @@ impl RepoTabState {
             history_diff_headers_expanded: false,
             history_loading: HistoryLoading::default(),
             history_scope: HistoryScope::default(),
+            history_refs_cache: None,
             history_graph_rows: Vec::new(),
             stash_preview: StashPreviewState::default(),
             branch_sync_status: None,
@@ -800,6 +807,21 @@ struct ResizeState {
     start_y: f32,
     start_width: f32,
     start_height: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum DiffCacheKind {
+    Worktree { scope: DiffScope, path: String },
+    History { commit_oid: String, path: String },
+    Stash { stash_oid: String, path: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct DiffCacheKey {
+    repo_key: String,
+    load_id: u64,
+    encoding: DiffEncodingChoice,
+    kind: DiffCacheKind,
 }
 
 #[derive(Clone, Debug)]
@@ -1011,6 +1033,7 @@ pub(crate) enum UiEvent {
     HistoryCommitsLoaded {
         tab_id: RepoTabId,
         commits: Vec<CommitInfo>,
+        refs_cache: HistoryRefsCache,
         append: bool,
         has_more: bool,
         scope: HistoryScope,
@@ -1482,6 +1505,7 @@ fn started_message_for_label_text(label: &str) -> String {
 pub(crate) struct RepositoryView {
     tx: Sender<UiEvent>,
     rx: Receiver<UiEvent>,
+    tasks: TaskExecutor,
     storage: Arc<khaslana::AppStorage>,
     credential_store: Arc<KeyringCredentialStore>,
     remote_credential_bindings: Arc<Mutex<RemoteCredentialBindings>>,
@@ -1489,6 +1513,7 @@ pub(crate) struct RepositoryView {
     pub(crate) workflow_templates: Vec<WorkflowTemplateItem>,
     pub(crate) workflow_template_dir: Option<PathBuf>,
     diff_encoding_preferences: DiffEncodingPreferences,
+    diff_cache: RefCell<LruCache<DiffCacheKey, Arc<FileDiff>>>,
     proxy_settings: NetworkProxySettings,
     tabs: Vec<RepoTabState>,
     active_tab: Option<RepoTabId>,
@@ -1570,10 +1595,12 @@ impl RepositoryView {
         let proxy_custom = proxy_settings.custom.normalized();
         Self::spawn_event_pump(rx.clone(), cx);
         Self::spawn_ui_tick(tx.clone());
+        let tasks = TaskExecutor::new();
 
         Self {
             tx,
             rx,
+            tasks,
             storage: storage.clone(),
             credential_store,
             remote_credential_bindings,
@@ -1581,6 +1608,10 @@ impl RepositoryView {
             workflow_templates: Vec::new(),
             workflow_template_dir: None,
             diff_encoding_preferences: Self::load_diff_encoding_preferences(&storage),
+            diff_cache: RefCell::new(LruCache::new(
+                NonZeroUsize::new(DIFF_CACHE_CAPACITY)
+                    .expect("diff cache capacity must be nonzero"),
+            )),
             proxy_settings: proxy_settings.clone(),
             tabs: Vec::new(),
             active_tab: None,
@@ -1971,6 +2002,7 @@ impl RepositoryView {
     }
 
     fn reload_visible_diffs_after_encoding_change(&mut self) {
+        self.diff_cache.borrow_mut().clear();
         if let Some(diff) = self.diff.clone() {
             self.load_diff(diff.path.clone(), diff.scope.clone());
         }
@@ -2394,7 +2426,18 @@ impl RepositoryView {
                         sync_request = this.prepare_branch_sync_status_request();
                     }
                     if let Some(diff) = diff {
-                        this.diff = Some(Arc::new(diff));
+                        let diff = Arc::new(diff);
+                        if let Some(repo_path) = this.repo_path.as_deref() {
+                            let cache_key = this.diff_cache_key(
+                                DiffCacheKind::Worktree {
+                                    scope: diff.scope.clone(),
+                                    path: diff.path.clone(),
+                                },
+                                repo_path,
+                            );
+                            this.cache_diff(cache_key, diff.clone());
+                        }
+                        this.diff = Some(diff);
                         this.diff_headers_expanded = false;
                         this.reset_uniform_scroll("diff-scroll");
                     }
@@ -2461,6 +2504,7 @@ impl RepositoryView {
             UiEvent::HistoryCommitsLoaded {
                 tab_id,
                 commits,
+                refs_cache,
                 append,
                 has_more,
                 scope,
@@ -2469,6 +2513,7 @@ impl RepositoryView {
                 self.with_tab_context(tab_id, |this| {
                     if load_id == this.repository_load_id && scope == this.history_scope {
                         this.history_loading.commits = false;
+                        this.history_refs_cache = Some(refs_cache);
                         this.history_has_more = has_more;
                         if append {
                             this.history_commits.extend(commits);
@@ -2531,7 +2576,15 @@ impl RepositoryView {
                         && this.history_selected_file.as_deref() == Some(path.as_str())
                     {
                         this.history_loading.diff = false;
-                        this.history_diff = Some(Arc::new(diff));
+                        let diff = Arc::new(diff);
+                        if let Some(repo_path) = this.repo_path.as_deref() {
+                            let cache_key = this.diff_cache_key(
+                                DiffCacheKind::History { commit_oid, path },
+                                repo_path,
+                            );
+                            this.cache_diff(cache_key, diff.clone());
+                        }
+                        this.history_diff = Some(diff);
                         this.history_diff_headers_expanded = false;
                         this.reset_uniform_scroll("history-diff-scroll");
                         this.status = "提交差异已加载".to_string();
@@ -2583,7 +2636,15 @@ impl RepositoryView {
                         && this.stash_preview.selected_file.as_deref() == Some(path.as_str())
                     {
                         this.stash_preview.loading_diff = false;
-                        this.stash_preview.diff = Some(Arc::new(diff));
+                        let diff = Arc::new(diff);
+                        if let Some(repo_path) = this.repo_path.as_deref() {
+                            let cache_key = this.diff_cache_key(
+                                DiffCacheKind::Stash { stash_oid, path },
+                                repo_path,
+                            );
+                            this.cache_diff(cache_key, diff.clone());
+                        }
+                        this.stash_preview.diff = Some(diff);
                         this.stash_preview.diff_headers_expanded = false;
                         this.reset_uniform_scroll("stash-diff-scroll");
                         this.status = "贮藏差异已加载".to_string();
@@ -3734,7 +3795,7 @@ impl RepositoryView {
         self.last_error = None;
         let service = self.service_for_tab(tab_id);
         let tx = self.tx.clone();
-        thread::spawn(move || {
+        self.tasks.spawn(TaskKind::Long, move || {
             let result = (|| -> khaslana::Result<()> {
                 let repo = Repository::open(repo_path)?;
                 service.test_proxy(&repo, &RemoteName::new(remote))?;
@@ -4153,8 +4214,8 @@ impl RepositoryView {
         self.last_error = None;
         let store: Arc<dyn CredentialStore> = self.credential_store.clone();
         let tx = self.tx.clone();
-        thread::spawn(
-            move || match test_credential_connection(store.as_ref(), &record) {
+        self.tasks.spawn(TaskKind::Long, move || {
+            match test_credential_connection(store.as_ref(), &record) {
                 Ok(()) => {
                     let records = store.list_records().unwrap_or_default();
                     send_ui_event(
@@ -4174,8 +4235,8 @@ impl RepositoryView {
                         },
                     );
                 }
-            },
-        );
+            }
+        });
     }
 
     fn matching_credential_for_remote_url(&self, url: &str) -> Option<&CredentialRecord> {
@@ -4385,7 +4446,7 @@ impl RepositoryView {
                 message: started.to_string(),
             },
         );
-        thread::spawn(move || {
+        self.tasks.spawn(TaskKind::Short, move || {
             let stage_started = Instant::now();
             let repo_path = RepoPath::new(path);
             let fast = match service.open_fast(&repo_path) {
@@ -4552,7 +4613,7 @@ impl RepositoryView {
     ) {
         let service = self.service_for_tab(tab_id);
         let tx = self.tx.clone();
-        thread::spawn(move || {
+        self.tasks.spawn(TaskKind::Short, move || {
             let started = Instant::now();
             let result = (|| -> khaslana::Result<Vec<khaslana::WorktreeChange>> {
                 let repo = Repository::open(path)?;
@@ -4616,7 +4677,7 @@ impl RepositoryView {
     ) {
         let service = self.service_for_tab(tab_id);
         let tx = self.tx.clone();
-        thread::spawn(move || {
+        self.tasks.spawn(TaskKind::Short, move || {
             let started = Instant::now();
             let result = (|| -> khaslana::Result<Option<BranchSyncStatus>> {
                 let repo = Repository::open(path)?;
@@ -4750,7 +4811,7 @@ impl RepositoryView {
                 message: started,
             },
         );
-        thread::spawn(move || {
+        self.tasks.spawn(TaskKind::Long, move || {
             match Repository::open(path)
                 .map_err(khaslana::GitError::from)
                 .and_then(|mut repo| f(service, &mut repo))
@@ -5218,7 +5279,7 @@ impl RepositoryView {
                 message: started.to_string(),
             },
         );
-        thread::spawn(move || match f() {
+        self.tasks.spawn(TaskKind::Short, move || match f() {
             Ok(event) => {
                 send_ui_event(&tx, event);
             }
@@ -5686,7 +5747,25 @@ impl RepositoryView {
         self.history_diff = None;
         self.history_diff_headers_expanded = false;
         self.history_loading = HistoryLoading::default();
+        self.history_refs_cache = None;
         self.history_graph_rows.clear();
+    }
+
+    pub(crate) fn diff_cache_key(&self, kind: DiffCacheKind, repo_path: &Path) -> DiffCacheKey {
+        DiffCacheKey {
+            repo_key: normalize_repo_path(repo_path),
+            load_id: self.repository_load_id,
+            encoding: self.diff_encoding_choice_for_path(repo_path),
+            kind,
+        }
+    }
+
+    pub(crate) fn cached_diff(&self, key: &DiffCacheKey) -> Option<Arc<FileDiff>> {
+        self.diff_cache.borrow_mut().get(key).cloned()
+    }
+
+    pub(crate) fn cache_diff(&self, key: DiffCacheKey, diff: Arc<FileDiff>) {
+        self.diff_cache.borrow_mut().put(key, diff);
     }
 
     pub(crate) fn set_history_scope(&mut self, scope: HistoryScope) {
@@ -5731,6 +5810,7 @@ impl RepositoryView {
         let service = self.service_for_tab(tab_id);
         let tx = self.tx.clone();
         let scope = self.history_scope;
+        let refs_cache = self.history_refs_cache.clone();
         let offset = if append {
             self.history_commits.len()
         } else {
@@ -5745,12 +5825,17 @@ impl RepositoryView {
         };
         self.last_error = None;
 
-        thread::spawn(move || {
+        self.tasks.spawn(TaskKind::Short, move || {
             let started = Instant::now();
             let result = (|| -> khaslana::Result<UiEvent> {
                 let repo = Repository::open(repo_path)?;
-                let mut commits =
-                    service.commit_history(&repo, scope, offset, HISTORY_PAGE_SIZE + 1)?;
+                let (mut commits, refs_cache) = service.commit_history_with_refs(
+                    &repo,
+                    scope,
+                    offset,
+                    HISTORY_PAGE_SIZE + 1,
+                    refs_cache.as_ref(),
+                )?;
                 let has_more = commits.len() > HISTORY_PAGE_SIZE;
                 commits.truncate(HISTORY_PAGE_SIZE);
                 perf_log(
@@ -5769,6 +5854,7 @@ impl RepositoryView {
                 Ok(UiEvent::HistoryCommitsLoaded {
                     tab_id,
                     commits,
+                    refs_cache,
                     append,
                     has_more,
                     scope,
@@ -5828,7 +5914,7 @@ impl RepositoryView {
         let tx = self.tx.clone();
         let load_id = self.repository_load_id;
 
-        thread::spawn(move || {
+        self.tasks.spawn(TaskKind::Short, move || {
             let started = Instant::now();
             let result = (|| -> khaslana::Result<UiEvent> {
                 let repo = Repository::open(repo_path)?;
@@ -5893,11 +5979,25 @@ impl RepositoryView {
             return;
         };
         let encoding = self.diff_encoding_choice_for_path(&repo_path);
+        let cache_key = self.diff_cache_key(
+            DiffCacheKind::History {
+                commit_oid: commit_oid.clone(),
+                path: path.clone(),
+            },
+            &repo_path,
+        );
+        if !force_reload && let Some(diff) = self.cached_diff(&cache_key) {
+            self.history_loading.diff = false;
+            self.history_diff = Some(diff);
+            self.history_diff_headers_expanded = false;
+            self.status = "提交差异已加载".to_string();
+            return;
+        }
         let service = self.service_for_tab(tab_id);
         let tx = self.tx.clone();
         let load_id = self.repository_load_id;
 
-        thread::spawn(move || {
+        self.tasks.spawn(TaskKind::Short, move || {
             let started = Instant::now();
             let result = (|| -> khaslana::Result<UiEvent> {
                 let repo = Repository::open(repo_path)?;
@@ -6053,6 +6153,19 @@ impl RepositoryView {
             return;
         };
         let encoding = self.diff_encoding_choice_for_path(&repo_path);
+        let cache_key = self.diff_cache_key(
+            DiffCacheKind::Worktree {
+                scope: scope.clone(),
+                path: path.clone(),
+            },
+            &repo_path,
+        );
+        if let Some(diff) = self.cached_diff(&cache_key) {
+            self.diff = Some(diff);
+            self.diff_headers_expanded = false;
+            self.status = "差异已加载".to_string();
+            return;
+        }
         let is_conflicted_path = self
             .snapshot
             .as_ref()
@@ -6194,7 +6307,7 @@ impl RepositoryView {
                 message: started.to_string(),
             },
         );
-        thread::spawn(move || match f() {
+        self.tasks.spawn(TaskKind::Long, move || match f() {
             Ok(event) => {
                 send_ui_event(&tx, event);
             }

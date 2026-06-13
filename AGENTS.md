@@ -121,13 +121,19 @@ UI 线程通过 `async-channel` 接收后台线程发回的 `UiEvent`。重型 G
 
 - `MAX_CONCURRENT_REPO_LOADS = 2`
 
+后台阻塞任务统一通过 `src/tasks.rs` 的 `TaskExecutor` 调度，短任务池用于打开、刷新、状态、历史和 diff 等本地查询，长任务池用于 clone、fetch、pull、push、子模块远端检查和工作流等可能阻塞网络或凭据回调的操作。新增后台 Git / IO 任务不要直接散落 `thread::spawn`，文件选择对话框、UI tick 和测试线程除外。
+
 历史分页大小：
 
 - `HISTORY_PAGE_SIZE = 50`
 
+历史分页会复用当前 tab 内存中的 refs/tags 映射缓存，仓库刷新、切换仓库或清理历史时失效。
+
 超大 diff 缓存保护：
 
 - `LARGE_DIFF_CACHE_LINE_LIMIT = 20_000`
+
+diff 自动编码检测使用有限字节样本，UI 对最近查看的工作区 / 历史 / 贮藏 diff 使用有界 LRU 内存缓存；缓存不持久化，编码偏好变化或仓库加载代际变化时自然失效。
 
 ### 4.5 持久化数据
 

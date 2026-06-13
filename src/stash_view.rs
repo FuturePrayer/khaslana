@@ -1,6 +1,5 @@
 use std::path::Path;
 use std::sync::Arc;
-use std::thread;
 use std::time::Instant;
 
 use git2::Repository;
@@ -13,7 +12,7 @@ use crate::{
     CHANGE_ROW_HEIGHT, DialogState, DiffHeaderTarget, EncodingMenuTarget, FieldId, MainMode,
     RepositoryView, ResizeTarget, ScrollbarMode, UiEvent, change_state_color, dialog_actions,
     menu_separator, perf_log, placeholder_row, scrollable_uniform_frame, section_header,
-    send_ui_event, ui::theme as ui_theme,
+    send_ui_event, tasks::TaskKind, ui::theme as ui_theme,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -147,7 +146,7 @@ impl RepositoryView {
         let tx = self.tx.clone();
         let load_id = self.repository_load_id;
 
-        thread::spawn(move || {
+        self.tasks.spawn(TaskKind::Short, move || {
             let started = Instant::now();
             let result = (|| -> khaslana::Result<UiEvent> {
                 let repo = Repository::open(repo_path)?;
@@ -204,11 +203,25 @@ impl RepositoryView {
             return;
         };
         let encoding = self.diff_encoding_choice_for_path(&repo_path);
+        let cache_key = self.diff_cache_key(
+            crate::DiffCacheKind::Stash {
+                stash_oid: stash_oid.clone(),
+                path: path.clone(),
+            },
+            &repo_path,
+        );
+        if !force_reload && let Some(diff) = self.cached_diff(&cache_key) {
+            self.stash_preview.loading_diff = false;
+            self.stash_preview.diff = Some(diff);
+            self.stash_preview.diff_headers_expanded = false;
+            self.status = "贮藏差异已加载".to_string();
+            return;
+        }
         let service = self.service_for_tab(tab_id);
         let tx = self.tx.clone();
         let load_id = self.repository_load_id;
 
-        thread::spawn(move || {
+        self.tasks.spawn(TaskKind::Short, move || {
             let started = Instant::now();
             let result = (|| -> khaslana::Result<UiEvent> {
                 let repo = Repository::open(repo_path)?;

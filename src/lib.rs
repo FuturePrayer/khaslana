@@ -13,7 +13,7 @@ pub use credentials::{
     credential_record_label, credential_record_matches_remote_url, credential_scope_label,
     test_credential_connection,
 };
-pub use git::{GitService, NoopProgress, ProgressEmitter};
+pub use git::{GitService, HistoryRefsCache, NoopProgress, ProgressEmitter};
 pub use proxy::{CustomProxySettings, NetworkProxyMode, NetworkProxySettings};
 pub use storage::{
     AppStorage, DiffEncodingPreferences, LegacyImportSummary, LegacyStoragePaths,

@@ -17,6 +17,7 @@ use crate::{
     FieldId, RepositoryLoading, RepositorySnapshot, RepositoryView, ResizeTarget, ScrollbarMode,
     TextFieldState, UiEvent, placeholder_row, scrollable_frame_when, section_header_action,
     send_ui_event,
+    tasks::TaskKind,
     ui::{
         components::{dialog_actions, section_title},
         theme as ui_theme,
@@ -192,7 +193,7 @@ impl RepositoryView {
             this.status = "正在运行工作流".to_string();
             this.last_error = None;
         });
-        thread::spawn(move || {
+        self.tasks.spawn(TaskKind::Long, move || {
             let result = (|| -> khaslana::Result<(RepositorySnapshot, Vec<String>, String)> {
                 let mut repo = Repository::open(repo_path)?;
                 let mut log = Vec::new();

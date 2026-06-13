@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, thread};
+use std::collections::BTreeMap;
 
 use git2::Repository;
 use gpui::{Context, CursorStyle, IntoElement, MouseButton, div, prelude::*, px, rgb, rgba};
@@ -6,7 +6,7 @@ use khaslana::{SubmoduleInfo, SubmoduleRemoteSyncStatus, SubmoduleState};
 
 use crate::{
     DialogState, RepositoryView, ScrollbarMode, UiEvent, placeholder_row, scrollable_frame_when,
-    send_ui_event, ui::theme as ui_theme,
+    send_ui_event, tasks::TaskKind, ui::theme as ui_theme,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -100,7 +100,7 @@ impl RepositoryView {
         };
         self.status = "正在加载子模块列表".into();
 
-        thread::spawn(move || {
+        self.tasks.spawn(TaskKind::Short, move || {
             let result = (|| -> khaslana::Result<Vec<SubmoduleInfo>> {
                 let repo = Repository::open(repo_path)?;
                 service.submodules(&repo)
@@ -156,7 +156,7 @@ impl RepositoryView {
         };
         self.status = "正在检查子模块远端状态".into();
 
-        thread::spawn(move || {
+        self.tasks.spawn(TaskKind::Long, move || {
             let result = (|| -> khaslana::Result<Vec<(String, SubmoduleRemoteSyncStatus)>> {
                 let repo = Repository::open(repo_path)?;
                 service.submodule_remote_sync_statuses(&repo)

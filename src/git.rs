@@ -5,7 +5,9 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
 };
+use std::time::Instant;
 
+use bstr::ByteSlice;
 use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
 use encoding_rs::{BIG5, Encoding, GB18030, UTF_8};
 use git2::build::{CheckoutBuilder, RepoBuilder};
@@ -25,12 +27,15 @@ use crate::types::{
     OperationEvent, RemoteInfo, RemoteName, RepoPath, RepositorySnapshot, ResetMode, Result,
     StashInfo, TagInfo, TagName, WorktreeChange,
 };
+use smallvec::SmallVec;
 
 mod conflicts;
 mod stash;
 mod submodule;
 
 pub(crate) const DIFF_CONTEXT_LINES: u32 = 3;
+const BRANCH_SYNC_UNPUSHED_OID_LIMIT: usize = 256;
+const DIFF_ENCODING_SAMPLE_LIMIT: usize = 256 * 1024;
 
 pub trait ProgressEmitter: Send + Sync {
     fn emit(&self, event: OperationEvent);
@@ -50,6 +55,12 @@ pub struct GitService {
     remote_context: Arc<Mutex<Option<RemoteOperationContext>>>,
     next_remote_operation_id: Arc<AtomicU64>,
     proxy_settings: Arc<Mutex<NetworkProxySettings>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct HistoryRefsCache {
+    pub(crate) starts: Vec<git2::Oid>,
+    pub(crate) refs_by_oid: BTreeMap<git2::Oid, Vec<CommitRefInfo>>,
 }
 
 #[derive(Clone, Debug)]
@@ -169,6 +180,48 @@ impl GitService {
     }
 
     pub fn snapshot_details(&self, repo: &mut Repository) -> Result<RepositorySnapshot> {
+        let branches_started = Instant::now();
+        let branches = self.branches(repo)?;
+        perf_log(
+            "git.snapshot_details.branches",
+            branches_started,
+            format!("branches={}", branches.len()),
+        );
+        let status_started = Instant::now();
+        let changes = self.status(repo)?;
+        perf_log(
+            "git.snapshot_details.status",
+            status_started,
+            format!("changes={}", changes.len()),
+        );
+        let remotes_started = Instant::now();
+        let remotes = self.remotes(repo)?;
+        perf_log(
+            "git.snapshot_details.remotes",
+            remotes_started,
+            format!("remotes={}", remotes.len()),
+        );
+        let tags_started = Instant::now();
+        let tags = self.tags(repo)?;
+        perf_log(
+            "git.snapshot_details.tags",
+            tags_started,
+            format!("tags={}", tags.len()),
+        );
+        let stashes_started = Instant::now();
+        let stashes = self.stashes(repo)?;
+        perf_log(
+            "git.snapshot_details.stashes",
+            stashes_started,
+            format!("stashes={}", stashes.len()),
+        );
+        let conflicts_started = Instant::now();
+        let conflicts = self.conflicts(repo)?;
+        perf_log(
+            "git.snapshot_details.conflicts",
+            conflicts_started,
+            format!("conflicts={}", conflicts.len()),
+        );
         Ok(RepositorySnapshot {
             path: repo
                 .workdir()
@@ -176,16 +229,51 @@ impl GitService {
                 .unwrap_or_else(|| repo.path())
                 .to_path_buf(),
             head: self.head_name(repo),
-            branches: self.branches(repo)?,
-            changes: self.status(repo)?,
-            remotes: self.remotes(repo)?,
-            tags: self.tags(repo)?,
-            stashes: self.stashes(repo)?,
-            conflicts: self.conflicts(repo)?,
+            branches,
+            changes,
+            remotes,
+            tags,
+            stashes,
+            conflicts,
         })
     }
 
     pub fn snapshot_metadata(&self, repo: &mut Repository) -> Result<RepositorySnapshot> {
+        let branches_started = Instant::now();
+        let branches = self.branches(repo)?;
+        perf_log(
+            "git.snapshot_metadata.branches",
+            branches_started,
+            format!("branches={}", branches.len()),
+        );
+        let remotes_started = Instant::now();
+        let remotes = self.remotes(repo)?;
+        perf_log(
+            "git.snapshot_metadata.remotes",
+            remotes_started,
+            format!("remotes={}", remotes.len()),
+        );
+        let tags_started = Instant::now();
+        let tags = self.tags(repo)?;
+        perf_log(
+            "git.snapshot_metadata.tags",
+            tags_started,
+            format!("tags={}", tags.len()),
+        );
+        let stashes_started = Instant::now();
+        let stashes = self.stashes(repo)?;
+        perf_log(
+            "git.snapshot_metadata.stashes",
+            stashes_started,
+            format!("stashes={}", stashes.len()),
+        );
+        let conflicts_started = Instant::now();
+        let conflicts = self.conflicts(repo)?;
+        perf_log(
+            "git.snapshot_metadata.conflicts",
+            conflicts_started,
+            format!("conflicts={}", conflicts.len()),
+        );
         Ok(RepositorySnapshot {
             path: repo
                 .workdir()
@@ -193,12 +281,12 @@ impl GitService {
                 .unwrap_or_else(|| repo.path())
                 .to_path_buf(),
             head: self.head_name(repo),
-            branches: self.branches(repo)?,
+            branches,
             changes: Vec::new(),
-            remotes: self.remotes(repo)?,
-            tags: self.tags(repo)?,
-            stashes: self.stashes(repo)?,
-            conflicts: self.conflicts(repo)?,
+            remotes,
+            tags,
+            stashes,
+            conflicts,
         })
     }
 
@@ -231,8 +319,11 @@ impl GitService {
         walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
         walk.push(local_oid)?;
         walk.hide(remote_oid)?;
-        let mut unpushed_oids = Vec::with_capacity(ahead);
+        let mut unpushed_oids = Vec::with_capacity(ahead.min(BRANCH_SYNC_UNPUSHED_OID_LIMIT));
         for oid in walk {
+            if unpushed_oids.len() >= BRANCH_SYNC_UNPUSHED_OID_LIMIT {
+                break;
+            }
             unpushed_oids.push(oid?.to_string());
         }
 
@@ -242,6 +333,7 @@ impl GitService {
             ahead,
             behind,
             unpushed_oids,
+            unpushed_oids_truncated: ahead > BRANCH_SYNC_UNPUSHED_OID_LIMIT,
         }))
     }
 
@@ -313,6 +405,7 @@ impl GitService {
         include_untracked: bool,
         recurse_untracked_dirs: bool,
     ) -> Result<Vec<WorktreeChange>> {
+        let started = Instant::now();
         let mut options = StatusOptions::new();
         options
             .include_untracked(include_untracked)
@@ -342,7 +435,22 @@ impl GitService {
             }
         }
 
-        Ok(changes.into_values().collect())
+        let changes = changes.into_values().collect::<Vec<_>>();
+        perf_log(
+            if include_untracked {
+                "git.status_full"
+            } else {
+                "git.status_fast"
+            },
+            started,
+            format!(
+                "changes={} include_untracked={} recurse_untracked_dirs={}",
+                changes.len(),
+                include_untracked,
+                recurse_untracked_dirs
+            ),
+        );
+        Ok(changes)
     }
 
     pub fn remotes(&self, repo: &Repository) -> Result<Vec<RemoteInfo>> {
@@ -1053,9 +1161,29 @@ impl GitService {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<CommitInfo>> {
+        let (commits, _refs) = self.commit_history_with_refs(repo, scope, offset, limit, None)?;
+        Ok(commits)
+    }
+
+    pub fn commit_history_with_refs(
+        &self,
+        repo: &Repository,
+        scope: HistoryScope,
+        offset: usize,
+        limit: usize,
+        refs_cache: Option<&HistoryRefsCache>,
+    ) -> Result<(Vec<CommitInfo>, HistoryRefsCache)> {
+        let refs_cache = match refs_cache {
+            Some(cache) => cache.clone(),
+            None => self.commit_graph_refs(repo)?,
+        };
         match scope {
-            HistoryScope::CurrentBranch => self.current_branch_commit_graph(repo, offset, limit),
-            HistoryScope::AllRefs => self.commit_graph(repo, offset, limit),
+            HistoryScope::CurrentBranch => self
+                .current_branch_commit_graph_with_refs(repo, offset, limit, &refs_cache)
+                .map(|commits| (commits, refs_cache)),
+            HistoryScope::AllRefs => self
+                .commit_graph_with_refs(repo, offset, limit, &refs_cache)
+                .map(|commits| (commits, refs_cache)),
         }
     }
 
@@ -1065,7 +1193,17 @@ impl GitService {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<CommitInfo>> {
-        let (_, refs_by_oid) = self.commit_graph_refs(repo)?;
+        let refs = self.commit_graph_refs(repo)?;
+        self.current_branch_commit_graph_with_refs(repo, offset, limit, &refs)
+    }
+
+    fn current_branch_commit_graph_with_refs(
+        &self,
+        repo: &Repository,
+        offset: usize,
+        limit: usize,
+        refs: &HistoryRefsCache,
+    ) -> Result<Vec<CommitInfo>> {
         let mut walk = repo.revwalk()?;
         walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
         if let Err(err) = walk.push_head() {
@@ -1074,7 +1212,7 @@ impl GitService {
             }
             return Err(err.into());
         }
-        self.collect_commit_infos(repo, walk.skip(offset).take(limit), refs_by_oid)
+        self.collect_commit_infos(repo, walk.skip(offset).take(limit), &refs.refs_by_oid)
     }
 
     pub fn reset_to_commit(
@@ -1218,11 +1356,21 @@ impl GitService {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<CommitInfo>> {
-        let (starts, refs_by_oid) = self.commit_graph_refs(repo)?;
+        let refs = self.commit_graph_refs(repo)?;
+        self.commit_graph_with_refs(repo, offset, limit, &refs)
+    }
+
+    fn commit_graph_with_refs(
+        &self,
+        repo: &Repository,
+        offset: usize,
+        limit: usize,
+        refs: &HistoryRefsCache,
+    ) -> Result<Vec<CommitInfo>> {
         let mut walk = repo.revwalk()?;
         walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
 
-        if starts.is_empty() {
+        if refs.starts.is_empty() {
             if let Err(err) = walk.push_head() {
                 if is_empty_head_error(&err) {
                     return Ok(Vec::new());
@@ -1230,19 +1378,19 @@ impl GitService {
                 return Err(err.into());
             }
         } else {
-            for oid in starts {
-                walk.push(oid)?;
+            for oid in &refs.starts {
+                walk.push(*oid)?;
             }
         }
 
-        self.collect_commit_infos(repo, walk.skip(offset).take(limit), refs_by_oid)
+        self.collect_commit_infos(repo, walk.skip(offset).take(limit), &refs.refs_by_oid)
     }
 
     fn collect_commit_infos<I>(
         &self,
         repo: &Repository,
         oids: I,
-        refs_by_oid: BTreeMap<String, Vec<CommitRefInfo>>,
+        refs_by_oid: &BTreeMap<git2::Oid, Vec<CommitRefInfo>>,
     ) -> Result<Vec<CommitInfo>>
     where
         I: IntoIterator<Item = std::result::Result<git2::Oid, git2::Error>>,
@@ -1257,7 +1405,8 @@ impl GitService {
             let parents = commit
                 .parent_ids()
                 .map(|parent| parent.to_string())
-                .collect::<Vec<_>>();
+                .collect::<SmallVec<[String; 2]>>()
+                .into_vec();
             commits.push(CommitInfo {
                 oid: oid_string.clone(),
                 short_oid: oid_string.chars().take(8).collect(),
@@ -1270,18 +1419,20 @@ impl GitService {
                 author: author_name,
                 time: commit.time().seconds(),
                 parents,
-                refs: refs_by_oid.get(&oid_string).cloned().unwrap_or_default(),
+                refs: refs_by_oid.get(&oid).cloned().unwrap_or_default(),
             });
         }
         Ok(commits)
     }
 
-    fn commit_graph_refs(
-        &self,
-        repo: &Repository,
-    ) -> Result<(Vec<git2::Oid>, BTreeMap<String, Vec<CommitRefInfo>>)> {
+    pub fn commit_history_refs(&self, repo: &Repository) -> Result<HistoryRefsCache> {
+        self.commit_graph_refs(repo)
+    }
+
+    fn commit_graph_refs(&self, repo: &Repository) -> Result<HistoryRefsCache> {
+        let started = Instant::now();
         let mut starts = Vec::<git2::Oid>::new();
-        let mut refs_by_oid = BTreeMap::<String, Vec<CommitRefInfo>>::new();
+        let mut refs_by_oid = BTreeMap::<git2::Oid, Vec<CommitRefInfo>>::new();
 
         let branches = match repo.branches(None) {
             Ok(branches) => Some(branches),
@@ -1304,16 +1455,13 @@ impl GitService {
                     continue;
                 }
                 starts.push(target);
-                refs_by_oid
-                    .entry(target.to_string())
-                    .or_default()
-                    .push(CommitRefInfo {
-                        name: name.to_string(),
-                        kind: match branch_type {
-                            BranchType::Local => CommitRefKind::LocalBranch,
-                            BranchType::Remote => CommitRefKind::RemoteBranch,
-                        },
-                    });
+                refs_by_oid.entry(target).or_default().push(CommitRefInfo {
+                    name: name.to_string(),
+                    kind: match branch_type {
+                        BranchType::Local => CommitRefKind::LocalBranch,
+                        BranchType::Remote => CommitRefKind::RemoteBranch,
+                    },
+                });
             }
         }
 
@@ -1328,13 +1476,10 @@ impl GitService {
                 continue;
             };
             let oid = commit.id();
-            refs_by_oid
-                .entry(oid.to_string())
-                .or_default()
-                .push(CommitRefInfo {
-                    name: name.to_string(),
-                    kind: CommitRefKind::Tag,
-                });
+            refs_by_oid.entry(oid).or_default().push(CommitRefInfo {
+                name: name.to_string(),
+                kind: CommitRefKind::Tag,
+            });
         }
 
         if let Ok(head) = repo.head()
@@ -1342,13 +1487,10 @@ impl GitService {
         {
             let oid = commit.id();
             starts.push(oid);
-            refs_by_oid
-                .entry(oid.to_string())
-                .or_default()
-                .push(CommitRefInfo {
-                    name: "HEAD".to_string(),
-                    kind: CommitRefKind::Head,
-                });
+            refs_by_oid.entry(oid).or_default().push(CommitRefInfo {
+                name: "HEAD".to_string(),
+                kind: CommitRefKind::Head,
+            });
         }
 
         starts.sort();
@@ -1362,7 +1504,19 @@ impl GitService {
             refs.dedup_by(|a, b| a.kind == b.kind && a.name == b.name);
         }
 
-        Ok((starts, refs_by_oid))
+        perf_log(
+            "git.history.refs",
+            started,
+            format!(
+                "starts={} refs={}",
+                starts.len(),
+                refs_by_oid.values().map(Vec::len).sum::<usize>()
+            ),
+        );
+        Ok(HistoryRefsCache {
+            starts,
+            refs_by_oid,
+        })
     }
 
     pub fn commit_files(
@@ -1442,6 +1596,7 @@ impl GitService {
         scope: DiffScope,
         encoding: DiffEncodingChoice,
     ) -> Result<FileDiff> {
+        let started = Instant::now();
         struct RawDiffLine {
             kind: DiffLineKind,
             old_lineno: Option<u32>,
@@ -1450,6 +1605,7 @@ impl GitService {
         }
 
         let mut raw_lines = Vec::new();
+        let mut encoding_sample = Vec::new();
         let mut is_binary = false;
         for delta in diff.deltas() {
             if delta.flags().contains(git2::DiffFlags::BINARY) {
@@ -1464,21 +1620,21 @@ impl GitService {
                 'F' | 'H' => DiffLineKind::Header,
                 _ => DiffLineKind::Context,
             };
+            let content = line.content();
+            if kind != DiffLineKind::Header && encoding_sample.len() < DIFF_ENCODING_SAMPLE_LIMIT {
+                let remaining = DIFF_ENCODING_SAMPLE_LIMIT - encoding_sample.len();
+                encoding_sample.extend_from_slice(&content[..content.len().min(remaining)]);
+            }
             raw_lines.push(RawDiffLine {
                 kind,
                 old_lineno: line.old_lineno(),
                 new_lineno: line.new_lineno(),
-                content: line.content().to_vec(),
+                content: content.to_vec(),
             });
             true
         })?;
 
-        let decode_bytes = raw_lines
-            .iter()
-            .filter(|line| line.kind != DiffLineKind::Header)
-            .flat_map(|line| line.content.iter().copied())
-            .collect::<Vec<_>>();
-        let (resolved_encoding, encoding_impl) = resolve_diff_encoding(encoding, &decode_bytes);
+        let (resolved_encoding, encoding_impl) = resolve_diff_encoding(encoding, &encoding_sample);
         let mut lossy = false;
         let lines = raw_lines
             .into_iter()
@@ -1493,6 +1649,19 @@ impl GitService {
                 }
             })
             .collect::<Vec<_>>();
+
+        perf_log(
+            "git.diff.decode",
+            started,
+            format!(
+                "path={} lines={} sample_bytes={} binary={} encoding={}",
+                path,
+                lines.len(),
+                encoding_sample.len(),
+                is_binary,
+                resolved_encoding.label()
+            ),
+        );
 
         Ok(FileDiff {
             path,
@@ -1919,6 +2088,18 @@ fn is_empty_head_error(err: &git2::Error) -> bool {
         || err.message().contains("reference 'refs/heads/")
 }
 
+fn perf_log(stage: &'static str, started: Instant, details: impl AsRef<str>) {
+    if std::env::var_os("KHASLANA_PERF_LOG").is_some() {
+        tracing::info!(
+            target: "khaslana::perf",
+            stage,
+            elapsed_ms = started.elapsed().as_millis(),
+            "{}",
+            details.as_ref()
+        );
+    }
+}
+
 fn resolve_diff_encoding(
     requested: DiffEncodingChoice,
     bytes: &[u8],
@@ -1932,6 +2113,9 @@ fn resolve_diff_encoding(
 }
 
 fn detect_diff_encoding(bytes: &[u8]) -> (DiffEncodingChoice, &'static Encoding) {
+    if bytes.find_byte(0).is_some() {
+        return (DiffEncodingChoice::Utf8, UTF_8);
+    }
     if std::str::from_utf8(bytes).is_ok() {
         return (DiffEncodingChoice::Utf8, UTF_8);
     }
@@ -3771,6 +3955,30 @@ mod tests {
         assert_eq!(status.ahead, 1);
         assert_eq!(status.behind, 0);
         assert_eq!(status.unpushed_oids, vec![oid.to_string()]);
+        assert!(!status.unpushed_oids_truncated);
+    }
+
+    #[test]
+    fn branch_sync_status_caps_unpushed_oid_list() {
+        let (_remote_dir, clone_dir, _clone_path, repo, service) = clone_repo_with_remote_feature();
+        for index in 0..(BRANCH_SYNC_UNPUSHED_OID_LIMIT + 1) {
+            write_file(
+                clone_dir.path().join("clone").as_path(),
+                "local.txt",
+                &format!("local {index}\n"),
+            );
+            commit_all(&repo, &format!("local ahead {index}"));
+        }
+
+        let status = service
+            .branch_sync_status(&repo, &RemoteName::new("origin"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(status.ahead, BRANCH_SYNC_UNPUSHED_OID_LIMIT + 1);
+        assert_eq!(status.behind, 0);
+        assert_eq!(status.unpushed_oids.len(), BRANCH_SYNC_UNPUSHED_OID_LIMIT);
+        assert!(status.unpushed_oids_truncated);
     }
 
     #[test]
@@ -3790,6 +3998,7 @@ mod tests {
         assert_eq!(status.ahead, 0);
         assert_eq!(status.behind, 1);
         assert!(status.unpushed_oids.is_empty());
+        assert!(!status.unpushed_oids_truncated);
     }
 
     #[test]
@@ -3815,6 +4024,7 @@ mod tests {
         assert_eq!(status.ahead, 1);
         assert_eq!(status.behind, 1);
         assert_eq!(status.unpushed_oids, vec![local_oid.to_string()]);
+        assert!(!status.unpushed_oids_truncated);
     }
 
     #[test]
@@ -4403,6 +4613,34 @@ mod tests {
     }
 
     #[test]
+    fn diff_auto_detection_uses_bounded_sample_for_large_diff() {
+        let (dir, mut repo, service) = init_repo();
+        write_bytes(dir.path(), "large-cn.txt", b"seed\n");
+        commit_all(&repo, "initial");
+        let mut body = Vec::new();
+        for _ in 0..(DIFF_ENCODING_SAMPLE_LIMIT / 4) {
+            body.extend_from_slice(&[0xc4, 0xe3, 0xba, 0xc3, b'\n']);
+        }
+        body.extend_from_slice(&[0xc4, 0xe3, 0xba, 0xc3, b'\n']);
+        write_bytes(dir.path(), "large-cn.txt", &body);
+        service
+            .stage_path(&mut repo, Path::new("large-cn.txt"))
+            .unwrap();
+
+        let diff = service
+            .diff_for_path(
+                &repo,
+                Path::new("large-cn.txt"),
+                DiffScope::Staged,
+                DiffEncodingChoice::Auto,
+            )
+            .unwrap();
+
+        assert_eq!(diff.encoding.resolved, DiffEncodingChoice::Gb18030);
+        assert!(diff.lines.iter().any(|line| line.content.contains("你好")));
+    }
+
+    #[test]
     fn diff_manual_big5_decodes_text() {
         let (dir, mut repo, service) = init_repo();
         write_bytes(dir.path(), "big5.txt", b"hello\n");
@@ -4532,6 +4770,37 @@ mod tests {
 
         assert!(!current.iter().any(|commit| commit.summary == "side only"));
         assert!(all.iter().any(|commit| commit.summary == "side only"));
+    }
+
+    #[test]
+    fn commit_history_with_refs_reuses_reference_cache_for_pagination() {
+        let (dir, repo, service) = init_repo();
+        for index in 0..5 {
+            write_file(dir.path(), "file.txt", &format!("value {index}\n"));
+            commit_all(&repo, &format!("commit {index}"));
+        }
+        let head_oid = repo.head().unwrap().target().unwrap();
+        repo.tag_lightweight(
+            "v-head",
+            repo.find_commit(head_oid).unwrap().as_object(),
+            false,
+        )
+        .unwrap();
+
+        let (first_page, refs_cache) = service
+            .commit_history_with_refs(&repo, HistoryScope::CurrentBranch, 0, 2, None)
+            .unwrap();
+        let (second_page, reused_cache) = service
+            .commit_history_with_refs(&repo, HistoryScope::CurrentBranch, 2, 2, Some(&refs_cache))
+            .unwrap();
+        let baseline_second_page = service
+            .commit_history(&repo, HistoryScope::CurrentBranch, 2, 2)
+            .unwrap();
+
+        assert_eq!(first_page.len(), 2);
+        assert_eq!(second_page, baseline_second_page);
+        assert_eq!(reused_cache.starts, refs_cache.starts);
+        assert_eq!(reused_cache.refs_by_oid, refs_cache.refs_by_oid);
     }
 
     #[test]

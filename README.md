@@ -195,6 +195,8 @@ $env:KHASLANA_PERF_LOG='1'
 cargo run
 ```
 
+性能日志会输出仓库打开、metadata、status、历史分页、diff 解码等阶段耗时，字段包含阶段名、耗时和关键数量信息。定位大仓库卡顿时，建议先开启该日志；需要进一步分析时，Windows 可结合 Windows Performance Analyzer / PerfView，Rust 层可用 `cargo flamegraph` 或 `samply` 采样。
+
 ## 测试
 
 运行全部测试：
