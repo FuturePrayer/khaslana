@@ -30,6 +30,7 @@ use crate::types::{
 use smallvec::SmallVec;
 
 mod conflicts;
+mod rebase;
 mod stash;
 mod submodule;
 
@@ -210,6 +211,7 @@ impl GitService {
             tags: Vec::new(),
             stashes: Vec::new(),
             conflicts: Vec::new(),
+            rebase_in_progress: false,
         })
     }
 
@@ -269,6 +271,7 @@ impl GitService {
             tags,
             stashes,
             conflicts,
+            rebase_in_progress: rebase_in_progress(repo),
         })
     }
 
@@ -321,6 +324,7 @@ impl GitService {
             tags,
             stashes,
             conflicts,
+            rebase_in_progress: rebase_in_progress(repo),
         })
     }
 
@@ -2206,6 +2210,12 @@ pub(crate) fn signature(repo: &Repository) -> Result<Signature<'static>> {
     repo.signature()
         .or_else(|_| Signature::now("Khaslana", "khaslana@example.invalid"))
         .map_err(GitError::from)
+}
+
+/// 检测是否有变基正在进行：检查 `.git/rebase-merge` 或 `rebase-apply` 目录是否存在。
+pub(crate) fn rebase_in_progress(repo: &Repository) -> bool {
+    let path = repo.path();
+    path.join("rebase-merge").exists() || path.join("rebase-apply").exists()
 }
 
 fn parents(repo: &Repository) -> Result<Vec<git2::Commit<'_>>> {

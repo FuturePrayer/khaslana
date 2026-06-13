@@ -45,14 +45,16 @@ Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中
 - `src/lib.rs`：库入口，重新导出 Git、凭据和类型模块，供 `main.rs` 使用。
 - `src/assets.rs`：应用自有静态资源入口，将 `assets/icons/` 与 Yororen 内置资源合并注册给 GPUI。
 - `src/types.rs`：领域类型和错误类型的汇总入口；较独立的领域类型放到 `src/types/` 子目录，例如冲突解决类型在 `src/types/conflicts.rs`。
-- `src/git.rs`：核心 Git 服务层的汇总入口；大型或独立 Git 能力放到 `src/git/` 子目录，例如冲突解决服务在 `src/git/conflicts.rs`，贮藏服务在 `src/git/stash.rs`。
+- `src/git.rs`：核心 Git 服务层的汇总入口；大型或独立 Git 能力放到 `src/git/` 子目录，例如冲突解决服务在 `src/git/conflicts.rs`，贮藏服务在 `src/git/stash.rs`，变基服务在 `src/git/rebase.rs`。
 - `src/git/submodule.rs`：子模块 Git 服务，包括状态读取、同步父仓库记录版本、快进到子模块远端最新以及递归子模块更新。
+- `src/git/rebase.rs`：变基 Git 服务，包括 `rebase_branch`、`rebase_continue`、`rebase_skip`、`rebase_abort` 和 `pull_branch_rebase`。
 - `src/credentials.rs`：凭据存储、匹配、Keyring 读写、凭据测试、旧存储兼容迁移和单元测试。
 - `src/proxy.rs`：网络代理设置类型、代理 URL 校验、远端协议到代理 URL 的选择，以及 `git2::ProxyOptions` 接入 helper。
 - `src/main.rs`：应用入口与主要 UI 状态机。包含 `RepositoryView`、多标签页状态、对话框、文本输入、事件泵、异步 Git 任务、工作区视图、diff、提交框、凭据/远端弹窗等。
 - `src/conflicts/`：冲突解决相关 UI、交互动作和轻量状态 helper，作为 `main.rs` 的子模块实现 `RepositoryView` 的冲突区域。
 - `src/proxy_view.rs`：网络代理设置弹窗，包括模式切换、自定义代理输入、保存和测试代理入口。
 - `src/stash_view.rs`：贮藏完整工作流 UI，包括创建贮藏、查看贮藏文件、加载贮藏 diff 和删除确认。
+- `src/rebase_view.rs`：变基 UI 模块，包括变基 handler（rebase_branch/continue/skip/abort）和变基状态条渲染（继续/跳过/中止按钮）。
 - `src/submodule_view.rs`：子模块弹窗 UI 和按需加载/更新动作，包括远端超前/落后状态展示、同步记录版本、更新全部到远端最新和更新单个子模块到远端最新。
 - `src/ui/`：前端设计系统适配层。`theme.rs` 定义 Khaslana 语义色值和状态 token，`components.rs` 封装按钮、toast、tooltip、section header 等项目级 UI helper，`mod.rs` 统一导出。
 - `src/sidebar_view.rs`：侧边栏 UI，包括本地分支、远端、远端分支、标签、贮藏和相关右键菜单。
@@ -66,11 +68,12 @@ Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中
 
 `src/types.rs` 定义应用内部统一的数据结构：
 
-- `RepositorySnapshot` 是 UI 的主要仓库状态输入，包含路径、HEAD、分支、变更、远端、标签、贮藏和冲突。
+- `RepositorySnapshot` 是 UI 的主要仓库状态输入，包含路径、HEAD、分支、变更、远端、标签、贮藏、冲突和变基进行中标记（`rebase_in_progress`）。
 - `WorktreeChange` 使用 `staged` 与 `unstaged` 两个字段表达同一路径在暂存区和工作区中的不同状态。
 - `FileDiff` 包含路径、范围、二进制标记、编码信息和逐行 diff。
 - `CommitInfo` 表示提交历史中的一行，包含 oid、短 oid、摘要、作者、时间、父提交和 ref 标签。
 - `GitError` 是统一错误出口，用户可见文案大多为中文。
+- `RebaseOutcome` 表示变基操作结果，区分 `Completed(快照)` 和 `Conflicts { 快照, 当前提交序号, 总数 }`，便于 UI 层无缝接入现有冲突工作台。
 
 新增 Git 能力时应先判断是否需要扩展领域类型，再实现 `GitService`，最后接入 UI。较大的功能不要继续塞进 `types.rs`、`git.rs` 或 `main.rs`，而是按领域拆到同名子目录，再由入口文件 `mod` / `pub use` 汇总。
 
@@ -83,13 +86,14 @@ Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中
 - 仓库：`open`、`open_fast`、`clone_repo`、`snapshot`、`snapshot_after_operation`
 - 子模块：状态读取、递归克隆、递归同步父仓库记录版本、快进更新到子模块远端最新
 - 状态：`status_fast`、`status_full`
-- 分支：创建、删除、重命名、checkout、远端分支 checkout、merge
-- 远端：列表、添加、更新、删除、fetch、pull、push
+- 分支：创建、删除、重命名、checkout、远端分支 checkout、merge、rebase
+- 远端：列表、添加、更新、删除、fetch、pull、pull --rebase、push
 - 标签：列表、checkout tag
 - 贮藏：列表、save、apply、pop、drop、文件列表和 diff 预览
 - 变更：stage、unstage、discard unstaged、discard all
 - 提交：commit、commit history、commit graph、commit files、commit file diff
 - 历史操作：reset、revert
+- 变基：rebase_branch、rebase_continue、rebase_skip、rebase_abort、pull_branch_rebase
 - diff：工作区 diff、历史 diff、编码识别
 
 Git 操作通常返回新的 `RepositorySnapshot`，让 UI 统一刷新状态。危险操作需要在 UI 层先确认。
@@ -181,6 +185,7 @@ diff 自动编码检测使用有限字节样本，UI 对最近查看的工作区
 - diff 区域支持左右滑动查看长行
 - 全文视图对超大文件（超过 `FULL_FILE_MAX_BYTES`）自动回退到紧凑差异并提示
 - 提交信息输入和 commit
+- 变基进行中时在工作区顶部显示变基状态条，提供「继续变基 / 跳过此提交 / 中止」操作；冲突解决后自动复用现有冲突工作台
 
 ### 5.3 分支、远端、标签、贮藏
 
@@ -188,9 +193,11 @@ diff 自动编码检测使用有限字节样本，UI 对最近查看的工作区
 - 远端分支列表，checkout 后创建/复用本地跟踪分支
 - 远端列表、选择、添加、编辑、删除
 - fetch、pull、push
-- 全局刷新仅刷新本地状态；远端刷新通过工具栏“获取”或远端列表右键“刷新”显式触发
+- pull 对话框提供「用变基代替合并」勾选框，默认不勾选，勾选后执行 pull --rebase
+- 全局刷新仅刷新本地状态；远端刷新通过工具栏”获取”或远端列表右键”刷新”显式触发
 - 设置/修改本地分支 upstream
 - 删除远端分支，右键复制远端分支名称和 checkout 命令
+- 分支右键「变基到当前分支」，将选中分支的提交变基到当前分支之上
 - tag 列表和 checkout tag
 - stash 列表、创建、apply、pop、drop、文件列表和 diff 预览
 
@@ -299,7 +306,7 @@ Windows MSVC target 通过 `.cargo/config.toml` 启用静态 CRT 链接，发布
 
 ### 9.2 冲突处理需要持续完善
 
-底层能识别 `conflicts`，部分危险操作会拒绝冲突文件，UI 已有冲突工作台、三栏文本预览、块级接受/忽略、应用草稿和标记解决流程。文本冲突视图使用虚拟列表渲染，避免几千行冲突文件卡顿。后续仍需继续完善更细粒度编辑体验、复杂冲突类型和外部编辑器协作。
+底层能识别 `conflicts`，部分危险操作会拒绝冲突文件，UI 已有冲突工作台、三栏文本预览、块级接受/忽略、应用草稿和标记解决流程。文本冲突视图使用虚拟列表渲染，避免几千行冲突文件卡顿。变基冲突复用同一套冲突工作台：`RebaseOutcome::Conflicts` 转换为 `Err(GitError::Conflicts(...))` 后由 `with_repo` 自动展示冲突工作台，解决后通过变基状态条继续。后续仍需继续完善更细粒度编辑体验、复杂冲突类型和外部编辑器协作。
 
 ### 9.3 历史探索能力仍偏基础
 

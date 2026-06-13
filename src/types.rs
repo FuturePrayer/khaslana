@@ -348,6 +348,23 @@ pub struct RepositorySnapshot {
     pub tags: Vec<TagInfo>,
     pub stashes: Vec<StashInfo>,
     pub conflicts: Vec<String>,
+    /// 是否有变基正在进行（检测 .git/rebase-merge 或 rebase-apply 目录）。
+    pub rebase_in_progress: bool,
+}
+
+/// 变基操作结果：要么全部完成，要么暂停在冲突处等待用户解决。
+#[derive(Clone, Debug)]
+pub enum RebaseOutcome {
+    /// 变基全部完成，无冲突。
+    Completed(RepositorySnapshot),
+    /// 变基暂停：当前提交重放产生冲突，需要用户解决后继续。
+    Conflicts {
+        snapshot: RepositorySnapshot,
+        /// 当前正在重放的提交序号（1-based）。
+        current: usize,
+        /// 待重放的提交总数。
+        total: usize,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

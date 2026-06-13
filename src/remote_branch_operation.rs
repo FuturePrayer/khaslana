@@ -9,7 +9,10 @@ use yororen_ui::theme::ActiveTheme;
 
 use crate::{
     FieldId, RepositoryView, ScrollbarMode, scrollable_frame_intrinsic,
-    ui::{components::dialog_actions, theme as ui_theme},
+    ui::{
+        components::{dialog_actions, toggle_box},
+        theme as ui_theme,
+    },
 };
 
 const REMOTE_OPERATION_DIALOG_WIDTH: f32 = 640.0;
@@ -65,6 +68,8 @@ pub(crate) struct RemoteBranchOperationState {
     pub(crate) selected_remote: Option<String>,
     pub(crate) refreshing: bool,
     pub(crate) branch_dropdown_open: bool,
+    /// 拉取时是否用变基代替合并。
+    pub(crate) use_rebase: bool,
 }
 
 impl RemoteBranchOperationState {
@@ -73,6 +78,7 @@ impl RemoteBranchOperationState {
         self.selected_remote = None;
         self.refreshing = false;
         self.branch_dropdown_open = false;
+        self.use_rebase = false;
     }
 }
 
@@ -282,6 +288,34 @@ impl RepositoryView {
                         )
                     }),
             )
+            // 拉取时显示"用变基代替合并"勾选框
+            .when(kind == RemoteBranchOperationKind::Pull, |this| {
+                let checked = self.remote_branch_operation.use_rebase;
+                this.child(
+                    div()
+                        .id("pull-use-rebase-toggle")
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .cursor_pointer()
+                        .hover(|this| this.opacity(0.8))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.remote_branch_operation.use_rebase =
+                                    !this.remote_branch_operation.use_rebase;
+                                cx.notify();
+                            }),
+                        )
+                        .child(toggle_box(checked))
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(rgb(ui_theme::TEXT_MUTED))
+                                .child("用变基代替合并"),
+                        ),
+                )
+            })
             .child(
                 dialog_actions()
                     .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))

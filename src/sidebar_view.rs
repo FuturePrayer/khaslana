@@ -576,6 +576,15 @@ impl RepositoryView {
                 cx,
             ))
             .child(context_menu_item(
+                "变基到当前分支",
+                !menu.is_head && !self.busy,
+                {
+                    let branch = menu.branch.clone();
+                    move |this| this.rebase_branch(branch.clone())
+                },
+                cx,
+            ))
+            .child(context_menu_item(
                 "拉取到本地并切换",
                 !is_local && !self.busy,
                 {

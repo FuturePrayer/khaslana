@@ -5,6 +5,7 @@ mod conflicts;
 mod diff_view;
 mod history_view;
 mod proxy_view;
+mod rebase_view;
 mod remote_branch_operation;
 mod sidebar_view;
 mod stash_view;
@@ -1507,6 +1508,9 @@ fn started_message_for_label(label: &'static str) -> &'static str {
         "克隆完成" => "正在克隆仓库",
         "已刷新" => "正在刷新仓库",
         "合并完成" => "正在合并分支",
+        "变基完成" => "正在变基分支",
+        "变基已中止" => "正在中止变基",
+        "变基拉取完成" => "正在变基拉取",
         "切换分支完成" => "正在切换分支",
         "提交完成" => "正在提交",
         "分支已创建" => "正在创建分支",
@@ -5046,18 +5050,30 @@ impl RepositoryView {
             return;
         }
 
+        let use_rebase = self.remote_branch_operation.use_rebase;
         self.active_dialog = None;
         self.remote_branch_operation.refreshing = false;
         self.remote_branch_operation.branch_dropdown_open = false;
         match kind {
             RemoteBranchOperationKind::Pull => {
-                self.with_repo("拉取完成", move |service, repo| {
-                    service.pull_branch(
-                        repo,
-                        &RemoteName::new(remote),
-                        &BranchName::new(remote_branch),
-                    )
-                });
+                if use_rebase {
+                    // 用变基代替合并
+                    self.with_repo("变基拉取完成", move |service, repo| {
+                        service.pull_branch_rebase(
+                            repo,
+                            &RemoteName::new(remote),
+                            &BranchName::new(remote_branch),
+                        )
+                    });
+                } else {
+                    self.with_repo("拉取完成", move |service, repo| {
+                        service.pull_branch(
+                            repo,
+                            &RemoteName::new(remote),
+                            &BranchName::new(remote_branch),
+                        )
+                    });
+                }
             }
             RemoteBranchOperationKind::Push => {
                 self.with_repo("推送完成", move |service, repo| {
@@ -7757,6 +7773,9 @@ impl RepositoryView {
             .w(px(self.changes_width))
             .min_w(px(self.changes_width))
             .h_full()
+            .when_some(self.render_rebase_banner(cx), |this, banner| {
+                this.child(banner)
+            })
             .child(self.render_conflict_section(cx))
             .child(self.render_change_section(
                 "暂存区",
