@@ -36,3 +36,8 @@ tempfile = "3"
 
 [build-dependencies]
 embed-resource = "3"
+
+[profile.release-perf]
+inherits = "release"
+lto = "fat"           # 启用高效的跨 Crate 全局优化
+codegen-units = 1     # 舍弃编译速度，换取极致的代码优化和体积缩减
