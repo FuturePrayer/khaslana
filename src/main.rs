@@ -467,6 +467,37 @@ fn diff_render_model_for(diff: Option<&FileDiff>, headers_expanded: bool) -> Dif
     }
 }
 
+/// 估算字符串在等宽字体下的显示列宽。
+///
+/// 仅用于比较 diff 行的相对宽度以选出最宽行：ASCII 字符计 1 列，
+/// 其余字符（含中日韩、emoji 等）按全宽计 2 列。真实像素宽度仍由
+/// gpui 通过 `with_width_from_item` 实测，这里不硬编码字体度量。
+fn display_columns(text: &str) -> usize {
+    text.chars()
+        .map(|ch| if ch.is_ascii() { 1 } else { 2 })
+        .sum()
+}
+
+/// 在 diff 渲染模型中找出内容最宽的文本行对应的 model-row 索引。
+///
+/// `uniform_list` 通过 `with_width_from_item` 用单个被测量 item 的宽度决定
+/// 整个列表的水平内容宽度。这里遍历所有实际会渲染的文本行（经 `row_at`
+/// 映射，天然尊重头部展开/折叠），挑选显示列宽最大的一行作为测量基准，
+/// 从而让长行也能驱动水平滚动条。无文本行时返回 `None`，由调用方回退。
+fn widest_diff_row_index(diff: Option<&FileDiff>, model: &DiffRenderModel) -> Option<usize> {
+    let diff = diff?;
+    (0..model.row_count)
+        .filter_map(|row_index| match model.row_at(row_index) {
+            DiffRenderRow::DiffLine(line_index) => diff
+                .lines
+                .get(line_index)
+                .map(|line| (row_index, display_columns(&line.content))),
+            _ => None,
+        })
+        .max_by_key(|&(_, columns)| columns)
+        .map(|(row_index, _)| row_index)
+}
+
 fn line_index_for_byte_offset(text: &str, offset: usize) -> usize {
     let clamped = offset.min(text.len());
     text[..clamped]
@@ -8109,9 +8140,9 @@ impl RepositoryView {
         let model = diff_render_model_for(diff.as_deref(), headers_expanded);
         let row_count = model.row_count;
         let content_present = diff.is_some() && row_count > 0;
-        let width_measure_index = (0..row_count)
-            .find(|index| matches!(model.row_at(*index), DiffRenderRow::DiffLine(_)))
-            .or_else(|| row_count.checked_sub(1));
+        // 以内容最宽的文本行作为列表水平宽度的测量基准，保证长行也能左右滚动。
+        let width_measure_index =
+            widest_diff_row_index(diff.as_deref(), &model).or_else(|| row_count.checked_sub(1));
         let handle = self.uniform_scroll_handle(scroll_id);
         let list_handle = handle.clone();
         let model_for_list = model.clone();
@@ -10377,6 +10408,83 @@ mod app_tests {
             }
             _ => panic!("expected credential request"),
         }
+    }
+
+    fn make_diff_line(kind: DiffLineKind, content: &str) -> khaslana::DiffLine {
+        khaslana::DiffLine {
+            kind,
+            old_lineno: None,
+            new_lineno: None,
+            content: content.into(),
+        }
+    }
+
+    fn make_sample_diff(lines: Vec<khaslana::DiffLine>) -> FileDiff {
+        FileDiff {
+            path: "a.txt".into(),
+            scope: DiffScope::Unstaged,
+            is_binary: false,
+            encoding: khaslana::DiffEncodingInfo {
+                requested: DiffEncodingChoice::Auto,
+                resolved: DiffEncodingChoice::Utf8,
+                lossy: false,
+            },
+            lines,
+        }
+    }
+
+    #[test]
+    fn display_columns_counts_ascii_and_wide_chars() {
+        assert_eq!(display_columns(""), 0);
+        assert_eq!(display_columns("abc"), 3);
+        // 中日韩等非 ASCII 字符按 2 列计
+        assert_eq!(display_columns("中a文"), 5);
+        assert_eq!(display_columns("你好"), 4);
+    }
+
+    #[test]
+    fn widest_diff_row_index_picks_the_longest_line() {
+        let diff = make_sample_diff(vec![
+            make_diff_line(DiffLineKind::Context, "short"),
+            make_diff_line(
+                DiffLineKind::Added,
+                "this is a much longer line than the others",
+            ),
+            make_diff_line(DiffLineKind::Removed, "mid length"),
+        ]);
+        let model = diff_render_model_for(Some(&diff), false);
+        // 无 header，行号一一对应，最宽行是第 1 行（索引 1）
+        assert_eq!(widest_diff_row_index(Some(&diff), &model), Some(1));
+    }
+
+    #[test]
+    fn widest_diff_row_index_returns_none_without_diff() {
+        let model = diff_render_model_for(None, false);
+        assert_eq!(widest_diff_row_index(None, &model), None);
+    }
+
+    #[test]
+    fn widest_diff_row_index_prefers_wide_cjk_line() {
+        // 6 个中文字符 = 12 列，多于 8 个 ASCII = 8 列
+        let diff = make_sample_diff(vec![
+            make_diff_line(DiffLineKind::Context, "abcdefgh"),
+            make_diff_line(DiffLineKind::Added, "你好你好你好"),
+        ]);
+        let model = diff_render_model_for(Some(&diff), false);
+        assert_eq!(widest_diff_row_index(Some(&diff), &model), Some(1));
+    }
+
+    #[test]
+    fn widest_diff_row_index_skips_collapsed_headers() {
+        // 折叠头部时，header 行映射为 HeaderToggle，不参与宽度测量
+        let diff = make_sample_diff(vec![
+            make_diff_line(DiffLineKind::Header, "diff --git a/x b/x"),
+            make_diff_line(DiffLineKind::Context, "short"),
+            make_diff_line(DiffLineKind::Added, "longer content line here"),
+        ]);
+        let model = diff_render_model_for(Some(&diff), false);
+        // row0=HeaderToggle，row1=short，row2=longer content line here
+        assert_eq!(widest_diff_row_index(Some(&diff), &model), Some(2));
     }
 
     #[test]
