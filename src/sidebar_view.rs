@@ -630,6 +630,16 @@ impl RepositoryView {
                 },
                 cx,
             ))
+            .child(context_menu_item(
+                "浏览此分支",
+                !self.busy,
+                {
+                    let branch = menu.branch.clone();
+                    let kind = menu.kind;
+                    move |this| this.open_browse_branch(branch.clone(), kind.clone())
+                },
+                cx,
+            ))
             .into_any_element()
     }
 }

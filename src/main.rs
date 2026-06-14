@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod assets;
+mod browse_view;
 mod conflicts;
 mod diff_view;
 mod history_view;
@@ -17,7 +18,7 @@ mod ui_helpers;
 mod workflow_view;
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::num::NonZeroUsize;
 use std::ops::{Deref, DerefMut, Range};
@@ -37,17 +38,18 @@ use gpui::{
     uniform_list,
 };
 use khaslana::{
-    BranchKind, BranchName, BranchSyncStatus, CommitFileChange, CommitInfo, CommitMessage,
-    ConflictBlockResolution, ConflictFileKind, ConflictFileView, CredentialProvider,
-    CredentialRecord, CredentialRequest, CredentialScope, CredentialStore, CustomProxySettings,
-    DiffEncodingChoice, DiffEncodingPreferences, DiffLineKind, DiffScope, FileDiff, GitCredential,
-    GitService, HistoryRefsCache, HistoryScope, KeyringCredentialStore, NetworkProxyMode,
-    NetworkProxySettings, OperationEvent, ProgressEmitter, RemoteCredentialBinding,
-    RemoteCredentialBindings, RemoteCredentialPolicy, RemoteInfo, RemoteName, RepoPath,
-    RepositorySnapshot, ResetMode, SessionState, SubmoduleInfo, SubmoduleRemoteSyncStatus, TagName,
-    credential_display_target, credential_key_filename, credential_kind_label,
-    credential_record_is_compatible_with_url, credential_record_label,
-    credential_record_matches_remote_url, credential_scope_label, test_credential_connection,
+    BranchKind, BranchName, BranchSyncStatus, BrowseEntry, BrowseFileContent, BrowseRefKind,
+    BrowseTarget, CommitFileChange, CommitInfo, CommitMessage, ConflictBlockResolution,
+    ConflictFileKind, ConflictFileView, CredentialProvider, CredentialRecord, CredentialRequest,
+    CredentialScope, CredentialStore, CustomProxySettings, DiffEncodingChoice, DiffEncodingInfo,
+    DiffEncodingPreferences, DiffLineKind, DiffScope, FileDiff, GitCredential, GitService,
+    HistoryRefsCache, HistoryScope, KeyringCredentialStore, NetworkProxyMode, NetworkProxySettings,
+    OperationEvent, ProgressEmitter, RemoteCredentialBinding, RemoteCredentialBindings,
+    RemoteCredentialPolicy, RemoteInfo, RemoteName, RepoPath, RepositorySnapshot, ResetMode,
+    SessionState, SubmoduleInfo, SubmoduleRemoteSyncStatus, TagName, credential_display_target,
+    credential_key_filename, credential_kind_label, credential_record_is_compatible_with_url,
+    credential_record_label, credential_record_matches_remote_url, credential_scope_label,
+    test_credential_connection,
 };
 use lru::LruCache;
 use remote_branch_operation::{
@@ -114,6 +116,9 @@ const MAX_HISTORY_TOP_HEIGHT: f32 = 760.0;
 const DEFAULT_HISTORY_FILES_WIDTH: f32 = 520.0;
 const MIN_HISTORY_FILES_WIDTH: f32 = 260.0;
 const MAX_HISTORY_FILES_WIDTH: f32 = 720.0;
+const DEFAULT_BROWSE_TREE_WIDTH: f32 = 400.0;
+const MIN_BROWSE_TREE_WIDTH: f32 = 240.0;
+const MAX_BROWSE_TREE_WIDTH: f32 = 640.0;
 const HISTORY_PAGE_SIZE: usize = 50;
 pub(crate) const BRANCH_MENU_WIDTH: f32 = 190.0;
 pub(crate) const BRANCH_MENU_HEIGHT: f32 = 340.0;
@@ -389,6 +394,7 @@ pub(crate) enum EncodingMenuTarget {
     Worktree,
     History,
     Stash,
+    Browse,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -474,7 +480,7 @@ fn diff_render_model_for(diff: Option<&FileDiff>, headers_expanded: bool) -> Dif
 /// 仅用于比较 diff 行的相对宽度以选出最宽行：ASCII 字符计 1 列，
 /// 其余字符（含中日韩、emoji 等）按全宽计 2 列。真实像素宽度仍由
 /// gpui 通过 `with_width_from_item` 实测，这里不硬编码字体度量。
-fn display_columns(text: &str) -> usize {
+pub(crate) fn display_columns(text: &str) -> usize {
     text.chars()
         .map(|ch| if ch.is_ascii() { 1 } else { 2 })
         .sum()
@@ -719,6 +725,76 @@ fn sync_conflict_state_from_paths(
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct RepoTabId(u64);
 
+/// 浏览视图的模式：显示目标分支文件的原始内容，或与当前 HEAD 的差异。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum BrowseViewMode {
+    #[default]
+    Content,
+    Diff,
+}
+
+/// 分支浏览模式的 per-repository 状态。
+///
+/// 维护已加载的文件树（按目录懒加载）、展开/选中状态，以及当前文件的只读内容或差异。
+/// 切换到其他主模式再切回时状态保留，可直接回到上次位置。
+#[derive(Clone, Debug, Default)]
+pub(crate) struct BrowseState {
+    /// 当前浏览的目标引用（显示名 + tip commit OID）。
+    pub target: Option<BrowseTarget>,
+    /// 已加载的各目录条目，key 为 git 风格相对路径（根为 ""）。
+    pub entries_by_dir: HashMap<PathBuf, Vec<BrowseEntry>>,
+    /// 当前展开的目录路径集合。
+    pub expanded: HashSet<PathBuf>,
+    /// 当前选中的文件路径。
+    pub selected_file: Option<PathBuf>,
+    /// 只读内容视图的数据。
+    pub content: Option<Arc<BrowseFileContent>>,
+    /// 与 HEAD 的差异。
+    pub diff: Option<Arc<FileDiff>>,
+    /// 当前视图模式。
+    pub view_mode: BrowseViewMode,
+    /// 差异头部是否展开。
+    pub diff_headers_expanded: bool,
+    pub loading_tree: bool,
+    pub loading_content: bool,
+    pub loading_diff: bool,
+}
+
+impl BrowseState {
+    /// 重置为初始状态（保留默认 view_mode）。
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// 根据当前路径返回目录的 git 风格 key（根为 ""）。
+    fn dir_key(path: &Path) -> PathBuf {
+        if path.as_os_str().is_empty() {
+            PathBuf::new()
+        } else {
+            path.to_path_buf()
+        }
+    }
+
+    /// 释放超大缓存，避免切仓库后内存占用过高。
+    fn release_large_caches(&mut self) {
+        if self
+            .content
+            .as_ref()
+            .is_some_and(|content| content.lines.len() > LARGE_DIFF_CACHE_LINE_LIMIT)
+        {
+            self.content = None;
+        }
+        if self
+            .diff
+            .as_ref()
+            .is_some_and(|diff| diff.lines.len() > LARGE_DIFF_CACHE_LINE_LIMIT)
+        {
+            self.diff = None;
+            self.diff_headers_expanded = false;
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct RepoTabState {
     pub(crate) id: RepoTabId,
@@ -752,6 +828,8 @@ struct RepoTabState {
     pub(crate) sidebar_sections: SidebarSectionState,
     // 是否以“全文视图”展示差异：开启后 diff 上下文行数拉满，展示整份文件并保留增删行高亮
     pub(crate) full_file_view: bool,
+    // 分支浏览模式状态
+    pub(crate) browse: BrowseState,
     pub(crate) busy: bool,
     operation_kind: OperationKind,
     pub(crate) loading: RepositoryLoading,
@@ -793,6 +871,7 @@ impl RepoTabState {
             conflict_workbench: ConflictWorkbenchState::default(),
             sidebar_sections: SidebarSectionState::default(),
             full_file_view: false,
+            browse: BrowseState::default(),
             busy: false,
             operation_kind: OperationKind::Local,
             loading: RepositoryLoading::default(),
@@ -834,6 +913,7 @@ impl RepoTabState {
             self.history_diff = None;
             self.history_diff_headers_expanded = false;
         }
+        self.browse.release_large_caches();
     }
 }
 
@@ -913,6 +993,7 @@ pub(crate) enum ResizeTarget {
     WorkflowTemplates,
     HistoryFiles,
     HistoryTop,
+    BrowseFiles,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -922,6 +1003,7 @@ pub(crate) enum MainMode {
     History,
     Workflow,
     Stash,
+    Browse,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1143,6 +1225,33 @@ pub(crate) enum UiEvent {
         error: String,
         load_id: u64,
         request_id: u64,
+    },
+    // 分支浏览模式：目标引用解析完成
+    BrowseTargetResolved {
+        tab_id: RepoTabId,
+        target: BrowseTarget,
+        load_id: u64,
+    },
+    // 分支浏览模式：目录树加载完成
+    BrowseTreeLoaded {
+        tab_id: RepoTabId,
+        dir_path: PathBuf,
+        entries: Vec<BrowseEntry>,
+        load_id: u64,
+    },
+    // 分支浏览模式：文件只读内容加载完成
+    BrowseFileContentLoaded {
+        tab_id: RepoTabId,
+        path: String,
+        content: BrowseFileContent,
+        load_id: u64,
+    },
+    // 分支浏览模式：文件与 HEAD 差异加载完成
+    BrowseFileDiffLoaded {
+        tab_id: RepoTabId,
+        path: String,
+        diff: FileDiff,
+        load_id: u64,
     },
     OperationFailed {
         tab_id: Option<RepoTabId>,
@@ -1566,11 +1675,13 @@ pub(crate) struct RepositoryView {
     pub(crate) workflow_templates_width: f32,
     pub(crate) history_top_height: f32,
     pub(crate) history_files_width: f32,
+    pub(crate) browse_tree_width: f32,
     resizing_sidebar_width: Option<ResizeState>,
     resizing_changes_width: Option<ResizeState>,
     resizing_workflow_templates_width: Option<ResizeState>,
     resizing_history_files_width: Option<ResizeState>,
     resizing_history_top_height: Option<ResizeState>,
+    resizing_browse_tree_width: Option<ResizeState>,
     scroll_handles: RefCell<HashMap<String, ScrollHandle>>,
     uniform_scroll_handles: RefCell<HashMap<String, UniformListScrollHandle>>,
     pub(crate) scrollbar_drag: Option<ScrollbarDragState>,
@@ -1671,11 +1782,13 @@ impl RepositoryView {
             workflow_templates_width: DEFAULT_CHANGES_WIDTH,
             history_top_height: DEFAULT_HISTORY_TOP_HEIGHT,
             history_files_width: DEFAULT_HISTORY_FILES_WIDTH,
+            browse_tree_width: DEFAULT_BROWSE_TREE_WIDTH,
             resizing_sidebar_width: None,
             resizing_changes_width: None,
             resizing_workflow_templates_width: None,
             resizing_history_files_width: None,
             resizing_history_top_height: None,
+            resizing_browse_tree_width: None,
             scroll_handles: RefCell::new(HashMap::new()),
             uniform_scroll_handles: RefCell::new(HashMap::new()),
             scrollbar_drag: None,
@@ -2056,6 +2169,9 @@ impl RepositoryView {
             && let Some(path) = self.stash_preview.selected_file.clone()
         {
             self.select_stash_file(path, true);
+        }
+        if self.main_mode == MainMode::Browse {
+            self.reload_browse_on_encoding_change();
         }
     }
 
@@ -2849,6 +2965,67 @@ impl RepositoryView {
                         this.submodule_dialog.remote_error = Some(error.clone());
                         this.status = "子模块远端状态检查失败".to_string();
                         tracing::warn!("submodule remote status skipped: {error}");
+                    }
+                });
+            }
+            UiEvent::BrowseTargetResolved {
+                tab_id,
+                target,
+                load_id,
+            } => {
+                self.with_tab_context(tab_id, |this| {
+                    if load_id == this.repository_load_id {
+                        this.browse.target = Some(target);
+                        // 自动加载根目录树
+                        this.load_browse_tree(PathBuf::new());
+                    }
+                });
+            }
+            UiEvent::BrowseTreeLoaded {
+                tab_id,
+                dir_path,
+                entries,
+                load_id,
+            } => {
+                self.with_tab_context(tab_id, |this| {
+                    if load_id == this.repository_load_id {
+                        this.browse.loading_tree = false;
+                        this.browse.entries_by_dir.insert(dir_path, entries);
+                    }
+                });
+            }
+            UiEvent::BrowseFileContentLoaded {
+                tab_id,
+                path,
+                content,
+                load_id,
+            } => {
+                self.with_tab_context(tab_id, |this| {
+                    if load_id == this.repository_load_id
+                        && this.browse.selected_file.as_deref() == Some(std::path::Path::new(&path))
+                        && this.browse.view_mode == BrowseViewMode::Content
+                    {
+                        this.browse.loading_content = false;
+                        this.browse.content = Some(Arc::new(content));
+                        this.status = "文件内容已加载".to_string();
+                    }
+                });
+            }
+            UiEvent::BrowseFileDiffLoaded {
+                tab_id,
+                path,
+                diff,
+                load_id,
+            } => {
+                self.with_tab_context(tab_id, |this| {
+                    if load_id == this.repository_load_id
+                        && this.browse.selected_file.as_deref() == Some(std::path::Path::new(&path))
+                        && this.browse.view_mode == BrowseViewMode::Diff
+                    {
+                        this.browse.loading_diff = false;
+                        this.browse.diff = Some(Arc::new(diff));
+                        this.browse.diff_headers_expanded = false;
+                        this.status = "文件差异已加载".to_string();
                     }
                 });
             }
@@ -5668,6 +5845,7 @@ impl RepositoryView {
             ResizeTarget::WorkflowTemplates => self.resizing_workflow_templates_width = Some(state),
             ResizeTarget::HistoryFiles => self.resizing_history_files_width = Some(state),
             ResizeTarget::HistoryTop => self.resizing_history_top_height = Some(state),
+            ResizeTarget::BrowseFiles => self.resizing_browse_tree_width = Some(state),
         }
     }
 
@@ -5690,6 +5868,11 @@ impl RepositoryView {
                     .clamp(MIN_HISTORY_FILES_WIDTH, MAX_HISTORY_FILES_WIDTH);
                 self.set_column_width(target, width);
             }
+            ResizeTarget::BrowseFiles => {
+                let width = (resize.start_width + delta)
+                    .clamp(MIN_BROWSE_TREE_WIDTH, MAX_BROWSE_TREE_WIDTH);
+                self.set_column_width(target, width);
+            }
             ResizeTarget::Sidebar | ResizeTarget::Changes => {
                 let width = (resize.start_width + delta).clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
                 self.set_column_width(target, width);
@@ -5704,6 +5887,7 @@ impl RepositoryView {
             ResizeTarget::WorkflowTemplates => self.resizing_workflow_templates_width = None,
             ResizeTarget::HistoryFiles => self.resizing_history_files_width = None,
             ResizeTarget::HistoryTop => self.resizing_history_top_height = None,
+            ResizeTarget::BrowseFiles => self.resizing_browse_tree_width = None,
         }
     }
 
@@ -5717,6 +5901,7 @@ impl RepositoryView {
             }
             ResizeTarget::HistoryFiles => self.history_files_width = DEFAULT_HISTORY_FILES_WIDTH,
             ResizeTarget::HistoryTop => self.history_top_height = DEFAULT_HISTORY_TOP_HEIGHT,
+            ResizeTarget::BrowseFiles => self.browse_tree_width = DEFAULT_BROWSE_TREE_WIDTH,
         }
     }
 
@@ -5727,6 +5912,7 @@ impl RepositoryView {
             ResizeTarget::WorkflowTemplates => self.workflow_templates_width,
             ResizeTarget::HistoryFiles => self.history_files_width,
             ResizeTarget::HistoryTop => 0.0,
+            ResizeTarget::BrowseFiles => self.browse_tree_width,
         }
     }
 
@@ -5737,6 +5923,7 @@ impl RepositoryView {
             ResizeTarget::WorkflowTemplates => self.workflow_templates_width = width,
             ResizeTarget::HistoryFiles => self.history_files_width = width,
             ResizeTarget::HistoryTop => {}
+            ResizeTarget::BrowseFiles => self.browse_tree_width = width,
         }
     }
 
@@ -5746,7 +5933,8 @@ impl RepositoryView {
             ResizeTarget::Sidebar
             | ResizeTarget::Changes
             | ResizeTarget::WorkflowTemplates
-            | ResizeTarget::HistoryFiles => 0.0,
+            | ResizeTarget::HistoryFiles
+            | ResizeTarget::BrowseFiles => 0.0,
         }
     }
 
@@ -5756,7 +5944,8 @@ impl RepositoryView {
             ResizeTarget::Sidebar
             | ResizeTarget::Changes
             | ResizeTarget::WorkflowTemplates
-            | ResizeTarget::HistoryFiles => {}
+            | ResizeTarget::HistoryFiles
+            | ResizeTarget::BrowseFiles => {}
         }
     }
 
@@ -5767,6 +5956,7 @@ impl RepositoryView {
             ResizeTarget::WorkflowTemplates => self.resizing_workflow_templates_width,
             ResizeTarget::HistoryFiles => self.resizing_history_files_width,
             ResizeTarget::HistoryTop => self.resizing_history_top_height,
+            ResizeTarget::BrowseFiles => self.resizing_browse_tree_width,
         }
     }
 
@@ -5824,6 +6014,261 @@ impl RepositoryView {
 
     pub(crate) fn cache_diff(&self, key: DiffCacheKey, diff: Arc<FileDiff>) {
         self.diff_cache.borrow_mut().put(key, diff);
+    }
+
+    // ===== 分支浏览模式 =====
+
+    /// 从侧边栏分支右键菜单进入浏览模式。
+    pub(crate) fn open_browse_branch(&mut self, branch: String, kind: BranchKind) {
+        self.close_popups();
+        let Some(tab_id) = self.active_tab_id() else {
+            return;
+        };
+        let Some(repo_path) = self.repo_path.clone() else {
+            return;
+        };
+        let ref_kind = match kind {
+            BranchKind::Local => BrowseRefKind::LocalBranch,
+            BranchKind::Remote => BrowseRefKind::RemoteBranch,
+        };
+        self.browse.reset();
+        self.main_mode = MainMode::Browse;
+        self.status = format!("正在解析分支 {branch}");
+        self.open_browse_resolve(repo_path, tab_id, branch, ref_kind);
+    }
+
+    /// 从侧边栏标签右键菜单进入浏览模式。
+    pub(crate) fn open_browse_tag(&mut self, tag: String) {
+        self.close_popups();
+        let Some(tab_id) = self.active_tab_id() else {
+            return;
+        };
+        let Some(repo_path) = self.repo_path.clone() else {
+            return;
+        };
+        self.browse.reset();
+        self.main_mode = MainMode::Browse;
+        self.status = format!("正在解析标签 {tag}");
+        self.open_browse_resolve(repo_path, tab_id, tag, BrowseRefKind::Tag);
+    }
+
+    /// 后台解析目标引用为 BrowseTarget。
+    fn open_browse_resolve(
+        &mut self,
+        repo_path: PathBuf,
+        tab_id: RepoTabId,
+        name: String,
+        ref_kind: BrowseRefKind,
+    ) {
+        let service = self.service_for_tab(tab_id);
+        let tx = self.tx.clone();
+        let load_id = self.repository_load_id;
+        self.tasks.spawn(TaskKind::Short, move || {
+            let result = (|| -> khaslana::Result<UiEvent> {
+                let repo = Repository::open(&repo_path)?;
+                let target = service.resolve_browse_target(&repo, &name, ref_kind)?;
+                Ok(UiEvent::BrowseTargetResolved {
+                    tab_id,
+                    target,
+                    load_id,
+                })
+            })();
+            match result {
+                Ok(event) => send_ui_event(&tx, event),
+                Err(err) => send_ui_event(
+                    &tx,
+                    UiEvent::OperationFailed {
+                        tab_id: Some(tab_id),
+                        error: err.to_string(),
+                    },
+                ),
+            }
+        });
+    }
+
+    /// 后台加载某个目录的文件树条目。
+    pub(crate) fn load_browse_tree(&mut self, dir: PathBuf) {
+        let Some(tab_id) = self.active_tab_id() else {
+            return;
+        };
+        let Some(repo_path) = self.repo_path.clone() else {
+            return;
+        };
+        let Some(target) = self.browse.target.clone() else {
+            return;
+        };
+        let commit_oid = target.commit_oid.clone();
+        let prefix = if dir.as_os_str().is_empty() {
+            None
+        } else {
+            Some(dir.clone())
+        };
+        self.browse.loading_tree = true;
+        let service = self.service_for_tab(tab_id);
+        let tx = self.tx.clone();
+        let load_id = self.repository_load_id;
+        self.tasks.spawn(TaskKind::Short, move || {
+            let result = (|| -> khaslana::Result<UiEvent> {
+                let repo = Repository::open(&repo_path)?;
+                let entries = service.browse_tree_entries(&repo, &commit_oid, prefix.as_deref())?;
+                Ok(UiEvent::BrowseTreeLoaded {
+                    tab_id,
+                    dir_path: dir,
+                    entries,
+                    load_id,
+                })
+            })();
+            match result {
+                Ok(event) => send_ui_event(&tx, event),
+                Err(err) => send_ui_event(
+                    &tx,
+                    UiEvent::OperationFailed {
+                        tab_id: Some(tab_id),
+                        error: err.to_string(),
+                    },
+                ),
+            }
+        });
+    }
+
+    /// 展开/折叠目录；展开时按需懒加载子树。
+    pub(crate) fn toggle_browse_dir(&mut self, path: PathBuf) {
+        let already_loaded = self
+            .browse
+            .entries_by_dir
+            .contains_key(&BrowseState::dir_key(&path));
+        if self.browse.expanded.contains(&path) {
+            self.browse.expanded.remove(&path);
+        } else {
+            self.browse.expanded.insert(path.clone());
+            if !already_loaded {
+                self.load_browse_tree(path);
+            }
+        }
+    }
+
+    /// 选中文件并按当前模式加载内容或差异。
+    pub(crate) fn select_browse_file(&mut self, path: PathBuf) {
+        if self.browse.selected_file.as_ref() == Some(&path)
+            && (self.browse.content.is_some() || self.browse.diff.is_some())
+        {
+            return;
+        }
+        self.browse.selected_file = Some(path.clone());
+        self.browse.content = None;
+        self.browse.diff = None;
+        self.browse.diff_headers_expanded = false;
+        self.reset_uniform_scroll("browse-content-scroll");
+        self.reset_uniform_scroll("browse-diff-scroll");
+        self.load_browse_current();
+    }
+
+    /// 切换内容/差异视图模式，并按需重新加载。
+    pub(crate) fn set_browse_view_mode(&mut self, mode: BrowseViewMode) {
+        if self.browse.view_mode == mode {
+            return;
+        }
+        self.browse.view_mode = mode;
+        self.browse.content = None;
+        self.browse.diff = None;
+        self.browse.diff_headers_expanded = false;
+        self.reset_uniform_scroll("browse-content-scroll");
+        self.reset_uniform_scroll("browse-diff-scroll");
+        self.load_browse_current();
+    }
+
+    /// 根据当前选中的文件和视图模式触发后台加载。
+    fn load_browse_current(&mut self) {
+        let Some(path) = self.browse.selected_file.clone() else {
+            return;
+        };
+        let Some(tab_id) = self.active_tab_id() else {
+            return;
+        };
+        let Some(repo_path) = self.repo_path.clone() else {
+            return;
+        };
+        let Some(target) = self.browse.target.clone() else {
+            return;
+        };
+        let commit_oid = target.commit_oid.clone();
+        let encoding = self.diff_encoding_choice_for_path(&repo_path);
+        let full_context = self.full_file_view;
+        let mode = self.browse.view_mode;
+
+        match mode {
+            BrowseViewMode::Content => {
+                self.browse.loading_content = true;
+                self.status = "正在加载文件内容".to_string();
+            }
+            BrowseViewMode::Diff => {
+                self.browse.loading_diff = true;
+                self.status = "正在加载文件差异".to_string();
+            }
+        }
+
+        let service = self.service_for_tab(tab_id);
+        let tx = self.tx.clone();
+        let load_id = self.repository_load_id;
+        self.tasks.spawn(TaskKind::Short, move || {
+            let result = (|| -> khaslana::Result<UiEvent> {
+                let repo = Repository::open(&repo_path)?;
+                match mode {
+                    BrowseViewMode::Content => {
+                        let content =
+                            service.browse_file_content(&repo, &commit_oid, &path, encoding)?;
+                        Ok(UiEvent::BrowseFileContentLoaded {
+                            tab_id,
+                            path: path.to_string_lossy().to_string(),
+                            content,
+                            load_id,
+                        })
+                    }
+                    BrowseViewMode::Diff => {
+                        let diff = service.browse_file_diff(
+                            &repo,
+                            &commit_oid,
+                            &path,
+                            full_context,
+                            encoding,
+                        )?;
+                        Ok(UiEvent::BrowseFileDiffLoaded {
+                            tab_id,
+                            path: path.to_string_lossy().to_string(),
+                            diff,
+                            load_id,
+                        })
+                    }
+                }
+            })();
+            match result {
+                Ok(event) => send_ui_event(&tx, event),
+                Err(err) => send_ui_event(
+                    &tx,
+                    UiEvent::OperationFailed {
+                        tab_id: Some(tab_id),
+                        error: err.to_string(),
+                    },
+                ),
+            }
+        });
+    }
+
+    /// 关闭浏览模式，回到工作区。
+    pub(crate) fn close_browse(&mut self) {
+        self.main_mode = MainMode::Worktree;
+        self.status = "已退出分支浏览".to_string();
+    }
+
+    /// 编码切换时重新加载当前浏览文件。
+    pub(crate) fn reload_browse_on_encoding_change(&mut self) {
+        if self.main_mode != MainMode::Browse {
+            return;
+        }
+        self.browse.content = None;
+        self.browse.diff = None;
+        self.browse.diff_headers_expanded = false;
+        self.load_browse_current();
     }
 
     pub(crate) fn set_history_scope(&mut self, scope: HistoryScope) {
@@ -7258,6 +7703,15 @@ impl RepositoryView {
                 },
                 cx,
             ))
+            .child(context_menu_item(
+                "浏览此标签",
+                !self.busy,
+                {
+                    let tag = menu.tag.clone();
+                    move |this| this.open_browse_tag(tag.clone())
+                },
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -7668,6 +8122,7 @@ impl RepositoryView {
             EncodingMenuTarget::Worktree => "工作区差异编码",
             EncodingMenuTarget::History => "提交差异编码",
             EncodingMenuTarget::Stash => "贮藏差异编码",
+            EncodingMenuTarget::Browse => "浏览编码",
         };
 
         glass_menu()
@@ -8303,6 +8758,7 @@ impl RepositoryView {
             EncodingMenuTarget::Worktree => self.diff.as_deref(),
             EncodingMenuTarget::History => self.history_diff.as_deref(),
             EncodingMenuTarget::Stash => self.stash_preview.diff.as_deref(),
+            EncodingMenuTarget::Browse => self.browse.diff.as_deref(),
         };
         div()
             .flex_none()
@@ -8349,6 +8805,7 @@ impl RepositoryView {
                 EncodingMenuTarget::Worktree => "worktree-diff-encoding",
                 EncodingMenuTarget::History => "history-diff-encoding",
                 EncodingMenuTarget::Stash => "stash-diff-encoding",
+                EncodingMenuTarget::Browse => "browse-encoding",
             })
             .relative()
             .flex_none()
@@ -10103,6 +10560,7 @@ impl Render for RepositoryView {
                             self.render_workflow_view(window, cx).into_any_element()
                         }
                         MainMode::Stash => self.render_stash_preview_view(cx).into_any_element(),
+                        MainMode::Browse => self.render_browse_view(cx).into_any_element(),
                     }),
             )
             .child(self.render_status())
@@ -10314,17 +10772,21 @@ fn reset_mode_help(mode: ResetMode) -> &'static str {
     }
 }
 
-fn diff_encoding_label(diff: &FileDiff) -> String {
-    let base = if diff.encoding.requested == DiffEncodingChoice::Auto {
-        format!("编码：自动({})", diff.encoding.resolved.label())
+pub(crate) fn encoding_info_label(info: &DiffEncodingInfo) -> String {
+    let base = if info.requested == DiffEncodingChoice::Auto {
+        format!("编码：自动({})", info.resolved.label())
     } else {
-        format!("编码：{}", diff.encoding.requested.label())
+        format!("编码：{}", info.requested.label())
     };
-    if diff.encoding.lossy {
+    if info.lossy {
         format!("{base}，有替换")
     } else {
         base
     }
+}
+
+pub(crate) fn diff_encoding_label(diff: &FileDiff) -> String {
+    encoding_info_label(&diff.encoding)
 }
 
 fn timestamp_label(seconds: i64) -> String {

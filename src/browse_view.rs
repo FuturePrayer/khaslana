@@ -1,0 +1,733 @@
+// 分支浏览模式 UI 模块：左侧文件树浏览器 + 右侧只读内容/差异视图。
+// 实现 RepositoryView 的 render_browse_view 及相关渲染与展平逻辑。
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+use gpui::{
+    ClickEvent, Context, IntoElement, ListHorizontalSizingBehavior, ListSizingBehavior,
+    MouseButton, MouseDownEvent, div, prelude::*, px, rgb, rgba, uniform_list,
+};
+use khaslana::{BrowseEntry, BrowseEntryKind};
+
+use crate::{
+    BrowseViewMode, CHANGE_ROW_HEIGHT, EncodingMenuTarget, RepositoryView, ResizeTarget,
+    diff_encoding_label, encoding_info_label,
+    ui::{components::segmented_button, theme as ui_theme},
+    ui_helpers::{ScrollbarMode, placeholder_row, scrollable_uniform_frame, section_header},
+};
+
+/// 展平后的可见文件树行，用于虚拟列表渲染。
+#[derive(Clone, Debug)]
+pub(crate) struct VisibleBrowseRow {
+    pub entry: BrowseEntry,
+    pub depth: usize,
+}
+
+/// 纯函数：把已加载的目录条目 + 展开集合展平为可见行序列。
+///
+/// 从根目录开始递归：对每个目录条目，如果已展开且其子树已加载，则递归展开其子项。
+/// depth 从 0 开始，每深入一层 +1。
+pub(crate) fn flatten_browse_tree(
+    entries_by_dir: &HashMap<PathBuf, Vec<BrowseEntry>>,
+    expanded: &HashSet<PathBuf>,
+) -> Vec<VisibleBrowseRow> {
+    fn recurse(
+        dir: &Path,
+        depth: usize,
+        entries_by_dir: &HashMap<PathBuf, Vec<BrowseEntry>>,
+        expanded: &HashSet<PathBuf>,
+        out: &mut Vec<VisibleBrowseRow>,
+    ) {
+        let key = if dir.as_os_str().is_empty() {
+            PathBuf::new()
+        } else {
+            dir.to_path_buf()
+        };
+        let Some(entries) = entries_by_dir.get(&key) else {
+            return;
+        };
+        for entry in entries {
+            out.push(VisibleBrowseRow {
+                entry: entry.clone(),
+                depth,
+            });
+            // 目录已展开且子树已加载时递归
+            if entry.kind == BrowseEntryKind::Directory && expanded.contains(Path::new(&entry.path))
+            {
+                recurse(
+                    Path::new(&entry.path),
+                    depth + 1,
+                    entries_by_dir,
+                    expanded,
+                    out,
+                );
+            }
+        }
+    }
+    let mut rows = Vec::new();
+    recurse(Path::new(""), 0, entries_by_dir, expanded, &mut rows);
+    rows
+}
+
+/// 在内容行中找出显示宽度最大的一行索引，用作 `uniform_list` 的
+/// `with_width_from_item` 测量基准，确保长行也能驱动水平滚动条。
+pub(crate) fn widest_browse_line_index(lines: &[String]) -> Option<usize> {
+    (0..lines.len())
+        .map(|index| (index, crate::display_columns(&lines[index])))
+        .max_by_key(|&(_, columns)| columns)
+        .map(|(index, _)| index)
+}
+
+impl RepositoryView {
+    pub(crate) fn render_browse_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .child(self.render_browse_file_tree(cx))
+            .child(self.render_column_splitter(ResizeTarget::BrowseFiles, cx))
+            .child(self.render_browse_content_area(cx))
+    }
+
+    /// 渲染左侧文件树浏览器。
+    fn render_browse_file_tree(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let target_display = self
+            .browse
+            .target
+            .as_ref()
+            .map(|target| target.display_name.clone())
+            .unwrap_or_else(|| "加载中...".to_string());
+        let short_oid = self
+            .browse
+            .target
+            .as_ref()
+            .map(|target| {
+                target
+                    .commit_oid
+                    .get(..7)
+                    .unwrap_or(&target.commit_oid)
+                    .to_string()
+            })
+            .unwrap_or_default();
+
+        let rows = flatten_browse_tree(&self.browse.entries_by_dir, &self.browse.expanded);
+        let row_count = rows.len().max(1);
+        let has_target = self.browse.target.is_some();
+        let content_present = !rows.is_empty();
+        let handle = self.uniform_scroll_handle("browse-tree-scroll");
+        let list_handle = handle.clone();
+
+        let content = div()
+            .id("browse-tree-list")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .p_2()
+            .bg(rgb(ui_theme::PANEL_BG))
+            .child(
+                uniform_list(
+                    "browse-tree-list",
+                    row_count,
+                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                        range
+                            .map(|index| {
+                                let rows = flatten_browse_tree(
+                                    &this.browse.entries_by_dir,
+                                    &this.browse.expanded,
+                                );
+                                if rows.is_empty() {
+                                    return placeholder_row(if !has_target {
+                                        "正在解析引用..."
+                                    } else if this.browse.loading_tree {
+                                        "正在加载文件树..."
+                                    } else {
+                                        "仓库为空"
+                                    })
+                                    .into_any_element();
+                                }
+                                rows.get(index)
+                                    .cloned()
+                                    .map(|row| this.browse_tree_row(row, cx).into_any_element())
+                                    .unwrap_or_else(|| placeholder_row("").into_any_element())
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(&list_handle)
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .flex_1()
+                .min_w(px(0.0))
+                .min_h(px(0.0)),
+            )
+            .into_any_element();
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .w(px(self.browse_tree_width))
+            .min_w(px(self.browse_tree_width))
+            .min_h(px(0.0))
+            .h_full()
+            // 顶部信息栏：目标引用名 + 短 SHA + 关闭按钮
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(rgb(ui_theme::BORDER_MUTED))
+                    .bg(rgb(ui_theme::HEADER_BG))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .min_w(px(0.0))
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .text_color(rgb(ui_theme::ACCENT_STRONG))
+                                    .truncate()
+                                    .child(target_display),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(10.0))
+                                    .font_family("Consolas, monospace")
+                                    .text_color(rgb(ui_theme::TEXT_FAINT))
+                                    .child(short_oid),
+                            ),
+                    )
+                    .child(self.button("关闭", !self.busy, |this, _, _| this.close_browse(), cx)),
+            )
+            .child(section_header("文件树"))
+            .child(scrollable_uniform_frame(
+                "browse-tree-scroll",
+                ScrollbarMode::Vertical,
+                content,
+                handle,
+                content_present,
+                cx,
+            ))
+    }
+
+    /// 渲染文件树的一行。
+    fn browse_tree_row(&self, row: VisibleBrowseRow, cx: &mut Context<Self>) -> impl IntoElement {
+        let entry = row.entry;
+        let depth = row.depth;
+        let indent = px(12.0 * depth as f32);
+        let is_dir = entry.kind == BrowseEntryKind::Directory;
+        let is_expanded = self.browse.expanded.contains(Path::new(&entry.path));
+        let is_selected = self
+            .browse
+            .selected_file
+            .as_deref()
+            .map(|selected| selected == Path::new(&entry.path))
+            .unwrap_or(false);
+        let is_submodule = entry.kind == BrowseEntryKind::Submodule;
+
+        // 目录可点击展开/折叠；文件可点击选中
+        let path_for_click = PathBuf::from(&entry.path);
+
+        let caret = if is_dir {
+            if is_expanded { "▼" } else { "▶" }
+        } else {
+            ""
+        };
+
+        let icon = match entry.kind {
+            BrowseEntryKind::Directory => {
+                if is_expanded {
+                    "📂"
+                } else {
+                    "📁"
+                }
+            }
+            BrowseEntryKind::File => "📄",
+            BrowseEntryKind::Submodule => "📦",
+        };
+
+        let name_color = if is_submodule {
+            ui_theme::TEXT_FAINT
+        } else {
+            ui_theme::TEXT
+        };
+
+        div()
+            .id(format!("browse-row-{}", entry.path))
+            .flex()
+            .flex_none()
+            .w_full()
+            .min_w(px(0.0))
+            .items_center()
+            .gap_1()
+            .h(px(CHANGE_ROW_HEIGHT))
+            .pl(indent)
+            .pr(px(8.0))
+            .py_1()
+            .rounded_sm()
+            .cursor_pointer()
+            .overflow_hidden()
+            .bg(if is_selected {
+                rgb(ui_theme::ACCENT_SOFT)
+            } else {
+                rgb(ui_theme::SURFACE)
+            })
+            .border_1()
+            .border_color(if is_selected {
+                rgb(ui_theme::ROW_SELECTED_BORDER)
+            } else {
+                rgb(ui_theme::BORDER)
+            })
+            .hover(|this| this.bg(rgb(ui_theme::ROW_HOVER)))
+            .on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                if is_dir {
+                    this.toggle_browse_dir(path_for_click.clone());
+                } else {
+                    this.select_browse_file(path_for_click.clone());
+                }
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(14.0))
+                    .text_size(px(10.0))
+                    .text_color(rgb(ui_theme::TEXT_FAINT))
+                    .child(caret),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(18.0))
+                    .text_size(px(13.0))
+                    .child(icon),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .text_size(px(12.0))
+                    .text_color(rgb(name_color))
+                    .truncate()
+                    .child(entry.name),
+            )
+    }
+
+    /// 渲染右侧内容区域（内容/差异切换 + 视图）。
+    fn render_browse_content_area(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .relative()
+            .min_w(px(0.0))
+            .h_full()
+            .child(self.render_browse_content_header(cx))
+            .child(match self.browse.view_mode {
+                BrowseViewMode::Content => self.render_browse_content_view(cx).into_any_element(),
+                BrowseViewMode::Diff => self.render_browse_diff_view(cx).into_any_element(),
+            })
+            // 编码选择下拉菜单
+            .child(self.render_encoding_dropdown(EncodingMenuTarget::Browse, cx))
+    }
+
+    /// 右侧顶部栏：模式切换 + 编码按钮。
+    fn render_browse_content_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected_path = self
+            .browse
+            .selected_file
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|| "未选择文件".to_string());
+
+        let mode_label = match self.browse.view_mode {
+            BrowseViewMode::Content => "文件内容",
+            BrowseViewMode::Diff => "与当前分支差异",
+        };
+
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .border_b_1()
+            .border_color(rgb(ui_theme::BORDER_MUTED))
+            .bg(rgb(ui_theme::HEADER_BG))
+            .child(
+                div().flex().items_center().gap_2().min_w(px(0.0)).child(
+                    div()
+                        .text_size(px(12.0))
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(rgb(ui_theme::ACCENT_STRONG))
+                        .truncate()
+                        .child(format!("{mode_label}: {selected_path}")),
+                ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    // 内容/差异切换
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap_1()
+                            .rounded_sm()
+                            .bg(rgb(ui_theme::SEGMENT_BG))
+                            .p_1()
+                            .child(self.browse_mode_segment(BrowseViewMode::Content, "内容", cx))
+                            .child(self.browse_mode_segment(BrowseViewMode::Diff, "差异", cx)),
+                    )
+                    // 编码按钮：两种模式都显示
+                    .child(self.browse_encoding_button(cx)),
+            )
+    }
+
+    /// 模式切换的分段按钮。
+    fn browse_mode_segment(
+        &self,
+        mode: BrowseViewMode,
+        label: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let selected = self.browse.view_mode == mode;
+        segmented_button(format!("browse-mode-{mode:?}"), selected, !self.busy)
+            .child(label.to_string())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+                    this.set_browse_view_mode(mode);
+                    cx.notify();
+                }),
+            )
+    }
+
+    /// 浏览模式的编码按钮：内容模式取 BrowseFileContent.encoding，差异模式取 FileDiff.encoding。
+    /// 点击后弹出编码选择下拉菜单（复用 EncodingMenuTarget::Browse），选择后重新加载当前文件。
+    fn browse_encoding_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let label = self.browse_encoding_label();
+        div()
+            .id("browse-encoding")
+            .relative()
+            .flex_none()
+            .px_2()
+            .py_1()
+            .rounded_sm()
+            .border_1()
+            .border_color(rgb(ui_theme::BORDER))
+            .bg(rgba(ui_theme::GLASS_BG))
+            .text_color(rgb(ui_theme::TEXT_MUTED))
+            .text_size(px(11.0))
+            .cursor_pointer()
+            .hover(|this| this.bg(rgb(ui_theme::ACCENT_VIVID_SOFT)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+                    cx.stop_propagation();
+                    this.toggle_encoding_menu(EncodingMenuTarget::Browse);
+                    cx.notify();
+                }),
+            )
+            .child(label)
+    }
+
+    /// 根据当前模式生成编码标签文本。
+    fn browse_encoding_label(&self) -> String {
+        match self.browse.view_mode {
+            BrowseViewMode::Content => {
+                if let Some(content) = self.browse.content.as_ref() {
+                    encoding_info_label(&content.encoding)
+                } else {
+                    format!("编码：{}", self.current_diff_encoding_choice().label())
+                }
+            }
+            BrowseViewMode::Diff => {
+                if let Some(diff) = self.browse.diff.as_ref() {
+                    diff_encoding_label(diff)
+                } else {
+                    format!("编码：{}", self.current_diff_encoding_choice().label())
+                }
+            }
+        }
+    }
+
+    /// 只读内容视图：虚拟列表渲染文件行。
+    fn render_browse_content_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let content = self.browse.content.clone();
+        let loading = self.browse.loading_content;
+
+        let row_count = if let Some(content) = content.as_ref() {
+            if content.is_binary {
+                1
+            } else {
+                content.lines.len().max(1)
+            }
+        } else {
+            1
+        };
+        let content_present = content.is_some();
+        let handle = self.uniform_scroll_handle("browse-content-scroll");
+        let list_handle = handle.clone();
+
+        let inner_content = div()
+            .id("browse-content-list")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .p_2()
+            .font_family("Consolas, monospace")
+            .text_size(px(12.0))
+            .bg(rgb(ui_theme::SURFACE))
+            .child(
+                uniform_list(
+                    "browse-content-list",
+                    row_count,
+                    cx.processor(move |this, range: std::ops::Range<usize>, _window, _cx| {
+                        let content = this.browse.content.clone();
+                        range
+                            .map(|index| {
+                                let Some(content) = content.as_ref() else {
+                                    return placeholder_row(if this.browse.loading_content {
+                                        "正在加载文件内容..."
+                                    } else {
+                                        "请选择一个文件查看内容"
+                                    })
+                                    .into_any_element();
+                                };
+                                if content.is_binary {
+                                    return placeholder_row("二进制文件，无法预览")
+                                        .into_any_element();
+                                }
+                                let line = content.lines.get(index).cloned().unwrap_or_default();
+                                this.browse_content_line(index + 1, line).into_any_element()
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(&list_handle)
+                .with_width_from_item(widest_browse_line_index(
+                    content.as_ref().map(|c| c.lines.as_slice()).unwrap_or(&[]),
+                ))
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+                .flex_1()
+                .min_w(px(0.0))
+                .min_h(px(0.0)),
+            )
+            .into_any_element();
+
+        let _ = loading; // suppress unused warning
+        scrollable_uniform_frame(
+            "browse-content-scroll",
+            ScrollbarMode::Both,
+            inner_content,
+            handle,
+            content_present,
+            cx,
+        )
+    }
+
+    /// 渲染一行只读文件内容（带行号）。
+    fn browse_content_line(&self, lineno: usize, text: String) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_none()
+            .w_full()
+            .min_w(px(0.0))
+            .items_start()
+            .gap_2()
+            .h(px(18.0))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(40.0))
+                    .text_size(px(11.0))
+                    .text_color(rgb(ui_theme::TEXT_FAINT))
+                    .text_align(gpui::TextAlign::Right)
+                    .child(lineno.to_string()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .h(px(18.0))
+                    .line_height(px(18.0))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_color(rgb(ui_theme::TEXT))
+                    .child(text),
+            )
+    }
+
+    /// 差异视图：复用现有 diff 渲染。
+    fn render_browse_diff_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let empty_message = if self.browse.loading_diff {
+            "文件差异加载中..."
+        } else {
+            "请选择一个文件查看与当前分支的差异"
+        };
+
+        self.render_virtual_diff(
+            "browse-diff-scroll",
+            self.browse.diff.clone(),
+            self.browse.diff_headers_expanded,
+            crate::DiffHeaderTarget::History,
+            empty_message.to_string(),
+            cx,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(path: &str, kind: BrowseEntryKind) -> BrowseEntry {
+        let name = path.rsplit('/').next().unwrap_or(path).to_string();
+        BrowseEntry {
+            path: path.to_string(),
+            name,
+            kind,
+            size: 0,
+        }
+    }
+
+    fn make_entries(dir: &str, items: &[(&str, BrowseEntryKind)]) -> (PathBuf, Vec<BrowseEntry>) {
+        let key = if dir.is_empty() {
+            PathBuf::new()
+        } else {
+            PathBuf::from(dir)
+        };
+        let entries = items
+            .iter()
+            .map(|(name, kind)| {
+                let path = if dir.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{dir}/{name}")
+                };
+                entry(&path, *kind)
+            })
+            .collect();
+        (key, entries)
+    }
+
+    #[test]
+    fn flatten_browse_tree_no_expansion() {
+        let mut entries_by_dir = HashMap::new();
+        let (root_key, root_entries) = make_entries(
+            "",
+            &[
+                ("src", BrowseEntryKind::Directory),
+                ("README.md", BrowseEntryKind::File),
+            ],
+        );
+        entries_by_dir.insert(root_key, root_entries);
+
+        let rows = flatten_browse_tree(&entries_by_dir, &HashSet::new());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].entry.name, "src");
+        assert_eq!(rows[0].depth, 0);
+        assert_eq!(rows[1].entry.name, "README.md");
+        assert_eq!(rows[1].depth, 0);
+    }
+
+    #[test]
+    fn flatten_browse_tree_with_expansion() {
+        let mut entries_by_dir = HashMap::new();
+        let (root_key, root_entries) = make_entries(
+            "",
+            &[
+                ("src", BrowseEntryKind::Directory),
+                ("README.md", BrowseEntryKind::File),
+            ],
+        );
+        entries_by_dir.insert(root_key, root_entries);
+
+        let (src_key, src_entries) = make_entries(
+            "src",
+            &[
+                ("lib.rs", BrowseEntryKind::File),
+                ("types", BrowseEntryKind::Directory),
+            ],
+        );
+        entries_by_dir.insert(src_key, src_entries);
+
+        let mut expanded = HashSet::new();
+        expanded.insert(PathBuf::from("src"));
+
+        let rows = flatten_browse_tree(&entries_by_dir, &expanded);
+        // src, src/lib.rs, src/types, README.md
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].entry.name, "src");
+        assert_eq!(rows[0].depth, 0);
+        assert_eq!(rows[1].entry.name, "lib.rs");
+        assert_eq!(rows[1].depth, 1);
+        assert_eq!(rows[2].entry.name, "types");
+        assert_eq!(rows[2].depth, 1);
+        assert_eq!(rows[3].entry.name, "README.md");
+        assert_eq!(rows[3].depth, 0);
+    }
+
+    #[test]
+    fn flatten_browse_tree_nested_expansion() {
+        let mut entries_by_dir = HashMap::new();
+        let (root_key, root_entries) = make_entries("", &[("a", BrowseEntryKind::Directory)]);
+        entries_by_dir.insert(root_key, root_entries);
+
+        let (a_key, a_entries) = make_entries(
+            "a",
+            &[
+                ("b", BrowseEntryKind::Directory),
+                ("f.txt", BrowseEntryKind::File),
+            ],
+        );
+        entries_by_dir.insert(a_key, a_entries);
+
+        let (ab_key, ab_entries) = make_entries("a/b", &[("c.txt", BrowseEntryKind::File)]);
+        entries_by_dir.insert(ab_key, ab_entries);
+
+        let mut expanded = HashSet::new();
+        expanded.insert(PathBuf::from("a"));
+        expanded.insert(PathBuf::from("a/b"));
+
+        let rows = flatten_browse_tree(&entries_by_dir, &expanded);
+        // a, a/b, a/b/c.txt, a/f.txt
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].depth, 0); // a
+        assert_eq!(rows[1].depth, 1); // a/b
+        assert_eq!(rows[2].depth, 2); // a/b/c.txt
+        assert_eq!(rows[3].depth, 1); // a/f.txt
+    }
+
+    #[test]
+    fn flatten_browse_tree_collapsed_not_loaded() {
+        let mut entries_by_dir = HashMap::new();
+        let (root_key, root_entries) = make_entries("", &[("src", BrowseEntryKind::Directory)]);
+        entries_by_dir.insert(root_key, root_entries);
+        // src 子树未加载
+
+        let rows = flatten_browse_tree(&entries_by_dir, &HashSet::new());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].entry.name, "src");
+    }
+}

@@ -3,12 +3,15 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod browse;
 mod conflicts;
 
 pub use conflicts::{
     ConflictBlock, ConflictBlockResolution, ConflictBlockStatus, ConflictDraftStatus,
     ConflictFileKind, ConflictFileView, ConflictResolutionSide,
 };
+
+pub use browse::{BrowseEntry, BrowseEntryKind, BrowseFileContent, BrowseTarget};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RepoPath(pub PathBuf);

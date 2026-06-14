@@ -29,10 +29,14 @@ use crate::types::{
 };
 use smallvec::SmallVec;
 
+mod browse;
 mod conflicts;
 mod rebase;
 mod stash;
 mod submodule;
+
+// 重新导出浏览模式引用种类，供二进制 crate 使用
+pub use browse::BrowseRefKind;
 
 pub(crate) const DIFF_CONTEXT_LINES: u32 = 3;
 const BRANCH_SYNC_UNPUSHED_OID_LIMIT: usize = 256;

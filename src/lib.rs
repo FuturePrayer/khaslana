@@ -14,7 +14,8 @@ pub use credentials::{
     test_credential_connection,
 };
 pub use git::{
-    FULL_FILE_TOO_LARGE_MESSAGE, GitService, HistoryRefsCache, NoopProgress, ProgressEmitter,
+    BrowseRefKind, FULL_FILE_TOO_LARGE_MESSAGE, GitService, HistoryRefsCache, NoopProgress,
+    ProgressEmitter,
 };
 pub use proxy::{CustomProxySettings, NetworkProxyMode, NetworkProxySettings};
 pub use storage::{
@@ -28,3 +29,5 @@ pub use workflow::{
     WorkflowPreview, WorkflowPreviewStep, WorkflowProgressEvent, WorkflowRunOptions,
     WorkflowRunResult, WorkflowStep, parse_workflow_json5,
 };
+
+// 浏览模式领域类型已在 types::* 中重新导出（BrowseTarget / BrowseEntry / BrowseEntryKind / BrowseFileContent）。

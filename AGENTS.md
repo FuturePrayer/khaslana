@@ -45,12 +45,15 @@ Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中
 - `src/lib.rs`：库入口，重新导出 Git、凭据和类型模块，供 `main.rs` 使用。
 - `src/assets.rs`：应用自有静态资源入口，将 `assets/icons/` 与 Yororen 内置资源合并注册给 GPUI。
 - `src/types.rs`：领域类型和错误类型的汇总入口；较独立的领域类型放到 `src/types/` 子目录，例如冲突解决类型在 `src/types/conflicts.rs`。
+- `src/types/browse.rs`：分支浏览模式领域类型，包括 `BrowseTarget`、`BrowseEntry`、`BrowseEntryKind` 和 `BrowseFileContent`。
 - `src/git.rs`：核心 Git 服务层的汇总入口；大型或独立 Git 能力放到 `src/git/` 子目录，例如冲突解决服务在 `src/git/conflicts.rs`，贮藏服务在 `src/git/stash.rs`，变基服务在 `src/git/rebase.rs`。
 - `src/git/submodule.rs`：子模块 Git 服务，包括状态读取、同步父仓库记录版本、快进到子模块远端最新以及递归子模块更新。
 - `src/git/rebase.rs`：变基 Git 服务，包括 `rebase_branch`、`rebase_continue`、`rebase_skip`、`rebase_abort` 和 `pull_branch_rebase`。
+- `src/git/browse.rs`：分支浏览 Git 服务，包括引用解析（`resolve_browse_target`）、文件树遍历（`browse_tree_entries`）、文件内容读取（`browse_file_content`）和与 HEAD 差异（`browse_file_diff`）。
 - `src/credentials.rs`：凭据存储、匹配、Keyring 读写、凭据测试、旧存储兼容迁移和单元测试。
 - `src/proxy.rs`：网络代理设置类型、代理 URL 校验、远端协议到代理 URL 的选择，以及 `git2::ProxyOptions` 接入 helper。
 - `src/main.rs`：应用入口与主要 UI 状态机。包含 `RepositoryView`、多标签页状态、对话框、文本输入、事件泵、异步 Git 任务、工作区视图、diff、提交框、凭据/远端弹窗等。
+- `src/main.rs`：应用入口与主要 UI 状态机。包含 `RepositoryView`、多标签页状态、对话框、文本输入、事件泵、异步 Git 任务、工作区视图、diff、提交框、凭据/远端弹窗、分支浏览模式等。
 - `src/conflicts/`：冲突解决相关 UI、交互动作和轻量状态 helper，作为 `main.rs` 的子模块实现 `RepositoryView` 的冲突区域。
 - `src/proxy_view.rs`：网络代理设置弹窗，包括模式切换、自定义代理输入、保存和测试代理入口。
 - `src/stash_view.rs`：贮藏完整工作流 UI，包括创建贮藏、查看贮藏文件、加载贮藏 diff 和删除确认。
@@ -60,6 +63,7 @@ Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中
 - `src/sidebar_view.rs`：侧边栏 UI，包括本地分支、远端、远端分支、标签、贮藏和相关右键菜单。
 - `src/history_view.rs`：提交历史 UI、提交图渲染、提交文件列表、历史 diff。
 - `src/diff_view.rs`：差异区域全文/紧凑视图切换模块，包括切换按钮渲染、扇出重新加载和文件过大自动回退。
+- `src/browse_view.rs`：分支浏览模式 UI 模块，包括文件树展平函数 `flatten_browse_tree`、文件树浏览器渲染、只读内容视图和差异视图。
 - `src/ui_helpers.rs`：通用 UI 常量、滚动条、列表行、diff 行号、作者头像等辅助渲染。
 
 ## 4. 核心架构
@@ -95,6 +99,7 @@ Khaslana 是一个使用 Rust 编写的桌面 Git 客户端，界面语言以中
 - 历史操作：reset、revert
 - 变基：rebase_branch、rebase_continue、rebase_skip、rebase_abort、pull_branch_rebase
 - diff：工作区 diff、历史 diff、编码识别
+- 浏览：引用解析（分支/标签 → commit OID）、文件树遍历、文件内容读取、与 HEAD 差异
 
 Git 操作通常返回新的 `RepositorySnapshot`，让 UI 统一刷新状态。危险操作需要在 UI 层先确认。
 
@@ -211,7 +216,19 @@ diff 自动编码检测使用有限字节样本，UI 对最近查看的工作区
 - 查看指定提交文件 diff
 - 右键提交可复制 SHA、reset、revert 等
 
-### 5.5 凭据
+### 5.5 分支浏览
+
+- 不切换分支查看其他分支/标签的完整代码
+- 从侧边栏本地分支、远端分支和标签的右键菜单进入「浏览此分支 / 浏览此标签」
+- 左侧文件树浏览器：可展开/折叠的目录树，按目录懒加载
+- 右侧默认显示目标分支上文件的只读原始内容（含行号和编码识别）
+- 顶部可一键切换到「与当前 HEAD 的差异」视图
+- 支持切换 diff 编码
+- 整个过程不执行 checkout，不改动工作区
+- 二进制文件提示「无法预览」，超大文件自动报错提示
+- 子模块条目仅展示，不可下钻
+
+### 5.6 凭据
 
 - HTTPS 用户名 + 密码/PAT
 - SSH key + passphrase
@@ -220,7 +237,7 @@ diff 自动编码检测使用有限字节样本，UI 对最近查看的工作区
 - 凭据记录管理、删除、测试连接
 - 远端凭据策略：自动匹配、不使用凭据、绑定指定记录
 
-### 5.6 网络代理
+### 5.7 网络代理
 
 - 全局代理设置：不使用代理、使用系统代理、自定义代理
 - “使用系统代理”基于 libgit2 的 `GIT_PROXY_AUTO`，读取 Git 代理配置和 `http_proxy` / `https_proxy` 环境变量，不读取系统 UI 代理或 PAC
@@ -258,7 +275,9 @@ Windows MSVC target 通过 `.cargo/config.toml` 启用静态 CRT 链接，发布
 
 - `src/git.rs`：Git 操作、分支、远端、stage/unstage/discard、提交、历史、reset/revert、编码、冲突保护等。
 - `src/credentials.rs`：凭据匹配、Keyring/内存存储逻辑、URL 规范化、记录排序、兼容性判断等。
-- `src/main.rs`：会话 JSON、路径去重、编码偏好、远端凭据绑定、克隆路径推断、文本输入状态、diff 渲染模型等。
+- `src/main.rs`：会话 JSON、路径去重、编码偏好、远端凭据绑定、克隆路径推断、文本输入状态、diff 渲染模型、分支浏览状态切换与缓存清理等。
+- `src/git/browse.rs`：分支浏览引用解析（本地/远端分支、标签）、文件树遍历、文件内容读取（编码检测与二进制判定）、与 HEAD 差异，以及子模块条目识别等基于 `tempfile` 的仓库级单测。
+- `src/browse_view.rs`：文件树展平纯函数 `flatten_browse_tree`（展开/折叠/嵌套）单测。
 
 新增 Git 业务能力时，优先在 `src/git.rs` 增加基于 `tempfile` 的仓库级单元测试。新增纯 UI 状态逻辑时，优先拆成可测试的小函数，放在 `main.rs` 或对应 view 模块的 `#[cfg(test)]` 中测试。
 

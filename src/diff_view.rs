@@ -27,6 +27,7 @@ impl RepositoryView {
                 EncodingMenuTarget::Worktree => "worktree-full-file-toggle",
                 EncodingMenuTarget::History => "history-full-file-toggle",
                 EncodingMenuTarget::Stash => "stash-full-file-toggle",
+                EncodingMenuTarget::Browse => "browse-full-file-toggle",
             })
             .flex_none()
             .px_2()
