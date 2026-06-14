@@ -105,6 +105,8 @@ actions!(
     ]
 );
 
+actions!(browse_content, [BrowseContentCopy, BrowseContentSelectAll,]);
+
 const DEFAULT_SIDEBAR_WIDTH: f32 = 330.0;
 const DEFAULT_CHANGES_WIDTH: f32 = 330.0;
 const MIN_COLUMN_WIDTH: f32 = 240.0;
@@ -758,6 +760,10 @@ pub(crate) struct BrowseState {
     pub loading_tree: bool,
     pub loading_content: bool,
     pub loading_diff: bool,
+    // 行级文本选区（拖选 + Ctrl+C / Ctrl+A）。
+    pub selecting: bool,
+    pub sel_start: Option<usize>,
+    pub sel_end: Option<usize>,
 }
 
 impl BrowseState {
@@ -772,6 +778,21 @@ impl BrowseState {
             PathBuf::new()
         } else {
             path.to_path_buf()
+        }
+    }
+
+    /// 当前行是否在选区内（sel_start..=sel_end，顺序无关）。
+    fn is_row_selected(&self, index: usize) -> bool {
+        match (self.sel_start, self.sel_end) {
+            (Some(start), Some(end)) => {
+                let (lo, hi) = if start <= end {
+                    (start, end)
+                } else {
+                    (end, start)
+                };
+                index >= lo && index <= hi
+            }
+            _ => false,
         }
     }
 
@@ -1707,6 +1728,7 @@ pub(crate) struct RepositoryView {
     credential_scope: CredentialScope,
     credential_form_mode: CredentialFormMode,
     credential_use_ssh_agent: bool,
+    browse_content_focus: FocusHandle,
     clone_url: TextFieldState,
     clone_path: TextFieldState,
     clone_recursive_submodules: bool,
@@ -1814,6 +1836,7 @@ impl RepositoryView {
             credential_scope: CredentialScope::RemoteUrl,
             credential_form_mode: CredentialFormMode::Https,
             credential_use_ssh_agent: false,
+            browse_content_focus: cx.focus_handle(),
             clone_url: TextFieldState::new(cx, "远程仓库 URL"),
             clone_path: TextFieldState::new(cx, "克隆到父文件夹"),
             clone_recursive_submodules: default_clone_recursive_submodules(),
@@ -3756,6 +3779,24 @@ impl RepositoryView {
                 cx.notify();
             }
         }
+    }
+
+    fn on_browse_content_copy(
+        &mut self,
+        _: &BrowseContentCopy,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.browse_content_copy(cx);
+    }
+
+    fn on_browse_content_select_all(
+        &mut self,
+        _: &BrowseContentSelectAll,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.browse_content_select_all(cx);
     }
 
     fn focused_field(&self, window: &Window, _cx: &App) -> Option<FieldId> {
@@ -6158,6 +6199,7 @@ impl RepositoryView {
         self.browse.content = None;
         self.browse.diff = None;
         self.browse.diff_headers_expanded = false;
+        self.clear_browse_selection();
         self.reset_uniform_scroll("browse-content-scroll");
         self.reset_uniform_scroll("browse-diff-scroll");
         self.load_browse_current();
@@ -6172,6 +6214,7 @@ impl RepositoryView {
         self.browse.content = None;
         self.browse.diff = None;
         self.browse.diff_headers_expanded = false;
+        self.clear_browse_selection();
         self.reset_uniform_scroll("browse-content-scroll");
         self.reset_uniform_scroll("browse-diff-scroll");
         self.load_browse_current();
@@ -6258,6 +6301,72 @@ impl RepositoryView {
     pub(crate) fn close_browse(&mut self) {
         self.main_mode = MainMode::Worktree;
         self.status = "已退出分支浏览".to_string();
+    }
+
+    /// 将鼠标 Y 坐标映射到内容行索引（基于 uniform_list 滚动偏移与行高）。
+    fn browse_row_for_mouse_y(&self, y: Pixels, line_count: usize) -> usize {
+        let scroll = self.uniform_scroll_handle("browse-content-scroll");
+        let state = scroll.0.borrow();
+        let bounds = state.base_handle.bounds();
+        let offset_y = f32::from(state.base_handle.offset().y);
+        let row = ((f32::from(y) - f32::from(bounds.top()) - offset_y)
+            / crate::browse_view::BROWSE_ROW_HEIGHT)
+            .floor()
+            .max(0.0) as usize;
+        row.min(line_count.saturating_sub(1))
+    }
+
+    /// 清空行级选区。
+    pub(crate) fn clear_browse_selection(&mut self) {
+        self.browse.selecting = false;
+        self.browse.sel_start = None;
+        self.browse.sel_end = None;
+    }
+
+    /// Ctrl+C：把选中的行用 `\n` 拼接写入剪贴板。
+    pub(crate) fn browse_content_copy(&mut self, cx: &mut Context<Self>) {
+        let (Some(start), Some(end)) = (self.browse.sel_start, self.browse.sel_end) else {
+            return;
+        };
+        let Some(content) = self.browse.content.as_ref() else {
+            return;
+        };
+        if content.is_binary {
+            return;
+        }
+        let (lo, hi) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        let lines: Vec<&str> = content
+            .lines
+            .get(lo..=hi)
+            .map(|slice| slice.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        if lines.is_empty() {
+            return;
+        }
+        let text = lines.join("\n");
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.notify_success(
+            "已复制 {count} 行".replace("{count}", &lines.len().to_string()),
+            cx,
+        );
+    }
+
+    /// Ctrl+A：全选。
+    pub(crate) fn browse_content_select_all(&mut self, cx: &mut Context<Self>) {
+        let line_count = match self.browse.content.as_ref() {
+            Some(content) if !content.is_binary => content.lines.len(),
+            _ => return,
+        };
+        if line_count == 0 {
+            return;
+        }
+        self.browse.sel_start = Some(0);
+        self.browse.sel_end = Some(line_count - 1);
+        cx.notify();
     }
 
     /// 编码切换时重新加载当前浏览文件。
@@ -11753,6 +11862,10 @@ fn main() {
                 KeyBinding::new("ctrl-c", TextCopy, Some("TextInput")),
                 KeyBinding::new("ctrl-v", TextPaste, Some("TextInput")),
                 KeyBinding::new("ctrl-x", TextCut, Some("TextInput")),
+                KeyBinding::new("cmd-c", BrowseContentCopy, Some("BrowseContent")),
+                KeyBinding::new("cmd-a", BrowseContentSelectAll, Some("BrowseContent")),
+                KeyBinding::new("ctrl-c", BrowseContentCopy, Some("BrowseContent")),
+                KeyBinding::new("ctrl-a", BrowseContentSelectAll, Some("BrowseContent")),
             ]);
             cx.open_window(
                 WindowOptions {

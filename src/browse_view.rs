@@ -6,9 +6,12 @@ use std::path::{Path, PathBuf};
 
 use gpui::{
     ClickEvent, Context, IntoElement, ListHorizontalSizingBehavior, ListSizingBehavior,
-    MouseButton, MouseDownEvent, div, prelude::*, px, rgb, rgba, uniform_list,
+    MouseButton, MouseDownEvent, MouseMoveEvent, div, prelude::*, px, rgb, rgba, uniform_list,
 };
 use khaslana::{BrowseEntry, BrowseEntryKind};
+
+/// 内容视图每行高度（px），与 `browse_content_line` 中的 `h(px(18.0))` 一致。
+pub(crate) const BROWSE_ROW_HEIGHT: f32 = 18.0;
 
 use crate::{
     BrowseViewMode, CHANGE_ROW_HEIGHT, EncodingMenuTarget, RepositoryView, ResizeTarget,
@@ -486,9 +489,13 @@ impl RepositoryView {
         let content_present = content.is_some();
         let handle = self.uniform_scroll_handle("browse-content-scroll");
         let list_handle = handle.clone();
+        let focus = self.browse_content_focus.clone();
+        let entity = cx.entity();
 
         let inner_content = div()
             .id("browse-content-list")
+            .track_focus(&focus)
+            .key_context("BrowseContent")
             .flex()
             .flex_col()
             .flex_1()
@@ -498,6 +505,58 @@ impl RepositoryView {
             .font_family("Consolas, monospace")
             .text_size(px(12.0))
             .bg(rgb(ui_theme::SURFACE))
+            .on_action(cx.listener(Self::on_browse_content_copy))
+            .on_action(cx.listener(Self::on_browse_content_select_all))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    let line_count = this
+                        .browse
+                        .content
+                        .as_ref()
+                        .map(|c| if c.is_binary { 0 } else { c.lines.len() })
+                        .unwrap_or(0);
+                    if line_count == 0 {
+                        return;
+                    }
+                    let row = this.browse_row_for_mouse_y(event.position.y, line_count);
+                    this.browse.sel_start = Some(row);
+                    this.browse.sel_end = Some(row);
+                    this.browse.selecting = true;
+                    window.focus(&this.browse_content_focus);
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(
+                cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
+                    if !this.browse.selecting {
+                        return;
+                    }
+                    let line_count = this
+                        .browse
+                        .content
+                        .as_ref()
+                        .map(|c| if c.is_binary { 0 } else { c.lines.len() })
+                        .unwrap_or(0);
+                    if line_count == 0 {
+                        return;
+                    }
+                    let row = this.browse_row_for_mouse_y(event.position.y, line_count);
+                    if this.browse.sel_end != Some(row) {
+                        this.browse.sel_end = Some(row);
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _event, _window, cx| {
+                    if this.browse.selecting {
+                        this.browse.selecting = false;
+                        cx.notify();
+                    }
+                }),
+            )
             .child(
                 uniform_list(
                     "browse-content-list",
@@ -519,7 +578,7 @@ impl RepositoryView {
                                         .into_any_element();
                                 }
                                 let line = content.lines.get(index).cloned().unwrap_or_default();
-                                this.browse_content_line(index + 1, line).into_any_element()
+                                this.browse_content_line(index, line).into_any_element()
                             })
                             .collect::<Vec<_>>()
                     }),
@@ -536,7 +595,7 @@ impl RepositoryView {
             )
             .into_any_element();
 
-        let _ = loading; // suppress unused warning
+        let _ = (loading, entity);
         scrollable_uniform_frame(
             "browse-content-scroll",
             ScrollbarMode::Both,
@@ -548,7 +607,8 @@ impl RepositoryView {
     }
 
     /// 渲染一行只读文件内容（带行号）。
-    fn browse_content_line(&self, lineno: usize, text: String) -> impl IntoElement {
+    fn browse_content_line(&self, index: usize, text: String) -> impl IntoElement {
+        let selected = self.browse.is_row_selected(index);
         div()
             .flex()
             .flex_none()
@@ -556,7 +616,8 @@ impl RepositoryView {
             .min_w(px(0.0))
             .items_start()
             .gap_2()
-            .h(px(18.0))
+            .h(px(BROWSE_ROW_HEIGHT))
+            .when(selected, |this| this.bg(rgb(ui_theme::ACCENT_SOFT)))
             .child(
                 div()
                     .flex_none()
@@ -564,13 +625,13 @@ impl RepositoryView {
                     .text_size(px(11.0))
                     .text_color(rgb(ui_theme::TEXT_FAINT))
                     .text_align(gpui::TextAlign::Right)
-                    .child(lineno.to_string()),
+                    .child((index + 1).to_string()),
             )
             .child(
                 div()
                     .flex_none()
-                    .h(px(18.0))
-                    .line_height(px(18.0))
+                    .h(px(BROWSE_ROW_HEIGHT))
+                    .line_height(px(BROWSE_ROW_HEIGHT))
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_color(rgb(ui_theme::TEXT))
