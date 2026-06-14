@@ -10,11 +10,16 @@ use crate::{
     CHANGE_ROW_HEIGHT, DiffHeaderTarget, EncodingMenuTarget, RepositoryView, ResizeTarget,
     ScrollbarMode, author_avatar, change_state_color, commit_time_label, history_scope_button,
     placeholder_row, scrollable_uniform_frame, section_header, section_header_action,
-    ui::{components::metric_badge, theme as ui_theme},
+    ui::{
+        components::{metric_badge, tooltip_text},
+        theme as ui_theme,
+    },
 };
 
 const HISTORY_GRAPH_WIDTH: f32 = 96.0;
 const HISTORY_GRAPH_ROW_HEIGHT: f32 = 42.0;
+// 提交行只直接展示少量引用，剩余引用通过 +n 的悬浮提示查看，避免挤压提交摘要。
+const MAX_COMMIT_REF_LABELS: usize = 3;
 const GRAPH_LANE_START: f32 = 12.0;
 const GRAPH_LANE_SPACING: f32 = 14.0;
 #[derive(Clone, Debug, Default)]
@@ -177,15 +182,22 @@ impl RepositoryView {
         let right_click_parent_count = commit.parents.len();
         let author = commit.author.clone();
         let time = commit_time_label(commit.time);
-        let ref_labels = commit_ref_labels(&commit.refs);
-        let hidden_ref_count = commit.refs.len().saturating_sub(3);
+        let row_short_oid = commit.short_oid.clone();
+        let ref_labels = commit_ref_labels(&commit.refs, &row_short_oid);
+        let hidden_refs = commit
+            .refs
+            .iter()
+            .skip(MAX_COMMIT_REF_LABELS)
+            .cloned()
+            .collect::<Vec<_>>();
+        let hidden_ref_count = hidden_refs.len();
         let unpushed = self
             .branch_sync_status
             .as_ref()
             .is_some_and(|status| status.unpushed_oids.iter().any(|oid| oid == &commit.oid));
 
         div()
-            .id(format!("commit-{}", commit.short_oid))
+            .id(format!("commit-{row_short_oid}"))
             .relative()
             .flex()
             .flex_none()
@@ -258,7 +270,7 @@ impl RepositoryView {
                     .text_size(px(11.0))
                     .text_color(rgb(ui_theme::ACCENT_STRONG))
                     .text_align(gpui::TextAlign::Center)
-                    .child(commit.short_oid),
+                    .child(row_short_oid.clone()),
             )
             .child(
                 div()
@@ -283,7 +295,7 @@ impl RepositoryView {
                     )
                     .children(ref_labels)
                     .when(hidden_ref_count > 0, |this| {
-                        this.child(commit_ref_overflow_label(hidden_ref_count))
+                        this.child(commit_ref_overflow_label(&row_short_oid, hidden_refs))
                     })
                     .when(unpushed, |this| {
                         this.child(
@@ -711,15 +723,23 @@ fn paint_graph_circle(
     }
 }
 
-fn commit_ref_labels(refs: &[CommitRefInfo]) -> Vec<gpui::AnyElement> {
+fn commit_ref_labels(refs: &[CommitRefInfo], row_short_oid: &str) -> Vec<gpui::AnyElement> {
     refs.iter()
-        .take(3)
+        .take(MAX_COMMIT_REF_LABELS)
         .cloned()
-        .map(|reference| commit_ref_label(reference).into_any_element())
+        .enumerate()
+        .map(|(index, reference)| {
+            commit_ref_label(row_short_oid, index, reference).into_any_element()
+        })
         .collect()
 }
 
-fn commit_ref_label(reference: CommitRefInfo) -> impl IntoElement {
+fn commit_ref_label(
+    row_short_oid: &str,
+    index: usize,
+    reference: CommitRefInfo,
+) -> impl IntoElement {
+    let tooltip = commit_ref_tooltip(&reference);
     let (bg, border, fg, label) = match reference.kind {
         CommitRefKind::LocalBranch => (
             ui_theme::REF_LOCAL_BG,
@@ -748,6 +768,7 @@ fn commit_ref_label(reference: CommitRefInfo) -> impl IntoElement {
     };
 
     div()
+        .id(format!("commit-ref-{row_short_oid}-{index}"))
         .flex_none()
         .max_w(px(120.0))
         .px_1()
@@ -759,9 +780,64 @@ fn commit_ref_label(reference: CommitRefInfo) -> impl IntoElement {
         .text_size(px(10.0))
         .text_color(rgb(fg))
         .truncate()
+        .tooltip(move |_window, cx| tooltip_text(tooltip.clone(), cx))
         .child(label)
 }
 
-fn commit_ref_overflow_label(count: usize) -> impl IntoElement {
+fn commit_ref_overflow_label(
+    row_short_oid: &str,
+    hidden_refs: Vec<CommitRefInfo>,
+) -> impl IntoElement {
+    let count = hidden_refs.len();
+    let tooltip = hidden_commit_refs_tooltip(&hidden_refs);
     metric_badge(format!("+{count}"), ui_theme::ACCENT_VIVID)
+        .id(format!("commit-ref-overflow-{row_short_oid}"))
+        .tooltip(move |_window, cx| tooltip_text(tooltip.clone(), cx))
+}
+
+fn commit_ref_tooltip(reference: &CommitRefInfo) -> String {
+    format!(
+        "{}：{}",
+        commit_ref_kind_label(&reference.kind),
+        reference.name
+    )
+}
+
+fn hidden_commit_refs_tooltip(refs: &[CommitRefInfo]) -> String {
+    let mut heads = Vec::new();
+    let mut local_branches = Vec::new();
+    let mut remote_branches = Vec::new();
+    let mut tags = Vec::new();
+
+    for reference in refs {
+        match reference.kind {
+            CommitRefKind::Head => heads.push(reference.name.clone()),
+            CommitRefKind::LocalBranch => local_branches.push(reference.name.clone()),
+            CommitRefKind::RemoteBranch => remote_branches.push(reference.name.clone()),
+            CommitRefKind::Tag => tags.push(reference.name.clone()),
+        }
+    }
+
+    let mut parts = Vec::new();
+    push_commit_ref_group(&mut parts, "HEAD", heads);
+    push_commit_ref_group(&mut parts, "本地分支", local_branches);
+    push_commit_ref_group(&mut parts, "远端分支", remote_branches);
+    push_commit_ref_group(&mut parts, "标签", tags);
+
+    format!("隐藏引用（{} 个）：{}", refs.len(), parts.join("；"))
+}
+
+fn push_commit_ref_group(parts: &mut Vec<String>, label: &'static str, names: Vec<String>) {
+    if !names.is_empty() {
+        parts.push(format!("{label}：{}", names.join("、")));
+    }
+}
+
+fn commit_ref_kind_label(kind: &CommitRefKind) -> &'static str {
+    match kind {
+        CommitRefKind::LocalBranch => "本地分支",
+        CommitRefKind::RemoteBranch => "远端分支",
+        CommitRefKind::Tag => "标签",
+        CommitRefKind::Head => "HEAD",
+    }
 }

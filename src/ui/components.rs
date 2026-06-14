@@ -133,7 +133,7 @@ impl Render for TextTooltip {
     }
 }
 
-fn tooltip_text(text: impl Into<gpui::SharedString>, cx: &mut App) -> gpui::AnyView {
+pub(crate) fn tooltip_text(text: impl Into<gpui::SharedString>, cx: &mut App) -> gpui::AnyView {
     let text = text.into();
     cx.new(move |_| TextTooltip { text }).into()
 }
@@ -268,7 +268,7 @@ pub(crate) fn glass_menu() -> Div {
         .occlude()
 }
 
-pub(crate) fn metric_badge(label: impl Into<gpui::SharedString>, tone: u32) -> impl IntoElement {
+pub(crate) fn metric_badge(label: impl Into<gpui::SharedString>, tone: u32) -> Div {
     div()
         .flex_none()
         .px_2()
