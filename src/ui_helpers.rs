@@ -210,13 +210,13 @@ fn paint_scrollbar_axis(
     active_axis: Option<ScrollbarAxis>,
     window: &mut Window,
 ) {
-    window.paint_quad(fill(geometry.track, rgb(0xf6f9fd)).corner_radii(px(4.0)));
+    window.paint_quad(fill(geometry.track, rgba(ui_theme::SCROLLBAR_TRACK)).corner_radii(px(4.0)));
     let thumb_color = if active_axis == Some(axis) {
-        0x8fb9e8
+        ui_theme::SCROLLBAR_THUMB_ACTIVE
     } else {
-        0xbfd8f5
+        ui_theme::SCROLLBAR_THUMB
     };
-    window.paint_quad(fill(geometry.thumb, rgb(thumb_color)).corner_radii(px(4.0)));
+    window.paint_quad(fill(geometry.thumb, rgba(thumb_color)).corner_radii(px(4.0)));
 }
 
 fn register_scrollbar_mouse_down(
@@ -846,9 +846,9 @@ pub(crate) fn diff_line(
     content: String,
 ) -> impl IntoElement {
     let (bg, fg) = match kind {
-        DiffLineKind::Added => (0xe9fff2, 0x168447),
-        DiffLineKind::Removed => (0xffeeee, 0xc43a3a),
-        DiffLineKind::Header => (0xeef3fb, 0x4b5563),
+        DiffLineKind::Added => (ui_theme::DIFF_ADDED_BG, ui_theme::DIFF_ADDED_TEXT),
+        DiffLineKind::Removed => (ui_theme::DIFF_REMOVED_BG, ui_theme::DIFF_REMOVED_TEXT),
+        DiffLineKind::Header => (ui_theme::DIFF_HEADER_BG, ui_theme::DIFF_HEADER_TEXT),
         DiffLineKind::Context => (COLOR_PANEL_BG, COLOR_TEXT),
     };
     let old_lineno = old_lineno.map(|line| line.to_string()).unwrap_or_default();

@@ -11,6 +11,7 @@ mod remote_branch_operation;
 mod sidebar_view;
 mod stash_view;
 mod submodule_view;
+mod system;
 mod tasks;
 mod text_input;
 mod ui;
@@ -69,7 +70,7 @@ use ui::{
         bottom_progress_bar, danger_callout, dialog_actions, dialog_overlay,
         dialog_panel as ui_dialog_panel, feedback_bubble, feedback_stack, glass_menu, hero_toolbar,
         inline_error_bubble, input_frame, list_row_surface, operation_loading_bar,
-        segmented_button, status_pill, toggle_box,
+        segmented_button, status_pill, toggle_box, tooltip_text,
     },
     icons::ToolbarIcon,
     theme as ui_theme,
@@ -3892,6 +3893,40 @@ impl RepositoryView {
         });
     }
 
+    fn open_repo_in_file_manager(&mut self, cx: &mut Context<Self>) {
+        let Some(repo_path) = self.repo_path.clone() else {
+            self.last_error = Some("请先打开一个仓库".into());
+            self.notify_warning("请先打开一个仓库", cx);
+            return;
+        };
+        if !repo_path.exists() {
+            let message = format!("仓库目录不存在：{}", repo_path.display());
+            self.last_error = Some(message.clone());
+            self.notify_error(message, cx);
+            return;
+        }
+        if !repo_path.is_dir() {
+            let message = format!("仓库路径不是文件夹：{}", repo_path.display());
+            self.last_error = Some(message.clone());
+            self.notify_error(message, cx);
+            return;
+        }
+
+        // 顶部路径胶囊只负责快速跳转，实际打开目录的跨平台命令集中放在 system 模块。
+        match system::open_directory(&repo_path) {
+            Ok(()) => {
+                self.status = "仓库目录已在资源管理器中打开".into();
+                self.last_error = None;
+                self.notify_success("仓库目录已在资源管理器中打开", cx);
+            }
+            Err(err) => {
+                let message = format!("仓库目录打开失败：{err}");
+                self.last_error = Some(message.clone());
+                self.notify_error(message, cx);
+            }
+        }
+    }
+
     fn browse_clone_target(&mut self) {
         self.status = "正在选择克隆父文件夹".to_string();
         self.last_error = None;
@@ -7497,7 +7532,7 @@ impl RepositoryView {
                         this.child(self.render_toolbar_more_button(cx))
                     }),
             )
-            .child(self.render_toolbar_path_pill())
+            .child(self.render_toolbar_path_pill(cx))
             .child(
                 div()
                     .flex()
@@ -7505,14 +7540,24 @@ impl RepositoryView {
                     .items_center()
                     .gap_1()
                     .relative()
-                    .child(self.mode_button("工作区", MainMode::Worktree, cx))
+                    .child(self.mode_button_with_icon(
+                        "工作区",
+                        MainMode::Worktree,
+                        Some(ToolbarIcon::Worktree),
+                        cx,
+                    ))
                     .when(
                         self.snapshot
                             .as_ref()
                             .is_some_and(|snapshot| !snapshot.conflicts.is_empty()),
                         |this| this.child(self.mode_button("冲突处理", MainMode::Conflict, cx)),
                     )
-                    .child(self.mode_button("提交记录", MainMode::History, cx))
+                    .child(self.mode_button_with_icon(
+                        "提交记录",
+                        MainMode::History,
+                        Some(ToolbarIcon::History),
+                        cx,
+                    ))
                     .child(self.mode_button_with_icon(
                         "工作流",
                         MainMode::Workflow,
@@ -7522,9 +7567,17 @@ impl RepositoryView {
             )
     }
 
-    fn render_toolbar_path_pill(&self) -> impl IntoElement {
+    fn render_toolbar_path_pill(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let repo_path = self
+            .repo_path
+            .as_ref()
+            .map(|path| path.display().to_string());
+        let repo_open = repo_path.is_some();
+        let label = repo_path.unwrap_or_else(|| "未打开仓库".into());
+
         div().flex_1().min_w(px(0.0)).flex().justify_center().child(
             div()
+                .id("toolbar-repo-path-pill")
                 .min_w(px(0.0))
                 .max_w(px(520.0))
                 .px_3()
@@ -7537,12 +7590,16 @@ impl RepositoryView {
                 .font_weight(gpui::FontWeight::BOLD)
                 .text_color(rgb(ui_theme::TEXT))
                 .truncate()
-                .child(
-                    self.repo_path
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "未打开仓库".into()),
-                ),
+                .when(repo_open, |this| {
+                    this.cursor_pointer()
+                        .hover(|this| this.bg(rgb(ui_theme::ACCENT_VIVID_SOFT)))
+                        .tooltip(|_window, cx| tooltip_text("点击打开仓库目录", cx))
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.open_repo_in_file_manager(cx);
+                            cx.stop_propagation();
+                        }))
+                })
+                .child(label),
         )
     }
 

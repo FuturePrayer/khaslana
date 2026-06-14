@@ -11,6 +11,8 @@ pub(crate) enum ToolbarIcon {
     Credentials,
     Proxy,
     Workflow,
+    Worktree,
+    History,
     Stash,
     Submodule,
     More,
@@ -28,6 +30,8 @@ impl ToolbarIcon {
             Self::Credentials => "icons/credentials.svg",
             Self::Proxy => "icons/proxy.svg",
             Self::Workflow => "icons/workflow.svg",
+            Self::Worktree => "icons/worktree.svg",
+            Self::History => "icons/history.svg",
             Self::Stash => "icons/stash.svg",
             Self::Submodule => "icons/submodule.svg",
             Self::More => "icons/more.svg",
@@ -61,6 +65,8 @@ mod tests {
     #[test]
     fn toolbar_icon_paths_match_embedded_asset_root() {
         assert_eq!(ToolbarIcon::Open.path(), "icons/open.svg");
+        assert_eq!(ToolbarIcon::Worktree.path(), "icons/worktree.svg");
+        assert_eq!(ToolbarIcon::History.path(), "icons/history.svg");
         assert_eq!(ToolbarIcon::Stash.path(), "icons/stash.svg");
         assert_eq!(ToolbarIcon::More.path(), "icons/more.svg");
     }
@@ -77,6 +83,8 @@ mod tests {
             ToolbarIcon::Credentials,
             ToolbarIcon::Proxy,
             ToolbarIcon::Workflow,
+            ToolbarIcon::Worktree,
+            ToolbarIcon::History,
             ToolbarIcon::Stash,
             ToolbarIcon::Submodule,
             ToolbarIcon::More,

@@ -245,8 +245,8 @@ pub(crate) fn flat_panel() -> Div {
     div()
         .rounded_sm()
         .border_1()
-        .border_color(rgb(theme::BORDER))
-        .bg(rgb(theme::PANEL_BG))
+        .border_color(rgba(theme::GLASS_BORDER))
+        .bg(rgba(theme::GLASS_BG))
         .shadow_sm()
 }
 

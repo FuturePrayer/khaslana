@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::SystemTime;
 use std::{fs, thread};
 
@@ -17,6 +16,7 @@ use crate::{
     FieldId, RepositoryLoading, RepositorySnapshot, RepositoryView, ResizeTarget, ScrollbarMode,
     TextFieldState, UiEvent, placeholder_row, scrollable_frame_when, section_header_action,
     send_ui_event,
+    system::open_directory,
     tasks::TaskKind,
     ui::{
         components::{dialog_actions, section_title},
@@ -943,22 +943,6 @@ fn workflow_modified_label(modified: Option<SystemTime>) -> String {
             format!("修改于 {}", local.format("%Y-%m-%d %H:%M"))
         })
         .unwrap_or_else(|| "修改时间未知".to_string())
-}
-
-fn open_directory(path: &Path) -> std::io::Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("explorer").arg(path).spawn()?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open").arg(path).spawn()?;
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        Command::new("xdg-open").arg(path).spawn()?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

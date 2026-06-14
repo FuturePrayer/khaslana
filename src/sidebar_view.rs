@@ -1,5 +1,6 @@
 use gpui::{
-    ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent, Window, div, prelude::*, px, rgb,
+    ClickEvent, Context, IntoElement, MouseButton, MouseDownEvent, Window, div, linear_color_stop,
+    linear_gradient, prelude::*, px, rgb, rgba,
 };
 use khaslana::{BranchInfo, BranchKind, RemoteInfo, StashInfo, TagInfo};
 
@@ -53,6 +54,8 @@ impl RepositoryView {
             .collect::<Vec<_>>();
 
         let mut sidebar = div()
+            .relative()
+            .overflow_hidden()
             .flex()
             .flex_none()
             .flex_col()
@@ -60,8 +63,22 @@ impl RepositoryView {
             .min_w(px(self.sidebar_width))
             .h_full()
             .border_r_1()
-            .border_color(rgb(ui_theme::GLASS_BORDER))
-            .bg(rgb(ui_theme::PANEL_TINT))
+            .border_color(rgba(ui_theme::GLASS_BORDER))
+            // 使用 GPUI 原生线性渐变，避免上下色块模拟造成明显分界线。
+            .bg(linear_gradient(
+                180.0,
+                linear_color_stop(rgba(ui_theme::SIDEBAR_GRADIENT_TOP), 0.0),
+                linear_color_stop(rgba(ui_theme::SIDEBAR_GRADIENT_BOTTOM), 1.0),
+            ))
+            .child(
+                div()
+                    .absolute()
+                    .top(px(0.0))
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .bottom(px(0.0))
+                    .bg(rgba(ui_theme::SIDEBAR_GRADIENT_SOFTEN)),
+            )
             .child(
                 self.render_nav_section(
                     "本地分支",
