@@ -255,6 +255,7 @@ impl RepositoryView {
             ai_review_loaded_label: None,
             ai_review_history: None,
             conflict_pane_scroll_sync: Rc::new(RefCell::new(None)),
+            conflict_editors: Vec::new(),
             ai_conflict_loading: false,
             ai_thinking_overlay: None,
             ai_thinking_task: None,
@@ -1254,84 +1255,47 @@ impl RepositoryView {
     }
 
     pub(crate) fn ensure_conflict_views_loaded(&mut self) {
-        let paths = self
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.conflicts.clone())
-            .unwrap_or_default();
-        let Some(tab_id) = self.active_tab_id() else {
-            return;
-        };
-        let Some(repo_path) = self.repo_path.clone() else {
-            return;
-        };
+        if self.conflict_workbench.loading { return }
+        let paths: Vec<_> = self.snapshot.as_ref().map(|snapshot| snapshot.conflicts.iter()
+            .filter(|path| !self.conflict_workbench.files.contains_key(*path) && !self.conflict_workbench.load_errors.contains_key(*path))
+            .cloned().collect()).unwrap_or_default();
+        if paths.is_empty() { return }
+        let Some(tab_id) = self.active_tab_id() else { return };
+        let Some(repo_path) = self.repo_path.clone() else { return };
         let service = self.service_for_tab(tab_id);
-        for path in paths {
-            if self.conflict_workbench.files.contains_key(&path) {
-                continue;
-            }
-            match Repository::open(&repo_path)
-                .map_err(khaslana::GitError::from)
-                .and_then(|repo| service.conflict_file_view(&repo, Path::new(&path)))
-            {
-                Ok(view) => {
-                    self.conflict_workbench.files.insert(path, view);
-                }
-                Err(err) => {
-                    self.last_error = Some(err.to_string());
-                }
-            }
-        }
+        self.conflict_workbench.load_generation = self.conflict_workbench.load_generation.wrapping_add(1);
+        let generation = self.conflict_workbench.load_generation;
+        let session_id = self.conflict_workbench.session_id;
+        self.conflict_workbench.loading = true;
+        let tx = self.tx.clone();
+        self.tasks.spawn(TaskKind::Short, move || {
+            // 外层执行器会捕获 panic，但仍需要给本会话发收尾事件，不能留下 loading。
+            let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let repo = Repository::open(&repo_path).map_err(|error| error.to_string());
+                paths.iter().map(|path| {
+                    let result = match &repo {
+                        Ok(repo) => service.conflict_file_view(repo, Path::new(path)).map_err(|error| error.to_string()),
+                        Err(error) => Err(error.clone()),
+                    };
+                    (path.clone(), result)
+                }).collect::<Vec<_>>()
+            }));
+            let results = loaded.unwrap_or_else(|_| paths.into_iter().map(|path|
+                (path, Err("读取冲突版本时发生异常，请重新选择文件重试".into()))).collect());
+            send_ui_event(&tx, UiEvent::ConflictFilesLoaded { tab_id, session_id, generation, results });
+        });
     }
 
     pub(crate) fn sync_conflict_editor_from_state(&mut self) {
-        let Some(path) = self.conflict_workbench.selected_path.clone() else {
-            return;
-        };
-        let Some((kind, draft)) = self
-            .conflict_workbench
-            .files
-            .get(&path)
-            .map(|view| (view.kind, view.draft.clone()))
-        else {
-            return;
-        };
-        if kind != ConflictFileKind::Text {
-            return;
-        }
-        // 结果区是只读文档视图（M6 起固定），编辑器不承载草稿；
-        // 选中块变化时仍需把三栏滚动到该块。
-        self.scroll_conflict_panes_to_selected_block(&draft, self.selected_conflict_block_start());
-    }
-
-    fn selected_conflict_block_start(&self) -> usize {
-        let Some(path) = self.conflict_workbench.selected_path.as_ref() else {
-            return 0;
-        };
-        self.conflict_workbench
-            .files
-            .get(path)
-            .and_then(|view| {
-                view.blocks
-                    .get(
-                        self.conflict_workbench
-                            .selected_block
-                            .min(view.blocks.len().saturating_sub(1)),
-                    )
-                    .map(|block| block.start)
-            })
-            .unwrap_or(0)
-    }
-
-    fn scroll_conflict_panes_to_selected_block(&self, text: &str, offset: usize) {
-        let line_index = line_index_for_byte_offset(text, offset);
-        for handle_id in conflict_workbench_scroll_handle_ids() {
-            self.uniform_scroll_handle(handle_id)
-                .scroll_to_item_strict_with_offset(line_index, ScrollStrategy::Top, 4);
+        let tab = self.active_tab_id();
+        let path = self.conflict_workbench.selected_path.clone();
+        if let Some(host) = self.conflict_editors.iter_mut().find(|host| Some(host.tab_id) == tab && Some(&host.path) == path.as_ref()) {
+            host.jump_pending = true;
         }
     }
 
     pub(crate) fn select_conflict_file(&mut self, path: String) {
+        self.conflict_workbench.load_errors.remove(&path);
         self.conflict_workbench.selected_path = Some(path.clone());
         self.conflict_workbench.selected_block = 0;
         self.conflict_workbench.show_base = false;
@@ -1352,7 +1316,7 @@ impl RepositoryView {
         }
     }
 
-    fn select_conflict_block(&mut self, index: usize) {
+    pub(crate) fn select_conflict_block(&mut self, index: usize) {
         let Some(path) = self.conflict_workbench.selected_path.clone() else {
             return;
         };
@@ -1422,9 +1386,7 @@ impl RepositoryView {
         };
         let unresolved_count = view.unresolved_block_count();
         let draft = view.draft.clone();
-        if !resolve {
-            view.mark_applied();
-        } else if self
+        if resolve && self
             .conflict_workbench
             .request_resolve_confirmation(path.clone(), unresolved_count)
         {
@@ -1461,18 +1423,24 @@ impl RepositoryView {
     }
 
     fn apply_conflict_draft_operation(&mut self, path: String, draft: String, resolve: bool) {
-        let path_for_op = path.clone();
+        if self.busy { return }
+        let Some(tab_id) = self.active_tab_id() else { return };
+        let Some(repo_path) = self.repo_path.clone() else { return };
+        let session_id = self.conflict_workbench.session_id;
+        let service = self.service_for_tab(tab_id);
         let label = if resolve {
             "冲突结果已应用并标记解决"
         } else {
             "冲突草稿已应用到工作区"
         };
-        self.with_repo(label, move |service, repo| {
-            if resolve {
-                service.apply_conflict_draft_and_resolve(repo, Path::new(&path_for_op), &draft)
+        self.spawn_operation_for_tab(Some(tab_id), label, move || {
+            let mut repo = Repository::open(repo_path)?;
+            let snapshot = if resolve {
+                service.apply_conflict_draft_and_resolve(&mut repo, Path::new(&path), &draft)?
             } else {
-                service.apply_conflict_draft(repo, Path::new(&path_for_op), &draft)
-            }
+                service.apply_conflict_draft(&mut repo, Path::new(&path), &draft)?
+            };
+            Ok(UiEvent::ConflictDraftApplied { tab_id, session_id, path, draft, snapshot, resolve })
         });
     }
 

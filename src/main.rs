@@ -1258,14 +1258,7 @@ fn cached_widest_diff_row_index(
     cache.value
 }
 
-fn line_index_for_byte_offset(text: &str, offset: usize) -> usize {
-    let clamped = offset.min(text.len());
-    text[..clamped]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count()
-}
-
+#[cfg(test)]
 fn conflict_workbench_scroll_handle_ids() -> [&'static str; 3] {
     [
         CONFLICT_OURS_SCROLL_HANDLE_ID,
@@ -1414,9 +1407,15 @@ struct ConflictFileSyntax {
 
 #[derive(Clone, Debug, Default)]
 struct ConflictWorkbenchState {
+    session_id: u64,
+    load_generation: u64,
+    loading: bool,
+    load_errors: BTreeMap<String, String>,
+    ai_suggestions: BTreeMap<String, String>,
     selected_path: Option<String>,
     selected_block: usize,
     show_base: bool,
+    independent_scroll: bool,
     pending_resolve: Option<PendingConflictResolve>,
     files: BTreeMap<String, ConflictFileView>,
     external_merge_auto_opened: BTreeSet<String>,
@@ -1512,6 +1511,8 @@ fn sync_conflict_state_from_paths(
     state
         .files
         .retain(|path, _| conflict_paths.iter().any(|candidate| candidate == path));
+    state.load_errors.retain(|path, _| conflict_paths.contains(path));
+    state.ai_suggestions.retain(|path, _| conflict_paths.contains(path));
     state.prune_external_merge_auto_opened(conflict_paths);
     if state
         .pending_resolve
@@ -1530,6 +1531,8 @@ fn sync_conflict_state_from_paths(
     }
 
     if entering_conflicts {
+        static NEXT_SESSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        state.session_id = NEXT_SESSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         *main_mode = if auto_open_conflict_mode {
             MainMode::Conflict
         } else {
@@ -2339,6 +2342,20 @@ impl RepositoryLoading {
 #[derive(Clone, Debug)]
 pub(crate) enum UiEvent {
     UiTick,
+    ConflictFilesLoaded {
+        tab_id: RepoTabId,
+        session_id: u64,
+        generation: u64,
+        results: Vec<(String, std::result::Result<ConflictFileView, String>)>,
+    },
+    ConflictDraftApplied {
+        tab_id: RepoTabId,
+        session_id: u64,
+        path: String,
+        draft: String,
+        snapshot: RepositorySnapshot,
+        resolve: bool,
+    },
     OperationStarted {
         tab_id: Option<RepoTabId>,
         message: String,
@@ -2749,6 +2766,9 @@ pub(crate) enum UiEvent {
     },
     AiConflictMergeGenerated {
         task_id: u64,
+        tab_id: RepoTabId,
+        session_id: u64,
+        original_draft: String,
         path: String,
         draft: String,
     },
@@ -3708,6 +3728,7 @@ pub(crate) struct RepositoryView {
     /// 跨帧供连线 canvas paint 判定滚动源；paint 闭包拿不到实体，经 Rc
     /// 共享）。选中冲突文件时重置。
     pub(crate) conflict_pane_scroll_sync: Rc<RefCell<Option<[f32; 3]>>>,
+    pub(crate) conflict_editors: Vec<conflicts::editor::ConflictEditorHost>,
     /// 冲突工作台「AI 合并建议」生成中标志（不借用 busy，生成期间其它
     /// 冲突操作保持可用，与 commit message 生成同一模式）。
     pub(crate) ai_conflict_loading: bool,
@@ -3801,6 +3822,7 @@ impl Render for RepositoryView {
         self.ensure_workflow_editor_fields_inited(window, cx);
         // Kit 输入字段：渲染期只有 `&self`，宿主实体必须在这里先建好并对齐。
         self.ensure_kit_fields(window, cx);
+        self.ensure_conflict_editors(window, cx);
         // 窗口圆角：外壳是「透明窗口 + 自绘圆角」的那张卡片，最大化时必须归零，
         // 否则四角会露出桌面。所有铺满窗口的色块（根背景、顶栏、对话框遮罩）
         // 都读这个值，保证圆角一致。

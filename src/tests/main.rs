@@ -1095,9 +1095,15 @@ fn non_merge_conflict_state_still_opens_conflict_mode() {
 fn conflict_state_returns_to_worktree_when_last_conflict_disappears() {
     let mut mode = MainMode::Conflict;
     let mut state = ConflictWorkbenchState {
+        session_id: 0,
+        load_generation: 0,
+        loading: false,
+        load_errors: BTreeMap::new(),
+        ai_suggestions: BTreeMap::new(),
         selected_path: Some("a.txt".into()),
         selected_block: 1,
         show_base: true,
+        independent_scroll: false,
         pending_resolve: Some(PendingConflictResolve {
             path: "a.txt".into(),
             unresolved_count: 1,
@@ -1119,9 +1125,15 @@ fn conflict_state_returns_to_worktree_when_last_conflict_disappears() {
 fn conflict_state_prunes_removed_files_and_keeps_existing_drafts() {
     let mut mode = MainMode::Conflict;
     let mut state = ConflictWorkbenchState {
+        session_id: 0,
+        load_generation: 0,
+        loading: false,
+        load_errors: BTreeMap::new(),
+        ai_suggestions: BTreeMap::new(),
         selected_path: Some("b.txt".into()),
         selected_block: 0,
         show_base: false,
+        independent_scroll: false,
         pending_resolve: Some(PendingConflictResolve {
             path: "a.txt".into(),
             unresolved_count: 1,

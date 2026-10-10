@@ -5,6 +5,40 @@ use crate::*;
 impl RepositoryView {
     pub(crate) fn handle_ui_event(&mut self, event: UiEvent, cx: &mut Context<Self>) {
         match event {
+            UiEvent::ConflictDraftApplied { tab_id, session_id, path, draft, snapshot, resolve } => {
+                self.with_tab_context(tab_id, |this| {
+                    if !resolve && this.conflict_workbench.session_id == session_id
+                        && let Some(view) = this.conflict_workbench.files.get_mut(&path)
+                        && view.draft == draft {
+                        view.mark_applied();
+                    }
+                });
+                self.handle_ui_event(UiEvent::OperationFinished {
+                    tab_id: Some(tab_id),
+                    message: if resolve { "冲突结果已应用并标记解决" } else { "冲突草稿已应用到工作区" }.into(),
+                    snapshot: Some(snapshot), diff: None,
+                }, cx);
+            }
+            UiEvent::ConflictFilesLoaded { tab_id, session_id, generation, results } => {
+                self.with_tab_context(tab_id, |this| {
+                    if this.conflict_workbench.session_id != session_id || this.conflict_workbench.load_generation != generation {
+                        return;
+                    }
+                    this.conflict_workbench.loading = false;
+                    for (path, result) in results {
+                        if !this.snapshot.as_ref().is_some_and(|s| s.conflicts.contains(&path)) { continue }
+                        match result {
+                            Ok(view) => { this.conflict_workbench.files.entry(path).or_insert(view); }
+                            Err(error) => { this.conflict_workbench.load_errors.insert(path, error); }
+                        }
+                    }
+                    this.sync_conflict_editor_from_state();
+                    this.schedule_conflict_syntax_for_selected(&[
+                        ConflictSyntaxPane::Ours, ConflictSyntaxPane::Theirs, ConflictSyntaxPane::Draft,
+                    ]);
+                    this.maybe_auto_open_external_merge_for_selected_conflict();
+                });
+            }
             UiEvent::UiTick => {
                 self.progress_phase = self.progress_phase.wrapping_add(1);
                 let now = Instant::now();
@@ -1583,6 +1617,9 @@ impl RepositoryView {
             }
             UiEvent::AiConflictMergeGenerated {
                 task_id,
+                tab_id,
+                session_id,
+                original_draft,
                 path,
                 draft,
             } => {
@@ -1591,6 +1628,16 @@ impl RepositoryView {
                 }
                 self.finish_ai_thinking_task(task_id);
                 self.ai_conflict_loading = false;
+                if self.active_tab_id() != Some(tab_id) || self.conflict_workbench.session_id != session_id
+                    || !self.conflict_workbench.files.get(&path).is_some_and(|view| view.draft == original_draft) {
+                    self.with_tab_context(tab_id, |this| {
+                        if this.conflict_workbench.session_id == session_id && this.conflict_workbench.files.contains_key(&path) {
+                            this.conflict_workbench.ai_suggestions.insert(path, draft);
+                        }
+                    });
+                    self.status = "AI 建议已返回，结果已变化；更多菜单可复制保留的建议".into();
+                    return;
+                }
                 match self.conflict_workbench.files.get_mut(&path) {
                     Some(view) if view.kind == ConflictFileKind::Text => {
                         // Merged 写入：被覆盖块标记「已合并」（绿色），不再

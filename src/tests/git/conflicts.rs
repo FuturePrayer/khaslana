@@ -301,7 +301,7 @@ fn resolve_conflict_rejects_non_conflicted_path() {
 }
 
 #[test]
-fn conflict_file_view_parses_multiple_text_blocks_and_starts_with_ours_result() {
+fn conflict_file_view_parses_multiple_text_blocks_and_starts_with_base_result() {
     let (_dir, repo, service) = create_multi_block_text_conflict();
 
     let view = service
@@ -320,7 +320,7 @@ fn conflict_file_view_parses_multiple_text_blocks_and_starts_with_ours_result() 
     assert_eq!(view.blocks[0].base.as_deref(), Some("one\n"));
     assert_eq!(view.blocks[1].ours, "main-two\n");
     assert_eq!(view.blocks[1].theirs, "feature-two\n");
-    assert_eq!(view.draft, "start\nmain-one\nmiddle\nmain-two\nend\n");
+    assert_eq!(view.draft, "start\none\nmiddle\ntwo\nend\n");
     assert_eq!(view.draft_status, crate::ConflictDraftStatus::Clean);
     assert_eq!(view.unresolved_block_count(), 2);
     assert!(view.requires_resolution_confirmation());
@@ -402,7 +402,7 @@ fn apply_conflict_draft_and_resolve_clears_conflict_and_allows_commit() {
         .apply_conflict_draft_and_resolve(&mut repo, Path::new("same.txt"), &view.draft)
         .unwrap();
 
-    git_support::assert_file_text(dir.path(), "same.txt", "main\n");
+    git_support::assert_file_text(dir.path(), "same.txt", "base\n");
     assert!(snapshot.conflicts.is_empty());
     let committed = service
         .commit(&mut repo, &CommitMessage::new("resolve from workbench"))
@@ -512,8 +512,8 @@ fn parse_diff3_treats_separator_like_content_as_content() {
     assert_eq!(blocks[0].base.as_deref(), Some("base line\n========\n"));
     assert_eq!(blocks[0].ours, "ours line\n");
     assert_eq!(blocks[0].theirs, "");
-    // draft 初始采用 ours 侧内容，其余视图同理。
-    assert_eq!(draft, "before\nours line\nafter\n");
+    // 结果以共同祖先起步，来源栏保持各自版本。
+    assert_eq!(draft, "before\nbase line\n========\nafter\n");
     assert_eq!(ours_text, "before\nours line\nafter\n");
     assert_eq!(theirs_text, "before\nafter\n");
 }
@@ -537,7 +537,7 @@ fn parse_diff3_supports_crlf_endings() {
     assert_eq!(blocks.len(), 1);
     assert_eq!(blocks[0].ours, "o\r\n");
     assert_eq!(blocks[0].theirs, "t\r\n");
-    assert_eq!(draft, "a\r\no\r\nz\r\n");
+    assert_eq!(draft, "a\r\nb\r\nz\r\n");
 }
 
 #[test]
@@ -569,4 +569,31 @@ fn conflict_diff3_text_rejects_non_conflicted_path() {
         .to_string();
 
     assert!(error.contains("不存在冲突"));
+}
+
+#[test]
+fn conflict_sources_keep_original_versions_and_map_after_non_conflicting_insertions() {
+    let (dir, mut repo, service) = git_support::init_repo();
+    let middle = (0..20).map(|i| format!("unchanged-{i}\n")).collect::<String>();
+    let base = format!("header\n{middle}base-value\nfooter\n");
+    let theirs = format!("header\nincoming-only\n{middle}theirs-value\nfooter\n");
+    let ours = format!("header\n{middle}ours-value\nfooter\n");
+    git_support::write_file(dir.path(), "same.txt", &base);
+    git_support::commit_all(&repo, "base");
+    service.create_branch(&mut repo, &BranchName::new("feature")).unwrap();
+    service.checkout_branch(&mut repo, &BranchName::new("feature")).unwrap();
+    git_support::write_file(dir.path(), "same.txt", &theirs);
+    git_support::commit_all(&repo, "feature");
+    service.checkout_branch(&mut repo, &BranchName::new("main")).unwrap();
+    git_support::write_file(dir.path(), "same.txt", &ours);
+    git_support::commit_all(&repo, "main");
+    assert!(matches!(service.merge_branch(&mut repo, &BranchName::new("feature")), Err(GitError::Conflicts(_))));
+    let view = service.conflict_file_view(&repo, Path::new("same.txt")).unwrap();
+    assert_eq!(view.ours_text, ours);
+    assert_eq!(view.theirs_text, theirs);
+    assert_eq!(view.draft, format!("header\nincoming-only\n{middle}base-value\nfooter\n"));
+    for block in &view.blocks {
+        assert_eq!(&view.ours_text[block.ours_start..block.ours_end], block.ours);
+        assert_eq!(&view.theirs_text[block.theirs_start..block.theirs_end], block.theirs);
+    }
 }

@@ -193,27 +193,33 @@ impl ConflictFileView {
         let delta = (new_changed_end as isize - prefix as isize)
             - (old_changed_end as isize - prefix as isize);
 
+        let mut previous_end = 0;
         for block in &mut self.blocks {
-            if block.end <= prefix {
-                continue;
-            }
-            if block.start >= old_changed_end {
-                shift_range(block, delta);
-                continue;
-            }
-
-            if !merged {
+            let empty_at_edit = block.start == block.end && block.start == prefix;
+            let touches = empty_at_edit || if prefix == old_changed_end {
+                block.start < prefix && prefix < block.end
+            } else {
+                block.start < old_changed_end && block.end > prefix
+            };
+            if touches && !merged {
                 block.has_manual_edits = true;
                 block.status = ConflictBlockStatus::Unresolved;
             }
-            if block.start > prefix {
-                block.start = prefix;
-            }
-            // 块尾随编辑区长度差平移后可能落在多字节字符中间（例如把 ASCII
-            // 中段改成多字节文本），后续按字节 replace_range 会 panic；
-            // 吸附到最近的字符边界。
-            block.end =
-                clamp_to_char_boundary(&new_draft, add_signed(block.end, delta).max(block.start));
+            // 与锚点的左右偏向一致：编辑前的边界不变，编辑后的边界平移，
+            // 被删除的边界收敛到替换区。跨块编辑不能让后续接受覆盖相邻块。
+            // 参照 Zed side_range：非空块排除边界输入，空块包住新输入。
+            let map_start = if prefix == old_changed_end && block.start == prefix && !empty_at_edit {
+                new_changed_end
+            } else if block.start <= prefix { block.start }
+                else if block.start >= old_changed_end { add_signed(block.start, delta) }
+                else { prefix };
+            let map_end = if empty_at_edit { new_changed_end }
+                else if block.end <= prefix { block.end }
+                else if block.end >= old_changed_end { add_signed(block.end, delta) }
+                else { new_changed_end };
+            block.start = clamp_to_char_boundary(&new_draft, map_start.max(previous_end));
+            block.end = clamp_to_char_boundary(&new_draft, map_end.max(block.start));
+            previous_end = block.end;
         }
 
         if merged {

@@ -70,6 +70,9 @@ macro_rules! theme_tokens {
 }
 
 theme_tokens! {
+    // 冲突来源色与“是否已解决”状态色独立，三栏不会把传入版本当作错误。
+    130: CONFLICT_OURS_BG => 0xE5F3F1, 0x213D3D;
+    131: CONFLICT_THEIRS_BG => 0xEFEBFA, 0x373048;
     // ── 基础色板 ──────────────────────────────────────────
     1: BACKGROUND => 0xffffff, 0x111318;
     2: FOREGROUND => 0x2A2933, 0xE8E8EC;

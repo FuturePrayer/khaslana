@@ -5,6 +5,9 @@ use std::str;
 use git2::build::CheckoutBuilder;
 use git2::{ErrorCode, MergeFileOptions, Repository};
 
+#[path = "conflicts/side_ranges.rs"]
+mod side_ranges;
+
 use super::{GitService, ensure_worktree_relative_path, path_to_git, remove_worktree_path};
 use crate::{
     ConflictBlock, ConflictBlockStatus, ConflictDraftStatus, ConflictFileKind, ConflictFileView,
@@ -68,8 +71,23 @@ impl GitService {
                 let merged_text = str::from_utf8(&merged_bytes).map_err(|_| {
                     GitError::Message("该冲突文件不是 UTF-8 文本，暂不能使用可视化编辑器".into())
                 })?;
-                let (draft, ours_text, theirs_text, blocks) =
+                let (draft, projected_ours, projected_theirs, mut blocks) =
                     parse_diff3_conflict_text(merged_text)?;
+
+                // diff3 的上下文已经合入两侧非冲突修改，不能冒充原始版本。
+                // 三栏必须从索引 blob 读取原文，再以 diff 行映射定位各冲突块。
+                let conflict = conflict_for_path(&repo.index()?, path)?;
+                let read_side = |entry: Option<&git2::IndexEntry>| -> Result<String> {
+                    let entry = entry.ok_or_else(|| GitError::Message("冲突阶段已失效".into()))?;
+                    let blob = repo.find_blob(entry.id)?;
+                    str::from_utf8(blob.content())
+                        .map(str::to_owned)
+                        .map_err(|_| GitError::Message("冲突版本不是 UTF-8 文本".into()))
+                };
+                let ours_text = read_side(conflict.our.as_ref())?;
+                let theirs_text = read_side(conflict.their.as_ref())?;
+                side_ranges::map_side_ranges(&projected_ours, &ours_text, &mut blocks, true)?;
+                side_ranges::map_side_ranges(&projected_theirs, &theirs_text, &mut blocks, false)?;
 
                 Ok(ConflictFileView {
                     path: git_path,
@@ -427,7 +445,8 @@ fn parse_diff3_conflict_text(
         let start = draft.len();
         let ours_start = ours_text.len();
         let theirs_start = theirs_text.len();
-        draft.push_str(&ours);
+        // IDEA 式结果区以祖先冲突片段起步，无冲突内容仍采用 libgit2 的合并结果。
+        draft.push_str(&base);
         ours_text.push_str(&ours);
         theirs_text.push_str(&theirs);
         let end = draft.len();

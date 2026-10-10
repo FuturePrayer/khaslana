@@ -28,9 +28,9 @@
 //! 工作流动态字段（`WorkflowInput` / `WorkflowEditor`）自 M6 起也迁入
 //! Kit——它们不进静态注册表，由 [`RepositoryView::ensure_kit_fields`]
 //! 末段的「动态字段多退少补」单独维护宿主生命周期（见
-//! [`RepositoryView::reconcile_dynamic_kit_fields`]）。冲突草稿自 M6 起
-//! 固定为只读文档视图，`ConflictEditor` 只剩 focus 锚点职责，不建任何
-//! 输入宿主。新增静态 `FieldId` 会自动进入迁移范围（`ensure_kit_fields`
+//! [`RepositoryView::reconcile_dynamic_kit_fields`]）。冲突草稿由
+//! `conflicts::editor` 按仓库、文件、会话独立维护 Kit Editor 宿主；
+//! `ConflictEditor` 在本适配层只承担 focus 锚点。新增静态 `FieldId` 会自动进入迁移范围（`ensure_kit_fields`
 //! 遍历的是注册表本身，不是手写清单）。
 //!
 //! 业务对象被整体更换（模板加载 / 编辑器重建 / 步骤交换）时，宿主按
@@ -539,6 +539,9 @@ impl RepositoryView {
 
     /// 返回当前聚焦的 Kit 字段，供跨字段的提交动作复用业务分发。
     pub(crate) fn focused_kit_field(&self, window: &Window, cx: &App) -> Option<FieldId> {
+        if self.conflict_editor_focused(window, cx) {
+            return Some(FieldId::ConflictEditor);
+        }
         self.kit_fields
             .iter()
             .find_map(|(id, field)| field.is_focused(window, cx).then_some(*id))

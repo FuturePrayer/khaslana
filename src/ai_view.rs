@@ -523,11 +523,16 @@ impl RepositoryView {
         let service = self.service_for_tab(tab_id);
         let base_settings = self.ai_settings.clone();
         let task_path = path.clone();
+        let session_id = self.conflict_workbench.session_id;
+        let original_draft = self.conflict_workbench.files.get(&path).map(|v| v.draft.clone()).unwrap_or_default();
         self.start_ai_thinking_task(
             "正在生成 AI 合并建议",
             crate::AiThinkingTaskKind::ConflictMerge { path: path.clone() },
-            |task_id, draft| crate::UiEvent::AiConflictMergeGenerated {
+            move |task_id, draft| crate::UiEvent::AiConflictMergeGenerated {
                 task_id,
+                tab_id,
+                session_id,
+                original_draft,
                 path,
                 draft,
             },
