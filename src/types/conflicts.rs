@@ -66,6 +66,13 @@ pub struct ConflictBlock {
 }
 
 impl ConflictBlock {
+    pub fn has_accepted_side(&self, side: ConflictResolutionSide) -> bool {
+        !self.has_manual_edits && matches!((self.status, side),
+            (ConflictBlockStatus::Resolved(ConflictBlockResolution::BothOursFirst | ConflictBlockResolution::BothTheirsFirst), _)
+            | (ConflictBlockStatus::Resolved(ConflictBlockResolution::Ours), ConflictResolutionSide::Ours)
+            | (ConflictBlockStatus::Resolved(ConflictBlockResolution::Theirs), ConflictResolutionSide::Theirs))
+    }
+
     pub fn resolved_text(&self, resolution: ConflictBlockResolution) -> String {
         resolution.render(&self.ours, &self.theirs)
     }
@@ -147,6 +154,22 @@ impl ConflictFileView {
         );
     }
 
+    /// 箭头逐侧接受：第二侧追加到已接受内容之后；重复接受同一侧不重复插入。
+    /// 显式“接受两边”仍由 apply_block_resolution 指定顺序。
+    pub fn accept_block_side(&mut self, block_index: usize, side: ConflictResolutionSide) {
+        let Some(block) = self.blocks.get(block_index) else { return };
+        if block.has_accepted_side(side) { return }
+        let resolution = match (block.status, side) {
+            (ConflictBlockStatus::Resolved(ConflictBlockResolution::Ours), ConflictResolutionSide::Theirs)
+                if !block.has_manual_edits => ConflictBlockResolution::BothOursFirst,
+            (ConflictBlockStatus::Resolved(ConflictBlockResolution::Theirs), ConflictResolutionSide::Ours)
+                if !block.has_manual_edits => ConflictBlockResolution::BothTheirsFirst,
+            (_, ConflictResolutionSide::Ours) => ConflictBlockResolution::Ours,
+            (_, ConflictResolutionSide::Theirs) => ConflictBlockResolution::Theirs,
+        };
+        self.apply_block_resolution(block_index, resolution);
+    }
+
     pub fn ignore_block(&mut self, block_index: usize) {
         let Some(block) = self.blocks.get_mut(block_index) else {
             return;
@@ -154,6 +177,23 @@ impl ConflictFileView {
         block.status = ConflictBlockStatus::Ignored;
         block.has_manual_edits = false;
         self.draft_status = ConflictDraftStatus::Dirty;
+    }
+
+    /// 重置只影响当前块；没有祖先的新增冲突不能伪造一个空祖先。
+    pub fn reset_block_to_base(&mut self, block_index: usize) {
+        let Some(base) = self.blocks.get(block_index).and_then(|b| b.base.clone()) else { return };
+        self.replace_block_text(block_index, base, ConflictBlockStatus::Unresolved, false);
+    }
+
+    /// 单行采纳替换结果块中的对应行，超出结果行数则追加；仍需确认整个块。
+    pub fn accept_candidate_line(&mut self, block_index: usize, side: ConflictResolutionSide, line: usize) {
+        let Some(block) = self.blocks.get(block_index) else { return };
+        let source = match side { ConflictResolutionSide::Ours => &block.ours, ConflictResolutionSide::Theirs => &block.theirs };
+        let Some(candidate) = source.split_inclusive('\n').nth(line) else { return };
+        let current = &self.draft[block.start..block.end];
+        let mut lines: Vec<&str> = current.split_inclusive('\n').collect();
+        if line < lines.len() { lines[line] = candidate; } else { lines.push(candidate); }
+        self.replace_block_text(block_index, lines.concat(), ConflictBlockStatus::Unresolved, true);
     }
 
     /// 用整份新草稿覆盖（手动编辑路径）：被改动覆盖的块标记手工编辑

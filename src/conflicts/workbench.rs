@@ -1,13 +1,13 @@
 use gpui::{ Context, Focusable, IntoElement, Window, div, prelude::*, px};
 use std::rc::Rc;
-use gpui_kit::base::{h_resizable, v_resizable, resizable_panel};
+use gpui_kit::base::{v_resizable, resizable_panel};
 
-use gpui_kit::component::{Disableable as _, Sizable as _, button::Button,
+use gpui_kit::component::{Icon,
     menu::{DropdownMenu as _, PopupMenuItem}};
+use gpui_kit::assets::IconName;
 use khaslana::{ConflictBlockResolution, ConflictFileKind, ConflictFileView, ConflictResolutionSide};
 
-use super::{ConflictDocumentPane, conflict_byte_range_to_lines, conflict_document_byte_range};
-use crate::{RepositoryView, ui::{components::floating_panel, theme}};
+use crate::{RepositoryView, ui::{components::{floating_panel, workbench_command_button}, theme}};
 use crate::ui::theme::rgb;
 
 pub(super) fn conflict_rail_visible(width: f32) -> bool {
@@ -23,6 +23,24 @@ fn files_are_resolved(snapshot: Option<&khaslana::RepositorySnapshot>) -> bool {
 mod tests;
 
 impl RepositoryView {
+    pub(super) fn render_conflict_file_actions(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let external = !self.busy && self.conflict_workbench.selected_path.as_ref()
+            .and_then(|path| self.conflict_workbench.files.get(path))
+            .is_some_and(|view| view.kind != ConflictFileKind::WorktreeOnly);
+        div().flex_none().flex().flex_col().gap_2().p_3()
+            .child(div().text_size(px(11.0)).text_color(rgb(theme::CONTENT_TERTIARY)).child("文件操作"))
+            .child(workbench_command_button("conflict-file-idea", "用 IDEA 解决", false, external, cx)
+                .on_click(cx.listener(|this,_,_,cx| {this.resolve_selected_conflict_with_intellij_idea();cx.notify();})))
+            .when(self.merge_in_progress(), |row| row
+                .child(div().rounded(px(8.0)).p_2().bg(rgb(theme::CONFLICT_GUTTER_BG))
+                    .child(workbench_command_button("conflict-file-finish", "完成合并", false, self.can_finish_conflict_merge(), cx)
+                        .on_click(cx.listener(|this,_,_,cx| {this.finish_merge();cx.notify();})))
+                    .child(div().mt_2().text_size(px(10.0)).text_color(rgb(theme::CONTENT_TERTIARY)).child("先解决全部冲突文件")))
+                .child(workbench_command_button("conflict-file-abort", "中止合并", false, !self.busy, cx)
+                    .on_click(cx.listener(|this,_,_,cx| {this.open_abort_merge_confirm_dialog();cx.notify();}))))
+            .into_any_element()
+    }
+
     /// 当前文件与仓库身份随菜单一起捕获，菜单打开后切仓库不能执行旧命令。
     fn conflict_menu_item(
         &self, label: &str, enabled: bool,
@@ -51,16 +69,16 @@ impl RepositoryView {
 
     pub(super) fn render_approved_conflict_workbench(&self, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let rail = conflict_rail_visible(f32::from(window.viewport_size().width));
-        floating_panel().flex().flex_col().flex_1().min_w(px(0.0)).min_h(px(0.0)).h_full()
-            .child(div().flex().flex_1().min_h(px(0.0)).min_w(px(0.0))
+        div().flex().flex_1().min_w(px(0.0)).min_h(px(0.0)).h_full()
+            .child(div().flex().gap_3().flex_1().min_h(px(0.0)).min_w(px(0.0))
                 .when(rail, |this| this.child(div().w(px(224.0)).flex_none().h_full()
                     .child(self.render_conflict_file_rail(cx))))
-                .child(div().flex().flex_col().flex_1().min_w(px(0.0)).min_h(px(0.0))
+                .child(floating_panel().flex().flex_col().flex_1().min_w(px(0.0)).min_h(px(0.0))
                     .child(self.render_conflict_detail(window, cx))))
             .into_any_element()
     }
 
-    pub(super) fn render_approved_conflict_header(&self, title: String, view: Option<&ConflictFileView>, cx: &mut Context<Self>) -> gpui::AnyElement {
+    pub(super) fn render_approved_conflict_header(&self, title: String, view: Option<&ConflictFileView>, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let count = view.map_or(0, |v| v.blocks.len());
         let selected = self.conflict_workbench.selected_block.min(count.saturating_sub(1));
         let text = view.is_some_and(|v| v.kind == ConflictFileKind::Text);
@@ -107,29 +125,39 @@ impl RepositoryView {
             more.push(self.conflict_menu_item("跳过当前变基提交", !self.busy, |this,_,_| this.rebase_skip(), cx));
             more.push(self.conflict_menu_item("中止变基", !self.busy, |this,_,_| this.rebase_abort(), cx));
         }
-        let entity = cx.entity().downgrade();
-        let sync = !self.conflict_workbench.independent_scroll;
-        div().flex_none().flex().flex_col().bg(rgb(theme::SURFACE_BASE))
-            .child(div().flex().items_center().gap_2().px_3().h(px(58.0))
+        let filename = title.rsplit('/').next().unwrap_or(&title).to_owned();
+        let wide = f32::from(window.viewport_size().width) >= 1400.0;
+        div().flex_none().flex().flex_col().bg(rgb(theme::SURFACE_BASE)).rounded_t(px(theme::RADIUS_PANEL))
+            .child(div().flex().items_center().gap_3().px_4().h(px(64.0))
+                .child(Icon::new(IconName::FileCode).size(px(20.0)).text_color(rgb(theme::PRIMARY)))
                 .child(div().flex_1().min_w(px(0.0)).flex().flex_col().gap_1()
-                    .child(div().truncate().text_size(px(17.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgb(theme::CONTENT_PRIMARY)).child("代码合并"))
+                    .child(div().truncate().text_size(px(17.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgb(theme::CONTENT_PRIMARY)).child(format!("代码合并 / {filename}")))
                     .child(div().truncate().text_size(px(11.0)).text_color(rgb(theme::CONTENT_SECONDARY)).child(title)))
-                .child(div().text_size(px(12.0)).text_color(rgb(theme::CONTENT_SECONDARY)).child(format!("块 {} / {count}", if count==0 {0} else {selected+1})))
-                .child(Button::new("conflict-prev").label("↑").small().accessibility_label("上一个冲突块").tooltip("上一个冲突块").disabled(count==0)
+                .child(div().px_2().py_1().rounded(px(6.0)).bg(rgb(theme::CONFLICT_EDITOR_BG)).text_size(px(12.0)).text_color(rgb(theme::CONTENT_SECONDARY)).child(format!("冲突 {} / {count}", if count==0 {0} else {selected+1})))
+                .child(workbench_command_button("conflict-prev", "", false, count!=0, cx).icon(Icon::new(IconName::ArrowUp).size(px(14.0))).w(px(32.0)).px_0().accessibility_label("上一个冲突块").tooltip("上一个冲突块")
                     .on_click(cx.listener(|this,_,_,cx| { this.step_conflict_block(-1); cx.notify(); })))
-                .child(Button::new("conflict-next").label("↓").small().accessibility_label("下一个冲突块").tooltip("下一个冲突块").disabled(count==0)
+                .child(workbench_command_button("conflict-next", "", false, count!=0, cx).icon(Icon::new(IconName::ArrowDown).size(px(14.0))).w(px(32.0)).px_0().accessibility_label("下一个冲突块").tooltip("下一个冲突块")
                     .on_click(cx.listener(|this,_,_,cx| { this.step_conflict_block(1); cx.notify(); }))))
-            .child(div().flex().items_center().gap_1().px_3().pb_2()
-                .child(Button::new("conflict-files-menu").label("文件").small().dropdown_menu(move |mut menu,_,_| {
+            .child(div().flex().items_center().gap_2().px_4().h(px(48.0)).bg(rgb(theme::CONFLICT_EDITOR_BG))
+                .child(workbench_command_button("conflict-files-menu", "文件", false, true, cx).icon(Icon::new(IconName::PanelLeft).size(px(14.0))).dropdown_menu(move |mut menu,_,_| {
                     for item in &file_items { menu=menu.item(item()); } menu
                 }))
-                .child(Button::new("conflict-scroll-link").label(if sync {"同步滚动"} else {"独立滚动"}).small().disabled(!text)
-                    .on_click(move |_,_,cx| { let _=entity.update(cx, |this,cx| {this.conflict_workbench.independent_scroll=!this.conflict_workbench.independent_scroll;this.conflict_pane_scroll_sync.borrow_mut().take();cx.notify();}); }))
-                .child(Button::new("conflict-both-menu").label("接受两边").small().disabled(!enabled)
+                .child(div().px_2().text_size(px(12.0)).text_color(rgb(theme::PRIMARY)).child("单文档 · 候选块"))
+                .child(workbench_command_button("conflict-both-menu", "接受两边", false, enabled, cx).dropdown_caret(true)
                     .dropdown_menu(move |menu,_,_| menu.item(both[0]()).item(both[1]())))
+                .when(wide, |row| row
+                    .child(workbench_command_button("conflict-base", "共同祖先", self.conflict_workbench.show_base, text, cx).icon(Icon::new(IconName::GitBranch).size(px(14.0)))
+                        .on_click(cx.listener(|this,_,_,cx| {this.conflict_workbench.show_base=!this.conflict_workbench.show_base;cx.notify();})))
+                    .child(workbench_command_button("conflict-ignore", "忽略该块", false, enabled, cx)
+                        .on_click(cx.listener(|this,_,_,cx| {this.ignore_selected_conflict_block();cx.notify();})))
+                    .child(workbench_command_button("conflict-undo", "", false, enabled, cx).icon(Icon::new(IconName::Undo2).size(px(14.0))).w(px(32.0)).px_0().accessibility_label("撤销结果编辑").tooltip("撤销结果编辑 · Ctrl+Z")
+                    .on_click(cx.listener(|this,_,window,cx| this.dispatch_conflict_history(false, window, cx))))
+                .child(workbench_command_button("conflict-redo", "", false, enabled, cx).icon(Icon::new(IconName::Redo2).size(px(14.0))).w(px(32.0)).px_0().accessibility_label("重做结果编辑").tooltip("重做结果编辑 · Ctrl+Y")
+                    .on_click(cx.listener(|this,_,window,cx| this.dispatch_conflict_history(true, window, cx)))))
                 .child(div().flex_1())
-                .child(self.button(if self.ai_conflict_loading {"AI 生成中…"} else if !self.ai_settings.is_usable() {"AI 未配置"} else {"AI 合并建议"}, text && self.ai_conflict_merge_button_enabled(), |this,_,_| this.generate_ai_conflict_merge(),cx))
-                .child(Button::new("conflict-more-menu").label("更多").small().dropdown_menu(move |mut menu,_,_| {
+                .child(workbench_command_button("conflict-ai", if self.ai_conflict_loading {"AI 生成中…"} else if !self.ai_settings.is_usable() {"AI 未配置"} else {"AI 合并建议"}, false, text && self.ai_conflict_merge_button_enabled(), cx).icon(Icon::new(IconName::Sparkles).size(px(14.0)))
+                    .on_click(cx.listener(|this,_,_,cx| {this.generate_ai_conflict_merge();cx.notify();})))
+                .child(workbench_command_button("conflict-more-menu", "更多", false, true, cx).icon(Icon::new(IconName::Ellipsis).size(px(14.0))).dropdown_menu(move |mut menu,_,_| {
                     for item in &more {menu=menu.item(item());} menu
                 })))
             .into_any_element()
@@ -141,26 +169,18 @@ impl RepositoryView {
 
     pub(super) fn dispatch_conflict_history(&mut self, redo: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(host)=self.selected_conflict_editor() else {return};
-        window.focus(&host.states[1].read(cx).focus_handle(cx), cx);
-        if redo {window.dispatch_action(Box::new(gpui_kit::base::input::Redo),cx)}
-        else {window.dispatch_action(Box::new(gpui_kit::base::input::Undo),cx)}
+        let state=host.state.clone();
+        window.focus(&state.read(cx).focus_handle(cx), cx);
+        state.update(cx, |editor,cx| editor.history(redo,cx));
     }
 
     pub(super) fn render_approved_text_conflict(&self, view: &ConflictFileView, cx: &mut Context<Self>) -> gpui::AnyElement {
         let selected=self.conflict_workbench.selected_block.min(view.blocks.len().saturating_sub(1));
-        let columns=div().relative().flex().flex_1().min_w(px(0.0)).min_h(px(0.0))
-            .child(h_resizable("conflict-three-way")
-                .child(resizable_panel().size_range(px(120.0)..gpui::Pixels::MAX).child(
-                    div().flex().size_full().min_w(px(0.0)).min_h(px(0.0))
-                        .child(self.render_conflict_document_pane("当前版本","conflict-ours-scroll",crate::CONFLICT_OURS_SCROLL_HANDLE_ID,&view.ours_text,ConflictDocumentPane::Ours,view,selected,Vec::new(),cx))
-                        .child(self.render_conflict_action_gutter(ConflictDocumentPane::Ours,view,cx))))
-                .child(resizable_panel().size_range(px(120.0)..gpui::Pixels::MAX)
-                    .child(self.render_conflict_document_pane("合并结果","conflict-result-scroll",crate::CONFLICT_RESULT_SCROLL_HANDLE_ID,&view.draft,ConflictDocumentPane::Result,view,selected,Vec::new(),cx)))
-                .child(resizable_panel().size_range(px(120.0)..gpui::Pixels::MAX).child(
-                    div().flex().size_full().min_w(px(0.0)).min_h(px(0.0))
-                        .child(self.render_conflict_action_gutter(ConflictDocumentPane::Theirs,view,cx))
-                        .child(self.render_conflict_document_pane("传入版本","conflict-theirs-scroll",crate::CONFLICT_THEIRS_SCROLL_HANDLE_ID,&view.theirs_text,ConflictDocumentPane::Theirs,view,selected,Vec::new(),cx)))))
-            .child(self.render_conflict_connectors(view,selected));
+        let columns=div().flex().flex_col().flex_1().min_w(px(0.0)).min_h(px(0.0))
+            .child(div().h(px(52.0)).flex_none().px_4().flex().flex_col().justify_center().gap_1().bg(rgb(theme::PRIMARY_SUBTLE))
+                .child(div().flex().justify_between().text_size(px(13.0)).text_color(rgb(theme::CONTENT_PRIMARY)).child("合并结果").child(div().text_size(px(11.0)).text_color(rgb(theme::PRIMARY)).child("可编辑")))
+                .child(div().text_size(px(11.0)).text_color(rgb(theme::CONTENT_SECONDARY)).child("UTF-8 · 候选只读 · 实际保存结果内容")))
+            .child(self.render_single_conflict_editor());
         let document=if self.conflict_workbench.show_base {
             let base=div().size_full().min_h(px(0.0)).flex().flex_col().border_t_1().border_color(rgb(theme::BORDER_MUTED))
                 .child(div().px_3().py_1().text_size(px(12.0)).text_color(rgb(theme::CONTENT_SECONDARY)).child("共同祖先 · 当前块 · 只读"))
@@ -170,41 +190,13 @@ impl RepositoryView {
                 .child(resizable_panel().size(px(120.0)).size_range(px(64.0)..px(300.0)).child(base)).into_any_element()
         } else { columns.into_any_element() };
         let content=div().flex().flex_col().flex_1().min_w(px(0.0)).min_h(px(0.0)).child(document);
-        content.child(div().flex_none().flex().items_center().gap_2().px_3().py_2().border_t_1().border_color(rgb(theme::BORDER_MUTED))
+        content.child(div().flex_none().flex().items_center().gap_3().px_4().py_3().border_t_1().border_color(rgb(theme::BORDER_MUTED)).bg(rgb(theme::SURFACE_BASE)).rounded_b(px(theme::RADIUS_PANEL))
             .child(div().flex_1().min_w(px(0.0)).flex().flex_col().gap_1()
                 .child(div().truncate().text_size(px(12.0)).text_color(rgb(theme::CONTENT_PRIMARY)).child(format!("已处理 {} / {} · 未处理 {}",view.handled_block_count(),view.blocks.len(),view.unresolved_block_count())))
-                .child(div().truncate().text_size(px(10.0)).text_color(rgb(theme::CONTENT_SECONDARY)).child("结果可编辑 · Ctrl+Z 撤销 · 未处理块仍需确认")))
+                .child(div().truncate().text_size(px(10.0)).text_color(rgb(theme::CONTENT_SECONDARY)).child("结果始终可编辑 · 候选不会混入保存内容 · Ctrl+Z 撤销")))
             .child(self.button("应用到工作区",!self.busy,|this,_,_|this.apply_selected_conflict_draft(false),cx))
             .child(self.primary_button("应用并标记已解决",!self.busy,|this,_,_|this.apply_selected_conflict_draft(true),cx)))
             .into_any_element()
     }
 
-    fn render_conflict_action_gutter(&self, pane: ConflictDocumentPane, view: &ConflictFileView, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let index=if pane==ConflictDocumentPane::Ours {0} else {2};
-        let host=self.selected_conflict_editor();
-        let state=host.map(|h|h.states[index].read(cx));
-        let origin=state.and_then(super::editor::editor_row_origin);
-        let bounds=host.and_then(|h|*h.viewports[index].borrow());
-        let mut gutter=div().relative().w(px(26.0)).flex_none().min_h(px(0.0)).overflow_hidden().bg(rgb(theme::SURFACE_CANVAS));
-        if let (Some((origin,height)),Some(bounds))=(origin,bounds) {
-            let text=if index==0 {&view.ours_text} else {&view.theirs_text};
-            for (block_index,block) in view.blocks.iter().enumerate() {
-                let (start,end)=conflict_document_byte_range(block,pane);
-                let range=conflict_byte_range_to_lines(text,start,end);
-                let y=origin+height*range.start as f32-f32::from(bounds.top());
-                let bottom=origin+height*range.end as f32-f32::from(bounds.top());
-                if bottom<0.0||y>f32::from(bounds.size.height){continue}
-                let title=if index==0 {"接受当前版本的此块"} else {"接受传入版本的此块"};
-                let path = view.path.clone();
-                let session = self.conflict_workbench.session_id;
-                let tab = self.active_tab_id();
-                gutter=gutter.child(Button::new(format!("accept-{}-{}-{}-{block_index}",self.conflict_workbench.session_id,view.path,index)).label(if index==0 {"→"} else {"←"})
-                    .accessibility_label(title).tooltip(title).xsmall().disabled(self.busy).absolute().top(px(y.max(0.0)+49.0)).left(px(1.0)).w(px(24.0))
-                    .on_click(cx.listener(move |this,_,_,cx| {
-                        if this.busy || this.active_tab_id() != tab || this.conflict_workbench.session_id != session || this.conflict_workbench.selected_path.as_ref() != Some(&path) { return }
-                        this.select_conflict_block(block_index);this.apply_selected_conflict_resolution(if index==0 {ConflictBlockResolution::Ours} else {ConflictBlockResolution::Theirs});cx.notify(); })));
-            }
-        }
-        gutter.into_any_element()
-    }
 }

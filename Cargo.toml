@@ -5,6 +5,11 @@ edition = "2024"
 license = "Apache-2.0"
 build = "build.rs"
 
+[workspace]
+members = ["."]
+default-members = ["."]
+resolver = "3"
+
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 async-channel = "2"
@@ -85,6 +90,8 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Wind
 
 [dev-dependencies]
 tempfile = "3"
+# 用测试平台验证原生编辑器绘制与跨帧滚动，版本与运行时保持一致。
+gpui = { package = "gpui-pre", version = "=0.3.5", features = ["test-support"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] }

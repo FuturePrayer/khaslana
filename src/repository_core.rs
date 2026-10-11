@@ -254,7 +254,6 @@ impl RepositoryView {
             ai_review_cancel: None,
             ai_review_loaded_label: None,
             ai_review_history: None,
-            conflict_pane_scroll_sync: Rc::new(RefCell::new(None)),
             conflict_editors: Vec::new(),
             ai_conflict_loading: false,
             ai_thinking_overlay: None,
@@ -1300,8 +1299,6 @@ impl RepositoryView {
         self.conflict_workbench.selected_block = 0;
         self.conflict_workbench.show_base = false;
         self.conflict_workbench.clear_pending_resolve();
-        // 换文件后三栏 offset 全变，清掉同步滚动的上帧记录避免误判源栏。
-        self.conflict_pane_scroll_sync.borrow_mut().take();
         self.ensure_conflict_views_loaded();
         if self.conflict_workbench.files.contains_key(&path) {
             self.sync_conflict_editor_from_state();
@@ -1358,7 +1355,7 @@ impl RepositoryView {
         if let Some(view) = self.conflict_workbench.files.get_mut(&path) {
             view.apply_block_resolution(selected_block, resolution);
         }
-        self.sync_conflict_editor_from_state();
+        self.conflict_workbench.clear_pending_resolve();
         // 草稿文本已变，重算结果区语法高亮（seq 守卫丢弃乱序旧结果）
         self.schedule_conflict_syntax_for_selected(&[ConflictSyntaxPane::Draft]);
     }
@@ -1372,7 +1369,6 @@ impl RepositoryView {
             view.ignore_block(selected_block);
         }
         self.conflict_workbench.clear_pending_resolve();
-        self.sync_conflict_editor_from_state();
     }
 
     pub(crate) fn apply_selected_conflict_draft(&mut self, resolve: bool) {

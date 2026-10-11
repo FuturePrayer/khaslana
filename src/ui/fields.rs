@@ -532,12 +532,12 @@ impl RepositoryView {
         }
     }
 
-    /// 当前聚焦的字段是否是已迁移到 Kit 的字段（键盘由 Kit 独占）。
+    /// 当前输入是否由组件独占键盘（普通 Kit 字段或冲突专用编辑器）。
     pub(crate) fn kit_field_focused(&self, window: &Window, cx: &App) -> bool {
         self.focused_kit_field(window, cx).is_some()
     }
 
-    /// 返回当前聚焦的 Kit 字段，供跨字段的提交动作复用业务分发。
+    /// 返回组件输入的业务字段，供跨字段提交复用；冲突编辑器不走普通字段写回。
     pub(crate) fn focused_kit_field(&self, window: &Window, cx: &App) -> Option<FieldId> {
         if self.conflict_editor_focused(window, cx) {
             return Some(FieldId::ConflictEditor);

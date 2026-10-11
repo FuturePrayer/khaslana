@@ -1,6 +1,8 @@
 use std::{ops::Range, path::Path, sync::Arc};
 
 pub(crate) mod editor;
+mod document;
+mod native_editor;
 mod workbench;
 
 use crate::ui::theme::rgb;
@@ -10,14 +12,14 @@ use gpui::{
     px, uniform_list,
 };
 use khaslana::{
-    ConflictBlock, ConflictBlockStatus, ConflictFileKind,
+    ConflictFileKind,
     ConflictFileView, ConflictResolutionSide, RepositorySnapshot,
 };
 
 use crate::{
     MainMode, RepositoryView,
     ui::{
-        components::{PanelHeaderSurface, app_panel, panel_section_header},
+        components::{PanelHeaderSurface, panel_section_header},
         theme as ui_theme,
     },
     ui_helpers::{ScrollbarMode, scrollable_uniform_frame},
@@ -65,110 +67,6 @@ fn conflict_paths(snapshot: Option<&RepositorySnapshot>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-#[cfg(test)]
-fn conflict_document_line_owners(
-    content: &str,
-    pane: ConflictDocumentPane,
-    view: &ConflictFileView,
-    line_count: usize,
-) -> Vec<Option<usize>> {
-    let mut owners = vec![None; line_count.max(1)];
-    for (index, block) in view.blocks.iter().enumerate() {
-        let (start, end) = conflict_document_byte_range(block, pane);
-        let range = conflict_byte_range_to_lines(content, start, end);
-        for line_index in range {
-            if let Some(owner) = owners.get_mut(line_index) {
-                *owner = Some(index);
-            }
-        }
-    }
-    owners
-}
-
-fn conflict_document_byte_range(
-    block: &ConflictBlock,
-    pane: ConflictDocumentPane,
-) -> (usize, usize) {
-    match pane {
-        ConflictDocumentPane::Ours => (block.ours_start, block.ours_end),
-        ConflictDocumentPane::Result => (block.start, block.end),
-        ConflictDocumentPane::Theirs => (block.theirs_start, block.theirs_end),
-    }
-}
-
-fn conflict_byte_range_to_lines(content: &str, start: usize, end: usize) -> std::ops::Range<usize> {
-    let start_line = content[..start.min(content.len())]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count();
-    let mut end_line = content[..end.min(content.len())]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count();
-    if end_line == start_line {
-        end_line += 1;
-    }
-    start_line..end_line
-}
-
-// ── 三栏连线（IDEA 式采用指示）──────────────────────────────
-
-/// 块区域在某栏内的内容坐标 y 段（窗口坐标，含滚动 offset；
-/// offset.y 向下滚动为负）。
-#[cfg(test)]
-fn uniform_list_line_count(content: &str) -> usize {
-    content.bytes().filter(|b| *b == b'\n').count() + 1
-}
-
-#[cfg(test)]
-fn conflict_block_y_range(
-    viewport_top: f32,
-    offset_y: f32,
-    row_height: f32,
-    lines: &Range<usize>,
-) -> (f32, f32) {
-    let top = viewport_top + offset_y + row_height * lines.start as f32;
-    (top, top + row_height * (lines.end - lines.start) as f32)
-}
-
-/// 把块区域 y 段裁剪到视口可见范围并返回中点锚点 y；
-/// 整段滚出视口（不可见）返回 `None`。
-#[cfg(test)]
-fn conflict_connector_anchor_y(
-    viewport_top: f32,
-    viewport_bottom: f32,
-    block_top: f32,
-    block_bottom: f32,
-) -> Option<f32> {
-    let visible_top = block_top.max(viewport_top);
-    let visible_bottom = block_bottom.min(viewport_bottom);
-    (visible_bottom > visible_top).then_some((visible_top + visible_bottom) / 2.0)
-}
-
-/// 同步滚动的源栏判定：与上帧比较，恰好一栏 offset 变化超过阈值时
-/// 返回该栏（用户滚轮/拖动滚动条只改一栏）；多栏同时变化（程序化
-/// 三栏联动 scrollToItem）或全部未变返回 `None`，不做同步。
-fn conflict_scroll_sync_source(current: [f32; 3], prev: [f32; 3]) -> Option<usize> {
-    let mut source = None;
-    for index in 0..3 {
-        if (current[index] - prev[index]).abs() > 0.5 {
-            if source.is_some() {
-                return None;
-            }
-            source = Some(index);
-        }
-    }
-    source
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug)]
-struct ConflictDocumentLineModel {
-    content: Arc<str>,
-    ranges: Arc<[Range<usize>]>,
-    owners: Arc<[Option<usize>]>,
-}
-
 #[derive(Clone, Debug)]
 struct ConflictPlainLineModel {
     content: Arc<str>,
@@ -195,34 +93,6 @@ impl ConflictPlainLineModel {
     }
 }
 
-#[cfg(test)]
-impl ConflictDocumentLineModel {
-    fn new(content: &str, pane: ConflictDocumentPane, view: &ConflictFileView) -> Self {
-        let ranges = conflict_document_line_ranges(content);
-        let owners = conflict_document_line_owners(content, pane, view, ranges.len());
-        Self {
-            content: Arc::from(content),
-            ranges: Arc::from(ranges),
-            owners: Arc::from(owners),
-        }
-    }
-
-    fn line_count(&self) -> usize {
-        self.ranges.len().max(1)
-    }
-
-    fn line_text(&self, index: usize) -> &str {
-        let Some(range) = self.ranges.get(index) else {
-            return "";
-        };
-        &self.content[range.clone()]
-    }
-
-    fn owner_at(&self, index: usize) -> Option<usize> {
-        self.owners.get(index).copied().flatten()
-    }
-}
-
 fn conflict_document_line_ranges(content: &str) -> Vec<Range<usize>> {
     if content.is_empty() {
         return vec![0..0];
@@ -237,79 +107,6 @@ fn conflict_document_line_ranges(content: &str) -> Vec<Range<usize>> {
     }
     ranges.push(start..content.len());
     ranges
-}
-
-#[cfg(test)]
-fn conflict_line_colors(
-    pane: ConflictDocumentPane,
-    block: &ConflictBlock,
-    active: bool,
-) -> (u32, u32) {
-    match block.status {
-        ConflictBlockStatus::Ignored => {
-            if active {
-                (ui_theme::STATE_SELECTION, ui_theme::CONTENT_PRIMARY)
-            } else {
-                (ui_theme::SURFACE_BASE, ui_theme::CONTENT_SECONDARY)
-            }
-        }
-        ConflictBlockStatus::Resolved(_) => match pane {
-            ConflictDocumentPane::Ours | ConflictDocumentPane::Theirs => {
-                if active {
-                    (ui_theme::FEEDBACK_ERROR_BG, ui_theme::FEEDBACK_ERROR_TEXT)
-                } else {
-                    (ui_theme::SURFACE_BASE, ui_theme::CONTENT_PRIMARY)
-                }
-            }
-            ConflictDocumentPane::Result => {
-                if active {
-                    (ui_theme::STATE_SELECTION, ui_theme::CONTENT_PRIMARY)
-                } else {
-                    (ui_theme::SURFACE_BASE, ui_theme::CONTENT_PRIMARY)
-                }
-            }
-        },
-        // AI 合并块：选中时结果区用绿色高亮（区别于未处理的黄色），
-        // 直观表达「这段已经合并完成」。
-        ConflictBlockStatus::Merged => match pane {
-            ConflictDocumentPane::Ours | ConflictDocumentPane::Theirs => {
-                if active {
-                    (ui_theme::FEEDBACK_ERROR_BG, ui_theme::FEEDBACK_ERROR_TEXT)
-                } else {
-                    (ui_theme::SURFACE_BASE, ui_theme::CONTENT_PRIMARY)
-                }
-            }
-            ConflictDocumentPane::Result => {
-                if active {
-                    (
-                        ui_theme::FEEDBACK_SUCCESS_BG,
-                        ui_theme::FEEDBACK_SUCCESS_TEXT,
-                    )
-                } else {
-                    (ui_theme::SURFACE_BASE, ui_theme::CONTENT_PRIMARY)
-                }
-            }
-        },
-        ConflictBlockStatus::Unresolved => match pane {
-            ConflictDocumentPane::Ours | ConflictDocumentPane::Theirs => {
-                if active {
-                    (ui_theme::FEEDBACK_ERROR_BG, ui_theme::FEEDBACK_ERROR_TEXT)
-                } else {
-                    (ui_theme::FEEDBACK_WARNING_BG, ui_theme::CONTENT_PRIMARY)
-                }
-            }
-            ConflictDocumentPane::Result => {
-                if active {
-                    (
-                        ui_theme::FEEDBACK_WARNING_BG,
-                        ui_theme::FEEDBACK_WARNING_TEXT,
-                    )
-                } else {
-                    (ui_theme::SURFACE_BASE, ui_theme::CONTENT_PRIMARY)
-                }
-            }
-        },
-    }
 }
 
 impl RepositoryView {
@@ -346,7 +143,6 @@ impl RepositoryView {
     }
 
     fn render_conflict_file_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let surfaces = conflict_workbench_surfaces();
         let conflicts = conflict_paths(self.snapshot.as_ref());
         let selected_path = self.conflict_workbench.selected_path.as_deref();
         let row_count = conflicts.len();
@@ -362,31 +158,32 @@ impl RepositoryView {
             .track_scroll(&handle).with_sizing_behavior(ListSizingBehavior::Auto)
             .flex_1().min_w(px(0.0)).min_h(px(0.0));
 
-        app_panel()
+        crate::ui::components::floating_panel()
             .flex()
             .flex_none()
             .flex_col()
             .w(px(224.0))
             .min_w(px(224.0))
             .h_full()
-            .bg(rgb(surfaces.rail))
+            .bg(rgb(ui_theme::SURFACE_BASE))
             .child(
                 div()
                     .flex_none()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(surfaces.border))
-                    .bg(rgb(surfaces.rail))
+                    .px_4()
+                    .h(px(56.0))
+                    .flex().items_center().justify_between()
                     .text_size(px(ui_theme::TYPE_BODY))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child(format!("存在 {} 个冲突文件", conflicts.len())),
+                    .text_color(rgb(ui_theme::CONTENT_PRIMARY))
+                    .child("冲突文件")
+                    .child(div().text_size(px(12.0)).text_color(rgb(ui_theme::FEEDBACK_WARNING_TEXT)).child(conflicts.len().to_string())),
             )
+            .child(div().flex_none().mx_3().mb_2().p_3().rounded(px(8.0)).bg(rgb(ui_theme::CONFLICT_GUTTER_BG))
+                .child(div().text_size(px(12.0)).text_color(rgb(ui_theme::CONTENT_PRIMARY)).child(if self.snapshot.as_ref().is_some_and(|s| s.rebase_in_progress) {"变基进行中"} else if self.merge_in_progress() {"合并进行中"} else {"冲突处理中"}))
+                .child(div().mt_1().text_size(px(11.0)).text_color(rgb(ui_theme::CONTENT_SECONDARY)).child(format!("{} 个文件等待解决", conflicts.len()))))
             .child(scrollable_uniform_frame("conflict-files-scroll", ScrollbarMode::Vertical,
                 list.into_any_element(), handle, true, cx))
-            .child(div().flex_none().p_2().text_size(px(11.0)).text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                .child(if self.snapshot.as_ref().is_some_and(|s| s.rebase_in_progress) { "变基进行中 · 更多菜单可继续或中止" } else if self.merge_in_progress() { "合并进行中 · 解决文件后继续" } else { "冲突处理中 · 结果需标记已解决" }))
+            .child(self.render_conflict_file_actions(cx))
     }
 
     fn conflict_file_row(
@@ -414,15 +211,27 @@ impl RepositoryView {
             .map(|view| view.draft_status)
             .is_some_and(|status| matches!(status, khaslana::ConflictDraftStatus::Applied));
         let path_for_select = path.clone();
+        let tooltip_path = path.clone();
+        let filename = path.rsplit('/').next().unwrap_or(&path).to_owned();
+        let directory = path.rsplit_once('/').map(|(directory, _)| directory.to_owned()).unwrap_or_default();
+        let status = match view.map(|view| view.kind) {
+            Some(ConflictFileKind::Text) => format!("{unresolved} 个待处理"),
+            Some(ConflictFileKind::Binary) => "二进制冲突".into(),
+            Some(ConflictFileKind::Unsupported) => "修改 / 删除等冲突".into(),
+            Some(ConflictFileKind::WorktreeOnly) => "仅工作区冲突".into(),
+            None => badge.into(),
+        };
 
-        crate::ui::components::list_row_surface(format!("conflict-workbench-{path}"), selected)
+        div().h(px(86.0)).px_2().py_1().child(crate::ui::components::list_row_surface(format!("conflict-workbench-{path}"), selected)
             .flex()
             .flex_none()
             .flex_col()
             .gap_1()
-            .px_2()
+            .rounded(px(8.0)).border_l_0().h(px(78.0))
+            .px_3()
             .py_2()
             .cursor_pointer()
+            .tooltip(move |_, cx| crate::ui::components::tooltip_text(tooltip_path.clone(), cx))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
@@ -435,43 +244,36 @@ impl RepositoryView {
             .child(
                 div()
                     .flex()
+                    .flex_none().h(px(20.0))
                     .items_center()
-                    .justify_between()
                     .gap_2()
+                    .child(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::FileCode).size(px(14.0)).text_color(rgb(if selected {ui_theme::PRIMARY} else {ui_theme::CONTENT_SECONDARY})))
                     .child(
                         div()
-                            .min_w(px(0.0))
+                            .flex_1().min_w(px(0.0))
                             .text_size(px(ui_theme::TYPE_BODY))
-                            .text_color(rgb(ui_theme::CONTENT_PRIMARY))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(rgb(if selected {ui_theme::PRIMARY} else {ui_theme::CONTENT_PRIMARY}))
                             .truncate()
-                            .child(path),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .px_1()
-                            .py(px(2.0))
-                            .rounded(px(ui_theme::RADIUS_XS))
-                            .bg(rgb(ui_theme::SURFACE_SUNKEN))
-                            .text_size(px(ui_theme::TYPE_META))
-                            .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                            .child(badge),
+                            .child(filename),
                     ),
             )
+            .child(div().flex_none().h(px(14.0)).line_height(px(14.0)).truncate().text_size(px(10.0)).text_color(rgb(ui_theme::CONTENT_TERTIARY)).child(directory))
             .child(
                 div()
                     .flex()
+                    .flex_none().h(px(16.0)).line_height(px(16.0))
                     .items_center()
                     .gap_2()
                     .text_size(px(ui_theme::TYPE_META))
-                    .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child(format!("未处理 {unresolved}"))
+                    .text_color(rgb(ui_theme::FEEDBACK_WARNING_TEXT))
+                    .child(status)
                     .when(dirty, |this| this.child("草稿已修改"))
                     .when(applied, |this| this.child("已应用")),
-            )
+            ))
     }
 
-    fn render_conflict_detail(&self, _window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_conflict_detail(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let surfaces = conflict_workbench_surfaces();
         let selected_path = self.conflict_workbench.selected_path.clone();
         let selected_view = selected_path
@@ -488,7 +290,8 @@ impl RepositoryView {
             .min_w(px(0.0))
             .h_full()
             .bg(rgb(surfaces.canvas))
-            .child(self.render_conflict_header(title, selected_view, cx))
+            .rounded(px(ui_theme::RADIUS_PANEL))
+            .child(self.render_conflict_header(title, selected_view, window, cx))
             .child(match selected_view {
                 Some(view) if view.kind == ConflictFileKind::Text => self
                     .render_text_conflict_detail(view, cx)
@@ -510,8 +313,8 @@ impl RepositoryView {
             })
     }
 
-    fn render_conflict_header(&self, title: String, view: Option<&ConflictFileView>, cx: &mut Context<Self>) -> impl IntoElement {
-        self.render_approved_conflict_header(title, view, cx)
+    fn render_conflict_header(&self, title: String, view: Option<&ConflictFileView>, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.render_approved_conflict_header(title, view, window, cx)
     }
 
     fn render_text_conflict_detail(&self, view: &ConflictFileView, cx: &mut Context<Self>) -> impl IntoElement {
@@ -600,39 +403,6 @@ impl RepositoryView {
             .into_any_element()
     }
 
-    /// 三栏连线 overlay：从「当前版本/传入版本」两侧的冲突块区域画
-    /// S 形曲线指向结果区对应块区域，指示采用后内容落点（IDEA 风格）。
-    /// 纯绘制 canvas，不注册鼠标事件、不拦截交互；作为三栏行容器的
-    /// 最后一个子元素绘制在最上层，每帧按各栏滚动 offset 重绘。
-    fn render_conflict_connectors(&self, view: &ConflictFileView, selected_block: usize) -> impl IntoElement {
-        self.render_editor_connectors(view, selected_block)
-    }
-
-    fn render_conflict_document_pane(
-        &self,
-        title: &'static str,
-        scroll_id: &'static str,
-        handle_id: &'static str,
-        content: &str,
-        pane: ConflictDocumentPane,
-        view: &ConflictFileView,
-        selected_block: usize,
-        _actions: Vec<gpui::AnyElement>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        div().flex().flex_col().flex_1().min_w(px(0.0)).min_h(px(0.0)).h_full()
-            .child(div().flex_none().h(px(49.0)).flex().flex_col().gap_1().px_3().py_1()
-                .border_b_1().border_color(rgb(ui_theme::BORDER_MUTED))
-                .bg(rgb(if pane == ConflictDocumentPane::Result { ui_theme::STATE_HOVER } else { ui_theme::SURFACE_BASE }))
-                .child(div().flex().items_center().justify_between()
-                    .child(div().text_size(px(13.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgb(ui_theme::CONTENT_PRIMARY)).child(title))
-                    .child(div().text_size(px(10.0)).text_color(rgb(ui_theme::CONTENT_SECONDARY)).child(if pane == ConflictDocumentPane::Result {"可编辑"} else {"只读"})))
-                .child(div().flex().justify_between().items_center()
-                    .child(div().truncate().text_size(px(10.0)).text_color(rgb(ui_theme::CONTENT_SECONDARY)).child(if pane != ConflictDocumentPane::Result {"UTF-8 · 原始版本"} else if view.draft_status == khaslana::ConflictDraftStatus::Applied {"UTF-8 · 已应用到工作区"} else {"UTF-8 · 结果尚未应用"}))
-                    .when_some(view.blocks.get(selected_block), |this,block| this.child(self.conflict_block_status_badge(block.status,block.has_manual_edits)))))
-            .child(self.render_conflict_document_text(scroll_id,handle_id,content,pane,view,selected_block,cx))
-    }
-
     /// 取某冲突文件某分栏的语法高亮（带主题变体守卫；未计算/已失效返回 None，
     /// 回退整行块状态前景色）。
     fn conflict_syntax_spans(
@@ -649,19 +419,6 @@ impl RepositoryView {
         spans
             .filter(|spans| spans.dark == ui_theme::active_variant().is_dark())
             .cloned()
-    }
-
-    fn render_conflict_document_text(
-        &self,
-        _scroll_id: &'static str,
-        _handle_id: &'static str,
-        _content: &str,
-        pane: ConflictDocumentPane,
-        view: &ConflictFileView,
-        _selected_block: usize,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        self.render_merge_editor(pane, view, cx)
     }
 
     fn render_conflict_plain_text(
@@ -724,46 +481,6 @@ impl RepositoryView {
             true,
             cx,
         )
-    }
-
-    fn conflict_block_status_badge(
-        &self,
-        status: ConflictBlockStatus,
-        has_manual_edits: bool,
-    ) -> impl IntoElement {
-        let (label, bg, fg) = match status {
-            ConflictBlockStatus::Ignored => {
-                ("已忽略", ui_theme::STATE_HOVER, ui_theme::CONTENT_SECONDARY)
-            }
-            ConflictBlockStatus::Resolved(_) => {
-                ("已处理", ui_theme::STATE_HOVER, ui_theme::PRIMARY)
-            }
-            ConflictBlockStatus::Merged => (
-                "已合并",
-                ui_theme::FEEDBACK_SUCCESS_BG,
-                ui_theme::FEEDBACK_SUCCESS_TEXT,
-            ),
-            ConflictBlockStatus::Unresolved if has_manual_edits => (
-                "手工修改",
-                ui_theme::FEEDBACK_WARNING_BG,
-                ui_theme::FEEDBACK_WARNING_TEXT,
-            ),
-            ConflictBlockStatus::Unresolved => (
-                "未处理",
-                ui_theme::FEEDBACK_WARNING_BG,
-                ui_theme::FEEDBACK_WARNING_TEXT,
-            ),
-        };
-        div()
-            .flex_none()
-            .px_2()
-            .py(px(2.0))
-            .rounded_sm()
-            .bg(rgb(bg))
-            .text_size(px(10.0))
-            .font_weight(gpui::FontWeight::BOLD)
-            .text_color(rgb(fg))
-            .child(label)
     }
 
     fn resolve_conflict_with_side(&mut self, path: String, side: ConflictResolutionSide) {

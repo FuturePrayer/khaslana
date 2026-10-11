@@ -254,6 +254,19 @@ pub(crate) fn settings_command_button(
             .font_weight(gpui::FontWeight::MEDIUM).child(label))
 }
 
+/// 工作台命令沿用应用按钮色板与 Kit 焦点行为，统一尺寸，避免默认小按钮混入。
+pub(crate) fn workbench_command_button(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    enabled: bool,
+    cx: &App,
+) -> KitButton {
+    settings_command_button(id, label, if selected { SettingsButtonTone::SelectedTab } else { SettingsButtonTone::Secondary }, enabled, cx)
+        .min_w(px(0.0)).px(px(10.0)).rounded(px(6.0))
+        .border_1().border_color(rgb(if selected { theme::PRIMARY_SUBTLE } else { theme::BORDER_MUTED }))
+}
+
 /// 区域标题 — Funnel Sans 风格小标题（侧边栏、面板区头等）
 pub(crate) fn section_label(title: &'static str) -> impl IntoElement {
     div()

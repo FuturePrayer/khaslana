@@ -1103,7 +1103,6 @@ fn conflict_state_returns_to_worktree_when_last_conflict_disappears() {
         selected_path: Some("a.txt".into()),
         selected_block: 1,
         show_base: true,
-        independent_scroll: false,
         pending_resolve: Some(PendingConflictResolve {
             path: "a.txt".into(),
             unresolved_count: 1,
@@ -1133,7 +1132,6 @@ fn conflict_state_prunes_removed_files_and_keeps_existing_drafts() {
         selected_path: Some("b.txt".into()),
         selected_block: 0,
         show_base: false,
-        independent_scroll: false,
         pending_resolve: Some(PendingConflictResolve {
             path: "a.txt".into(),
             unresolved_count: 1,
@@ -1199,16 +1197,6 @@ fn conflict_state_requests_resolve_confirmation_only_for_unresolved_blocks() {
             .request_resolve_confirmation(resolved.path.clone(), resolved.unresolved_block_count())
     );
     assert!(state.pending_resolve.is_none());
-}
-
-#[test]
-fn conflict_workbench_uses_distinct_scroll_handles_per_pane() {
-    let handles = conflict_workbench_scroll_handle_ids();
-    let unique = handles
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    assert_eq!(unique.len(), 3);
 }
 
 fn test_diff(lines: Vec<khaslana::DiffLine>, is_binary: bool) -> FileDiff {

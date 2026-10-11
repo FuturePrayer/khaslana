@@ -465,9 +465,6 @@ const MAX_CONCURRENT_AI_REVIEWS: usize = 3;
 const AI_REVIEW_HISTORY_LIMIT: usize = 20;
 const LARGE_DIFF_CACHE_LINE_LIMIT: usize = 20_000;
 const DIFF_CACHE_CAPACITY: usize = 16;
-const CONFLICT_OURS_SCROLL_HANDLE_ID: &str = "conflict-ours-scroll-handle";
-const CONFLICT_RESULT_SCROLL_HANDLE_ID: &str = "conflict-result-scroll-handle";
-const CONFLICT_THEIRS_SCROLL_HANDLE_ID: &str = "conflict-theirs-scroll-handle";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FieldId {
@@ -1258,15 +1255,6 @@ fn cached_widest_diff_row_index(
     cache.value
 }
 
-#[cfg(test)]
-fn conflict_workbench_scroll_handle_ids() -> [&'static str; 3] {
-    [
-        CONFLICT_OURS_SCROLL_HANDLE_ID,
-        CONFLICT_RESULT_SCROLL_HANDLE_ID,
-        CONFLICT_THEIRS_SCROLL_HANDLE_ID,
-    ]
-}
-
 fn default_clone_recursive_submodules() -> bool {
     true
 }
@@ -1415,7 +1403,6 @@ struct ConflictWorkbenchState {
     selected_path: Option<String>,
     selected_block: usize,
     show_base: bool,
-    independent_scroll: bool,
     pending_resolve: Option<PendingConflictResolve>,
     files: BTreeMap<String, ConflictFileView>,
     external_merge_auto_opened: BTreeSet<String>,
@@ -3727,7 +3714,6 @@ pub(crate) struct RepositoryView {
     /// 冲突工作台三栏同步滚动的上帧 offset 记录（[ours, result, theirs]，
     /// 跨帧供连线 canvas paint 判定滚动源；paint 闭包拿不到实体，经 Rc
     /// 共享）。选中冲突文件时重置。
-    pub(crate) conflict_pane_scroll_sync: Rc<RefCell<Option<[f32; 3]>>>,
     pub(crate) conflict_editors: Vec<conflicts::editor::ConflictEditorHost>,
     /// 冲突工作台「AI 合并建议」生成中标志（不借用 busy，生成期间其它
     /// 冲突操作保持可用，与 commit message 生成同一模式）。
