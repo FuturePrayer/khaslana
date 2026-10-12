@@ -7,7 +7,7 @@ use gpui_kit::component::{Icon,
 use gpui_kit::assets::IconName;
 use khaslana::{ConflictBlockResolution, ConflictFileKind, ConflictFileView, ConflictResolutionSide};
 
-use crate::{RepositoryView, ui::{components::{floating_panel, workbench_command_button}, theme}};
+use crate::{RepositoryView, ui::{components::{floating_panel, settings_command_button, SettingsButtonTone, workbench_command_button}, theme}};
 use crate::ui::theme::rgb;
 
 pub(super) fn conflict_rail_visible(width: f32) -> bool {
@@ -27,17 +27,14 @@ impl RepositoryView {
         let external = !self.busy && self.conflict_workbench.selected_path.as_ref()
             .and_then(|path| self.conflict_workbench.files.get(path))
             .is_some_and(|view| view.kind != ConflictFileKind::WorktreeOnly);
-        div().flex_none().flex().flex_col().gap_2().p_3()
-            .child(div().text_size(px(11.0)).text_color(rgb(theme::CONTENT_TERTIARY)).child("文件操作"))
-            .child(workbench_command_button("conflict-file-idea", "用 IDEA 解决", false, external, cx)
+        div().flex().flex_wrap().items_center().justify_end().gap_2()
+            .child(settings_command_button("conflict-file-idea", "用 IDEA 解决", SettingsButtonTone::Primary, external, cx)
+                .min_w(px(0.0)).px(px(10.0)).rounded(px(6.0))
                 .on_click(cx.listener(|this,_,_,cx| {this.resolve_selected_conflict_with_intellij_idea();cx.notify();})))
             .when(self.merge_in_progress(), |row| row
-                .child(div().rounded(px(8.0)).p_2().bg(rgb(theme::CONFLICT_GUTTER_BG))
-                    .child(workbench_command_button("conflict-file-finish", "完成合并", false, self.can_finish_conflict_merge(), cx)
-                        .on_click(cx.listener(|this,_,_,cx| {this.finish_merge();cx.notify();})))
-                    .child(div().mt_2().text_size(px(10.0)).text_color(rgb(theme::CONTENT_TERTIARY)).child("先解决全部冲突文件")))
-                .child(workbench_command_button("conflict-file-abort", "中止合并", false, !self.busy, cx)
-                    .on_click(cx.listener(|this,_,_,cx| {this.open_abort_merge_confirm_dialog();cx.notify();}))))
+                .child(workbench_command_button("conflict-file-finish", "完成合并", false, self.can_finish_conflict_merge(), cx)
+                    .tooltip(if self.busy {"当前操作运行中"} else if !files_are_resolved(self.snapshot.as_ref()) {"先解决全部冲突文件"} else if self.commit_message.value.trim().is_empty() {"请先在工作区填写合并提交说明"} else {"完成合并"})
+                    .on_click(cx.listener(|this,_,_,cx| {this.finish_merge();cx.notify();}))))
             .into_any_element()
     }
 
@@ -138,7 +135,7 @@ impl RepositoryView {
                     .on_click(cx.listener(|this,_,_,cx| { this.step_conflict_block(-1); cx.notify(); })))
                 .child(workbench_command_button("conflict-next", "", false, count!=0, cx).icon(Icon::new(IconName::ArrowDown).size(px(14.0))).w(px(32.0)).px_0().accessibility_label("下一个冲突块").tooltip("下一个冲突块")
                     .on_click(cx.listener(|this,_,_,cx| { this.step_conflict_block(1); cx.notify(); }))))
-            .child(div().flex().items_center().gap_2().px_4().h(px(48.0)).bg(rgb(theme::CONFLICT_EDITOR_BG))
+            .child(div().flex().flex_wrap().items_center().gap_2().px_4().py_2().min_h(px(48.0)).bg(rgb(theme::CONFLICT_EDITOR_BG))
                 .child(workbench_command_button("conflict-files-menu", "文件", false, true, cx).icon(Icon::new(IconName::PanelLeft).size(px(14.0))).dropdown_menu(move |mut menu,_,_| {
                     for item in &file_items { menu=menu.item(item()); } menu
                 }))
@@ -157,6 +154,7 @@ impl RepositoryView {
                 .child(div().flex_1())
                 .child(workbench_command_button("conflict-ai", if self.ai_conflict_loading {"AI 生成中…"} else if !self.ai_settings.is_usable() {"AI 未配置"} else {"AI 合并建议"}, false, text && self.ai_conflict_merge_button_enabled(), cx).icon(Icon::new(IconName::Sparkles).size(px(14.0)))
                     .on_click(cx.listener(|this,_,_,cx| {this.generate_ai_conflict_merge();cx.notify();})))
+                .child(self.render_conflict_file_actions(cx))
                 .child(workbench_command_button("conflict-more-menu", "更多", false, true, cx).icon(Icon::new(IconName::Ellipsis).size(px(14.0))).dropdown_menu(move |mut menu,_,_| {
                     for item in &more {menu=menu.item(item());} menu
                 })))

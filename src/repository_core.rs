@@ -1236,13 +1236,11 @@ impl RepositoryView {
             .as_ref()
             .map(|snapshot| snapshot.conflicts.clone())
             .unwrap_or_default();
-        let auto_open_conflict_mode = !self.merge_in_progress();
         let tab = self.active_tab_state_mut();
         sync_conflict_state_from_paths(
             &mut tab.main_mode,
             &mut tab.conflict_workbench,
             &conflict_paths,
-            auto_open_conflict_mode,
         );
 
         if conflict_paths.is_empty() {

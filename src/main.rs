@@ -1491,7 +1491,6 @@ fn sync_conflict_state_from_paths(
     main_mode: &mut MainMode,
     state: &mut ConflictWorkbenchState,
     conflict_paths: &[String],
-    auto_open_conflict_mode: bool,
 ) {
     let entering_conflicts =
         !conflict_paths.is_empty() && state.selected_path.is_none() && state.files.is_empty();
@@ -1520,12 +1519,8 @@ fn sync_conflict_state_from_paths(
     if entering_conflicts {
         static NEXT_SESSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         state.session_id = NEXT_SESSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        *main_mode = if auto_open_conflict_mode {
-            MainMode::Conflict
-        } else {
-            // 普通合并冲突先在工作区展示合并状态，不主动打开冲突工作台。
-            MainMode::Worktree
-        };
+        // 新冲突会话直接进入工作台；后续刷新保留用户主动选择的页面。
+        *main_mode = MainMode::Conflict;
     }
     if state
         .selected_path

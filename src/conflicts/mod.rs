@@ -183,7 +183,13 @@ impl RepositoryView {
                 .child(div().mt_1().text_size(px(11.0)).text_color(rgb(ui_theme::CONTENT_SECONDARY)).child(format!("{} 个文件等待解决", conflicts.len()))))
             .child(scrollable_uniform_frame("conflict-files-scroll", ScrollbarMode::Vertical,
                 list.into_any_element(), handle, true, cx))
-            .child(self.render_conflict_file_actions(cx))
+            .when(self.merge_in_progress(), |rail| rail.child(
+                div().flex_none().flex().flex_col().gap_2().p_3()
+                    .child(div().text_size(px(11.0)).text_color(rgb(ui_theme::CONTENT_TERTIARY))
+                        .child("作用于整个仓库的当前合并"))
+                    .child(self.danger_button("中止合并", !self.busy,
+                        |this, _, cx| { this.open_abort_merge_confirm_dialog(); cx.notify(); }, cx)),
+            ))
     }
 
     fn conflict_file_row(
