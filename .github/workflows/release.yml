@@ -99,6 +99,8 @@ jobs:
         # 非预发布版——旧客户端的正式清单兜底源永远不会被测试版发布污染。
         uses: softprops/action-gh-release@v2
         with:
+          name: Khaslana ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/*.zip
