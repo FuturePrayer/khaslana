@@ -94,23 +94,6 @@ impl KitFieldInput {
         }
     }
 
-    fn set_placeholder(
-        &self,
-        placeholder: impl Into<SharedString>,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let placeholder = placeholder.into();
-        match self {
-            Self::Single(state) => state.update(cx, |state, cx| {
-                state.set_placeholder(placeholder, window, cx)
-            }),
-            Self::Multi(state) => state.update(cx, |state, cx| {
-                state.set_placeholder(placeholder, window, cx)
-            }),
-        }
-    }
-
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         match self {
             Self::Single(state) => Focusable::focus_handle(state.read(cx), cx),
@@ -221,18 +204,19 @@ impl KitField {
     }
 
     /// 工作流文档只定制表面和尺寸，继续复用同一 Kit 编辑实体、订阅与 IME 真值。
-    pub(crate) fn render_workflow_document(&self, multiline_height: f32, blocked: bool) -> AnyElement {
+    pub(crate) fn render_workflow_document(&self, multiline_height: f32, code: bool, blocked: bool) -> AnyElement {
         match &self.input {
             KitFieldInput::Single(state) => Input::new(state)
                 .h(px(36.0)).text_size(px(14.0))
-                .bg(rgb(ui_theme::WORKFLOW_SURFACE))
-                .border_color(rgb(ui_theme::WORKFLOW_OUTLINE))
-                .rounded(px(ui_theme::RADIUS_XS)).disabled(blocked).into_any_element(),
+                .bg(rgb(if blocked { ui_theme::SURFACE_SUNKEN } else { ui_theme::WB_INPUT_SURFACE }))
+                .border_color(rgb(ui_theme::BORDER_MUTED))
+                .rounded(px(ui_theme::RADIUS_SM)).disabled(blocked).into_any_element(),
             KitFieldInput::Multi(state) => Textarea::new(state)
                 .h(px(multiline_height)).text_size(px(14.0))
-                .bg(rgb(ui_theme::WORKFLOW_SURFACE))
-                .border_color(rgb(ui_theme::WORKFLOW_OUTLINE))
-                .rounded(px(ui_theme::RADIUS_XS)).disabled(blocked).into_any_element(),
+                .when(code, |input| input.font_family("Consolas").text_size(px(13.0)).line_height(px(20.0)))
+                .bg(rgb(if blocked { ui_theme::SURFACE_SUNKEN } else { ui_theme::WB_INPUT_SURFACE }))
+                .border_color(rgb(ui_theme::BORDER_MUTED))
+                .rounded(px(ui_theme::RADIUS_SM)).disabled(blocked).into_any_element(),
         }
     }
 
@@ -277,13 +261,6 @@ impl RepositoryView {
             .find_map(|(field_id, field)| (*field_id == id).then_some(field))
     }
 
-    /// 取得字段 Kit 宿主的可变引用（重绑时更新身份用）。
-    fn kit_field_mut(&mut self, id: FieldId) -> Option<&mut KitField> {
-        self.kit_fields
-            .iter_mut()
-            .find_map(|(field_id, field)| (*field_id == id).then_some(field))
-    }
-
     /// 渲染前对齐 Kit 字段：缺的建好，被程序回填过的推给 Kit。
     ///
     /// 必须在 `RepositoryView::render` 顶部、任何渲染调用之前执行——渲染期只有
@@ -317,6 +294,9 @@ impl RepositoryView {
         });
         // 进场：新出现的动态字段建宿主。静态注册表字段已在前一循环建过。
         for id in active {
+            if self.kit_field(id).is_some_and(|host| matches!(&host.input, KitFieldInput::Multi(_)) != self.is_field_multiline(id)) {
+                self.kit_fields.retain(|(field_id, _)| *field_id != id);
+            }
             if self.kit_field(id).is_none() {
                 self.spawn_kit_field(id, window, cx);
             }
@@ -335,6 +315,7 @@ impl RepositoryView {
             .inputs
             .iter()
             .enumerate()
+            .filter(|(_, input)| matches!(input.definition.kind, khaslana::WorkflowInputKind::Text | khaslana::WorkflowInputKind::Textarea))
             .map(|(index, _)| FieldId::WorkflowInput(index))
             .collect();
         if self.workflow_editor.is_some() {
@@ -365,6 +346,10 @@ impl RepositoryView {
             }
         }
         for (index, row_state) in state.input_fields.iter().enumerate() {
+            for option in 0..row_state.option_fields.len() {
+                ids.push(FieldId::WorkflowEditor(WorkflowEditorFieldId::InputPart { index, part: crate::workflow_editor::WorkflowInputPart::OptionLabel(option) }));
+                ids.push(FieldId::WorkflowEditor(WorkflowEditorFieldId::InputPart { index, part: crate::workflow_editor::WorkflowInputPart::OptionValue(option) }));
+            }
             for (part, field) in [
                 (
                     WorkflowEditorFieldId::InputPart {
@@ -423,7 +408,7 @@ impl RepositoryView {
         let initial = self.field(id).value.clone();
         let caret = self.field(id).caret;
         let uid = self.field(id).uid;
-        let multiline = Self::is_multiline_field(id);
+        let multiline = self.is_field_multiline(id);
         let input = if multiline {
             KitFieldInput::Multi(
                 cx.new(|cx| TextareaState::new(window, cx).placeholder(placeholder.clone())),
@@ -447,8 +432,8 @@ impl RepositoryView {
         self.field_mut(id).focus = input.focus_handle(cx);
 
         let subscriptions = match &input {
-            KitFieldInput::Single(state) => subscribe_kit_input(state, window, cx, id, multiline),
-            KitFieldInput::Multi(state) => subscribe_kit_input(state, window, cx, id, multiline),
+            KitFieldInput::Single(state) => subscribe_kit_input(state, window, cx, id, multiline, uid),
+            KitFieldInput::Multi(state) => subscribe_kit_input(state, window, cx, id, multiline, uid),
         };
 
         self.kit_fields.push((
@@ -477,10 +462,6 @@ impl RepositoryView {
         };
         let value = truth.value.clone();
         let caret = truth.caret;
-        let identity = KitFieldIdentity {
-            uid: truth.uid,
-            placeholder: truth.placeholder.clone(),
-        };
         // 宿主的借用只为读取身份与组合态：读完即结束，后续重绑需要 &mut self。
         let Some(host) = self.kit_field(id) else {
             return;
@@ -490,7 +471,7 @@ impl RepositoryView {
             return;
         }
         if needs_rebind {
-            self.rebind_kit_field(id, value, caret, identity, window, cx);
+            self.rebind_kit_field(id, window, cx);
             return;
         }
         let Some(field) = self.kit_field(id) else {
@@ -511,25 +492,14 @@ impl RepositoryView {
     fn rebind_kit_field(
         &mut self,
         id: FieldId,
-        value: String,
-        caret: usize,
-        identity: KitFieldIdentity,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(host) = self.kit_field(id) else {
-            return;
-        };
-        host.input
-            .set_placeholder(identity.placeholder.clone(), window, cx);
-        host.set_value(value, caret, window, cx);
-        let handle = host.input.focus_handle(cx);
-        if let Some(field) = self.try_field_mut(id) {
-            field.focus = handle;
-        }
-        if let Some(host) = self.kit_field_mut(id) {
-            host.identity = identity;
-        }
+        let focused = self.kit_field(id).is_some_and(|host| host.is_focused(window, cx));
+        // 身份变化后重新订阅，旧输入实体的迟到事件不能写入新字段。
+        self.kit_fields.retain(|(field_id, _)| *field_id != id);
+        self.spawn_kit_field(id, window, cx);
+        if focused { window.focus(&self.field(id).focus, cx); }
     }
 
     /// 当前输入是否由组件独占键盘（普通 Kit 字段或冲突专用编辑器）。
@@ -558,6 +528,7 @@ fn subscribe_kit_input<E>(
     cx: &mut Context<RepositoryView>,
     id: FieldId,
     multiline: bool,
+    uid: u64,
 ) -> Vec<Subscription>
 where
     E: EventEmitter<InputEvent> + 'static,
@@ -575,7 +546,7 @@ where
             let value = reader.value(cx).to_string();
             // 严格寻址：动态字段被重建/删除后，残留事件直接丢弃，
             // 不允许经越界兜底写进无关的静态字段（如 branch_name）。
-            let Some(field) = this.try_field_mut(id) else {
+            let Some(field) = this.try_field_mut(id).filter(|field| field.uid == uid) else {
                 return;
             };
             if field.value == value {
@@ -605,7 +576,7 @@ where
                 return;
             }
             // 严格寻址与 Change 同理：孤儿宿主的 Enter 不再触发任何提交。
-            if this.try_field(id).is_none() {
+            if !this.try_field(id).is_some_and(|field| field.uid == uid) {
                 return;
             }
             // 单行 Enter 经 Kit 事件订阅到达，不经过根层 TextSubmit，

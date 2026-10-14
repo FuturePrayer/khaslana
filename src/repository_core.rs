@@ -1887,6 +1887,10 @@ impl RepositoryView {
             self.close_settings_center();
             return true;
         }
+        if self.workflow_document_editor_visible() && !self.busy {
+            self.close_workflow_editor();
+            return true;
+        }
         false
     }
 
@@ -1906,7 +1910,8 @@ impl RepositoryView {
             TopOverlayKind::AiThinking => Some(self.ai_thinking_focus.clone()),
             TopOverlayKind::CodePalette => Some(self.code_palette_focus.clone()),
             TopOverlayKind::ReviewHistory => Some(self.review_history_focus.clone()),
-            TopOverlayKind::Dialog => self.workflow_document_picker_focus().or_else(|| Some(self.dialog_focus.clone())),
+            TopOverlayKind::Dialog => self.workflow_document_picker_focus()
+                .filter(|_| self.active_dialog.is_none()).or_else(|| Some(self.dialog_focus.clone())),
             TopOverlayKind::Settings => Some(self.settings_center_focus.clone()),
             // 只有受键盘模型支持的右键菜单才把焦点收进容器：仓库切换下拉、
             // 编码菜单等没有挂焦点圈的容器，抢焦点会把它们的输入框焦点
@@ -1939,6 +1944,10 @@ impl RepositoryView {
     /// 由其键盘模型决定，与 is_modal 分开；父层即使被覆盖也保留返回记录。
     fn overlay_focus_layers(&self) -> Vec<OverlayFocusKey> {
         let mut layers = Vec::new();
+        // V2 主页面没有焦点圈；步骤选择器位于设置、真正的对话框等浮层之下。
+        if self.workflow_document_picker_focus().is_some() {
+            layers.push((TopOverlayKind::Dialog, None));
+        }
         let mut push = |kind, visible| {
             if visible {
                 layers.push((kind, None));
@@ -1953,10 +1962,6 @@ impl RepositoryView {
         }
         if let Some(dialog) = self.active_dialog.as_ref() {
             layers.push((TopOverlayKind::Dialog, Some(dialog.clone())));
-        }
-        // V2 添加步骤是编辑页内的子模态，单独记录返回目标，关闭后归还触发器焦点。
-        if self.workflow_document_picker_focus().is_some() {
-            layers.push((TopOverlayKind::Dialog, None));
         }
         for (kind, visible) in [
             (TopOverlayKind::CodePalette, self.code_search_palette.is_some()),
@@ -2016,7 +2021,8 @@ impl RepositoryView {
                 }
                 let preferred = match kind {
                     TopOverlayKind::CodePalette => Some(this.code_palette_search.focus.clone()),
-                    TopOverlayKind::Dialog if this.workflow_document_picker_focus().is_some() => {
+                    TopOverlayKind::Dialog if this.active_dialog.is_none()
+                        && this.workflow_document_picker_focus().is_some() => {
                         this.workflow_document_picker_search_focus()
                     }
                     TopOverlayKind::Dialog if this.active_dialog == Some(DialogState::CloneRepo) => {

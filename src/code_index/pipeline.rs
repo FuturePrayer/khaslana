@@ -667,6 +667,7 @@ impl GraphMerger {
             }
 
             // 定义 → 符号节点 + DEFINES / DEFINES_METHOD 边。
+            let mut definition_ids = Vec::with_capacity(result.defs.len());
             for def in &result.defs {
                 let qn = format!(
                     "{file_qn}{}.{}",
@@ -684,8 +685,10 @@ impl GraphMerger {
                     rel_path.to_string(),
                     def.start_line,
                     def.end_line,
-                    serde_json::json!({ "signature": def.signature, "docstring": def.docstring, "scope": def.scope }).to_string(),
+                    serde_json::json!({ "signature": def.signature, "docstring": def.docstring, "scope": def.scope,
+                        "java_parameters": def.java_parameters, "java_package": result.java_package }).to_string(),
                 );
+                definition_ids.push(node_id);
                 self.def_index
                     .insert(def_key(&def.scope, &def.name), node_id);
                 // 方法/字段挂到容器符号；顶层定义挂到文件。
@@ -727,13 +730,14 @@ impl GraphMerger {
             };
             let calls = result.calls.into_iter().map(|call| {
                 let source = call.owner.as_ref()
-                    .and_then(|owner| self.def_index.get(&def_key(&owner.class_chain, &owner.fn_name)))
+                    .and_then(|owner| definition_ids.get(owner.definition_index))
                     .copied().unwrap_or(file_id);
                 super::calls::StoredCall {
                     source_qn: Arc::clone(&graph.get(source).qualified_name),
                     callee_display: intern(call.callee_display), name: intern(call.name),
                     scope: intern(call.owner.map(|owner| owner.class_chain.join("\u{1}")).unwrap_or_default()),
                     line: call.line,
+                    java: intern(call.java.map(|call| serde_json::to_string(&call).unwrap()).unwrap_or_default()),
                 }
             }).collect();
             graph.call_records.insert(Arc::clone(&graph.get(file_id).file_path), super::calls::FileCalls { imports: import_modules, calls });
@@ -769,18 +773,19 @@ impl GraphMerger {
             let results: Vec<_> = super::jobs::compute_pool().install(|| batch.par_iter().map(|path| {
                 let records = &graph.call_records[path];
                 let imports = registry.imported_files(&records.imports);
-                let mut memo = HashMap::<(Arc<str>, Arc<str>, Arc<str>), Option<super::resolve::ResolvedTarget>>::new();
+                let mut memo = HashMap::<(Arc<str>, Arc<str>, Arc<str>, Arc<str>), Option<super::resolve::ResolvedTarget>>::new();
                 let mut edges = HashMap::<(NodeId, NodeId), (super::resolve::ResolvedTarget, Arc<str>, usize, Vec<u32>)>::new();
                 let mut unresolved = 0;
                 let mut no_candidate = 0;
                 for (index, call) in records.calls.iter().enumerate() {
                     if index % 512 == 0 && (cancel.load(Ordering::Relaxed)
                         || cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed))) { break; }
-                    let key = (Arc::clone(&call.name), Arc::clone(&call.callee_display), Arc::clone(&call.scope));
+                    let key = (Arc::clone(&call.name), Arc::clone(&call.callee_display), Arc::clone(&call.scope), Arc::clone(&call.java));
                     let resolved = if let Some(target) = memo.get(&key) { target.clone() } else {
                         let scope: Vec<_> = call.scope.split('\u{1}').filter(|part| !part.is_empty()).map(str::to_string).collect();
                         let qualifier = qualifier_segment(&call.callee_display);
-                        let target = registry.resolve_prepared(&call.name, path, &imports, qualifier.as_deref(), &scope);
+                        let java = serde_json::from_str(&call.java).ok();
+                        let target = registry.resolve_typed(&call.name, path, &imports, qualifier.as_deref(), &scope, java.as_ref());
                         // 有界缓存防御生成代码中的大量不同表达式。
                         if memo.len() < 16384 { memo.insert(key, target.clone()); }
                         target

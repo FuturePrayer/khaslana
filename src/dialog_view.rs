@@ -25,7 +25,7 @@ impl RepositoryView {
         let Some(dialog) = self.active_dialog.clone() else {
             return div().into_any_element();
         };
-        // V2 编辑器在工作流页面内展示；焦点陷阱由文档视图承接。
+        // 防御旧状态：V2 在主页面展示，不绘制重复的模态编辑器。
         if matches!(dialog, DialogState::WorkflowEditor) && self.workflow_document_editor_visible() {
             return div().into_any_element();
         }

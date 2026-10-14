@@ -149,7 +149,8 @@ pub fn workflow_template_prompts(
          2. version 字段恒为 1。
          3. steps 至少一个，op 只能使用文档「支持的步骤」章节列出的类型。
          4. 变量引用一律使用 ${...} 表达式语法；inputs 的键不得以 git. / run. / date: 开头。
-         5. 为字段填写合理的中文 label 与说明，便于其他用户理解。",
+         5. 为字段填写合理的中文 label 与说明，便于其他用户理解。
+         6. inputs.type 可用 text、textarea、select、date；select 必须提供非空 options 数组，每项有中文 label 和唯一的非空 value；日期值使用 YYYY-MM-DD。需要用户明确选择时不要设置默认值。",
     );
 
     let request = truncate_text(request.trim(), WORKFLOW_REQUEST_TEXT_LIMIT);

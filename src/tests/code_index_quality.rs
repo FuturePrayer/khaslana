@@ -176,11 +176,14 @@ fn version_five_pollution_is_not_served_and_is_rebuilt_once_without_file_edits()
 #[test]
 fn call_record_codec_keeps_lines_and_reads_the_previous_format() {
     let record = calls::FileCalls { imports: vec!["pkg.Tools".into()], calls: vec![calls::StoredCall {
-        source_qn: "p.caller".into(), callee_display: "Tools.target".into(), name: "target".into(), scope: "Caller".into(), line: 37,
+        source_qn: "p.caller".into(), callee_display: "Tools.target".into(), name: "target".into(), scope: "Caller".into(), line: 37, java: "".into(),
     }] };
     let bytes = record.encode().unwrap();
     assert_eq!(calls::FileCalls::decode(&bytes).unwrap().calls[0].line, 37);
     let mut old = bytes;
+    old[..6].copy_from_slice(b"KCALL2");
+    old.truncate(old.len() - 4);
+    assert_eq!(calls::FileCalls::decode(&old).unwrap().calls[0].line, 37);
     old[..6].copy_from_slice(b"KCALL1");
     old.truncate(old.len() - 4);
     let decoded = calls::FileCalls::decode(&old).unwrap();
@@ -196,4 +199,109 @@ fn ambiguous_local_java_overloads_do_not_fall_through_to_imported_methods() {
     ]);
     let remote = search_symbols(&db, "target", 10).unwrap().into_iter().find(|hit| hit.file_path.ends_with("Remote.java")).unwrap();
     assert_eq!(trace(&db, &remote.qualified_name, TraceDirection::Inbound).callers_total, 0);
+}
+
+#[test]
+fn java_overloads_use_arguments_and_preserve_exact_caller_identity_after_reload() {
+    let tools = "package demo; class STRING { public static String emptyIf(String s, String d) { return d; } public static String emptyIf(Object s, String d) { return d; } public static String emptyIf(String s) { return s; } }";
+    let caller = "package demo; import demo.STRING; class Caller {\nvoid overloaded(int value) { STRING.emptyIf(\"text\", \"fallback\"); }\nvoid overloaded(String value) { STRING.emptyIf((Object)value, \"fallback\"); }\nvoid nested() { consume(STRING.emptyIf(\"nested\", \"fallback\")); STRING.emptyIf(\"one\"); }\nvoid uncertain() { STRING.emptyIf(missing(), \"fallback\"); }\nvoid consume(String s) {} }";
+    let (_temp, root, db) = fixture(&[("src/demo/STRING.java", tools), ("src/demo/Caller.java", caller)]);
+    let check = || {
+        let targets = search_symbols(&db, "emptyIf", 10).unwrap();
+        let string = targets.iter().find(|target| target.signature.contains("String s, String d")).unwrap();
+        let object = targets.iter().find(|target| target.signature.contains("Object s, String d")).unwrap();
+        let one = targets.iter().find(|target| target.signature.contains("String s)")).unwrap();
+        let inbound = trace(&db, &string.qualified_name, TraceDirection::Inbound);
+        assert_eq!(inbound.callers_total, 2);
+        let first = inbound.callers.iter().find(|caller| caller.name == "overloaded").unwrap();
+        assert!(!first.qualified_name.ends_with("#2"));
+        assert_eq!(first.call_sites.as_ref().unwrap().lines, [2]);
+        let second = trace(&db, &object.qualified_name, TraceDirection::Inbound);
+        assert_eq!(second.callers_total, 1);
+        assert!(second.callers[0].qualified_name.ends_with("#2"));
+        assert_eq!(second.callers[0].call_sites.as_ref().unwrap().lines, [3]);
+        assert_eq!(trace(&db, &one.qualified_name, TraceDirection::Inbound).callers_total, 1);
+        let coverage = check_coverage(&db, None, &["src/demo/Caller.java".into()], &[], 0, 10).unwrap();
+        assert_eq!(coverage["results"][0]["unresolved_with_candidates"], 1);
+    };
+    check();
+    // 只变更目标文件，调用方从持久化记录重解，仍须保留参数证据和重载身份。
+    std::fs::write(root.join("src/demo/STRING.java"), format!("{tools}\n// changed\n")).unwrap();
+    run_index(&root, &db, false, &mut options()).unwrap();
+    check();
+}
+
+#[test]
+fn java_instances_use_parameters_locals_fields_and_block_shadowing() {
+    let (_temp, _root, db) = fixture(&[
+        ("src/demo/Service.java", "package demo; interface Service { void execute(); }"),
+        ("src/demo/Other.java", "package demo; class Other { void execute() {} }"),
+        ("src/demo/Caller.java", "package demo; class Caller {\nvoid run(Service service) {\nservice.execute();\nService local = service; local.execute();\nthis.field.execute();\n{ Other service = new Other(); service.execute(); }\nservice.execute();\nnew Other().execute();\n}\nService field; }"),
+    ]);
+    let hits = search_symbols(&db, "execute", 10).unwrap();
+    let service = hits.iter().find(|hit| hit.file_path.ends_with("Service.java")).unwrap();
+    let other = hits.iter().find(|hit| hit.file_path.ends_with("Other.java")).unwrap();
+    let sites = trace(&db, &service.qualified_name, TraceDirection::Inbound).callers[0].call_sites.clone().unwrap();
+    assert_eq!(sites.lines, [3, 4, 5, 7]);
+    assert_eq!(sites.count, 4);
+    assert_eq!(trace(&db, &other.qualified_name, TraceDirection::Inbound).callers[0].call_sites.as_ref().unwrap().count, 2);
+}
+
+#[test]
+fn java_qualified_types_use_package_identity() {
+    let (_temp, _root, db) = fixture(&[
+        ("src/demo/Service.java", "package demo; public class Service { public void execute() {} public static void target() {} }"),
+        ("src/other/Caller.java", "package other; import demo.Service; class Caller { void run(demo.Service service) { service.execute(); demo.Service.target(); } }"),
+    ]);
+    assert_eq!(trace(&db, "execute", TraceDirection::Inbound).callers_total, 1);
+    assert_eq!(trace(&db, "target", TraceDirection::Inbound).callers_total, 1);
+}
+
+#[test]
+fn java_unknown_shadowing_and_private_instances_do_not_create_false_edges() {
+    let (_temp, _root, db) = fixture(&[
+        ("src/demo/Tools.java", "package demo; class Tools { public static void target() {} private void hidden() {} }"),
+        ("src/demo/Caller.java", "package demo; class Caller { void run(Tools tool) { tool.hidden(); } void shadow(Object Tools) { Tools.target(); } void lambda(Tools Tools) { consume(Tools -> Tools.target()); } }"),
+    ]);
+    assert_eq!(trace(&db, "target", TraceDirection::Inbound).callers_total, 0);
+    assert_eq!(trace(&db, "hidden", TraceDirection::Inbound).callers_total, 0);
+}
+
+#[test]
+fn java_overload_arguments_do_not_choose_between_unrelated_classes() {
+    let (_temp, _root, db) = fixture(&[
+        ("src/a/Tools.java", "package a; public class Tools { public static void target(String s) {} }"),
+        ("src/b/Tools.java", "package b; public class Tools { public static void target(Object s) {} }"),
+        ("src/demo/Caller.java", "package demo; import a.Tools; import b.Tools; class Caller { void run() { Tools.target(\"value\"); } }"),
+    ]);
+    for target in search_symbols(&db, "target", 10).unwrap() {
+        assert_eq!(trace(&db, &target.qualified_name, TraceDirection::Inbound).callers_total, 0);
+    }
+}
+
+#[test]
+fn java_static_imports_and_primitive_overloads_resolve_without_guessing() {
+    let (_temp, _root, db) = fixture(&[
+        ("src/demo/Tools.java", "package demo; public class Tools { public static void target(int value) {} public static void target(String value) {} public static void target(long value) {} }"),
+        ("src/demo/Caller.java", "package demo; import static demo.Tools.target; class Caller { void run() { target(1); target(2L); target(\"s\"); } }"),
+    ]);
+    for target in search_symbols(&db, "target", 10).unwrap() {
+        assert_eq!(trace(&db, &target.qualified_name, TraceDirection::Inbound).callers[0].call_sites.as_ref().unwrap().count, 1);
+    }
+}
+
+#[test]
+fn stored_counts_match_incremental_database_and_old_metadata_fallback() {
+    let (_temp, root, db) = fixture(&[("src/lib.rs", "fn target() {} fn caller() { target(); }")]);
+    for source in ["fn target() {} fn caller() { target(); } fn extra() {}", "fn caller() {}"] {
+        std::fs::write(root.join("src/lib.rs"), source).unwrap();
+        run_index(&root, &db, false, &mut options()).unwrap();
+        let cached = read_index_stats(&db).unwrap().unwrap();
+        let store = CodeIndexStore::open(&db).unwrap();
+        store.conn.execute("DELETE FROM meta WHERE key='counts'", []).unwrap();
+        let scanned = read_index_stats(&db).unwrap().unwrap();
+        assert_eq!((cached.nodes, cached.symbols, cached.edges, cached.calls, cached.files),
+            (scanned.nodes, scanned.symbols, scanned.edges, scanned.calls, scanned.files));
+        assert_eq!(cached.generation, scanned.generation);
+    }
 }

@@ -10,6 +10,8 @@ use super::{WorkflowRunControl, WorkflowStep};
 
 /// 宿主动作的接口；具体 MCP、JS、Skill 适配器由后续模块显式注册。
 pub trait WorkflowAction: Send + Sync {
+    /// 工作流结束时关闭共享外部会话，清理问题作为提示而非操作失败。
+    fn finish(&self) -> Vec<String> { Vec::new() }
     fn preview(
         &self,
         service: &GitService,
@@ -69,6 +71,9 @@ pub struct WorkflowActionRegistry {
 }
 
 impl WorkflowActionRegistry {
+    pub fn finish(&self) -> Vec<String> {
+        self.actions.values().flat_map(|action| action.finish()).collect()
+    }
     pub fn register(&mut self, name: impl Into<String>, action: Arc<dyn WorkflowAction>) -> Result<()> {
         let name = name.into();
         if name.trim().is_empty() || name.starts_with("git.") {

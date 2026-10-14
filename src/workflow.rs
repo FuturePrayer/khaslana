@@ -16,7 +16,9 @@ use crate::{
 };
 
 mod expressions;
+mod inputs;
 pub mod browser_runtime;
+pub mod browser_artifacts;
 pub mod extensions;
 mod mcp_process;
 pub mod remote_templates;
@@ -26,6 +28,7 @@ mod v2;
 use expressions::WorkflowExpressionValue;
 use expressions::evaluate_workflow_expression;
 pub use remote_branch_guard::RemoteBranchGuardAction;
+pub use inputs::{WorkflowInputKind, WorkflowInputOption};
 pub use v2::{WorkflowAction, WorkflowActionPreview, WorkflowActionRegistry, WorkflowActionResult};
 use v2::{builtin_step, empty_json_object};
 use remote_branch_guard::{
@@ -62,6 +65,10 @@ impl WorkflowDefinition {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowInputDefinition {
+    #[serde(default, rename = "type", skip_serializing_if = "WorkflowInputKind::is_text")]
+    pub kind: WorkflowInputKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<WorkflowInputOption>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1030,8 +1037,9 @@ fn validate_definition(definition: &WorkflowDefinition) -> Result<()> {
     if definition.steps.is_empty() {
         return Err(GitError::Message("工作流至少需要一个步骤".into()));
     }
-    for key in definition.inputs.keys() {
+    for (key, input) in &definition.inputs {
         validate_input_name(key)?;
+        input.validate_definition(key)?;
     }
     let mut ids = BTreeSet::new();
     for step in &definition.steps {
@@ -1082,19 +1090,7 @@ fn validate_input_values(
     options: &WorkflowRunOptions,
 ) -> Result<()> {
     for (name, input) in &definition.inputs {
-        if input.required
-            && options
-                .input_vars
-                .get(name)
-                .is_none_or(|value| value.trim().is_empty())
-        {
-            let label = input
-                .label
-                .as_deref()
-                .filter(|label| !label.trim().is_empty())
-                .unwrap_or(name);
-            return Err(GitError::Message(format!("请填写工作流变量：{label}")));
-        }
+        input.validate_value(name, options.input_vars.get(name).map(String::as_str).unwrap_or(""))?;
     }
     Ok(())
 }

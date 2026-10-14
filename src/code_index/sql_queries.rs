@@ -114,6 +114,10 @@ pub(super) fn trace_calls_page(path: &Path, name: &str, direction: TraceDirectio
 }
 
 pub(super) fn symbol_detail(path: &Path, root: Option<&Path>, name: &str) -> Result<DetailOutcome> {
+    definition_detail(path, root, name, true)
+}
+
+pub(super) fn definition_detail(path: &Path, root: Option<&Path>, name: &str, relations: bool) -> Result<DetailOutcome> {
     read(path, |store| {
         require_current_relations(store)?;
         let mut candidates = resolve(&store.conn, name, false)?;
@@ -134,7 +138,8 @@ pub(super) fn symbol_detail(path: &Path, root: Option<&Path>, name: &str) -> Res
             qualified_name: candidate.qualified_name, file_path: candidate.file_path, start_line: candidate.start_line, end_line: candidate.end_line,
             signature: properties["signature"].as_str().unwrap_or("").to_string(), docstring: properties["docstring"].as_str().unwrap_or("").to_string(),
             source_freshness: freshness.into(), source,
-            callers: bfs(&store.conn, &[node.id], true, 1, 100)?, callees: bfs(&store.conn, &[node.id], false, 1, 100)? })))
+            callers: if relations { bfs(&store.conn, &[node.id], true, 1, 100)? } else { Vec::new() },
+            callees: if relations { bfs(&store.conn, &[node.id], false, 1, 100)? } else { Vec::new() } })))
     })
 }
 

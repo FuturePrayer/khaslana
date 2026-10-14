@@ -42,6 +42,104 @@ fn grant_for(steps: &str) -> WorkflowExternalGrant {
     WorkflowExternalGrant::for_definition(&definition).unwrap().unwrap()
 }
 
+#[test]
+fn builtin_edge_exposes_all_25_default_tools_without_extra_capabilities() {
+    let expected = ["browser_click", "browser_close", "browser_console_messages", "browser_drag", "browser_drop",
+        "browser_emulate_media", "browser_evaluate", "browser_file_upload", "browser_fill_form", "browser_find",
+        "browser_handle_dialog", "browser_hover", "browser_navigate", "browser_navigate_back", "browser_network_request",
+        "browser_network_requests", "browser_press_key", "browser_resize", "browser_run_code_unsafe", "browser_select_option",
+        "browser_snapshot", "browser_take_screenshot", "browser_type", "browser_wait_for", "browser_tabs"];
+    let server = extensions::builtin_browser_server();
+    assert!(server.enabled);
+    assert_eq!(server.tools.len(), expected.len());
+    for tool in expected { assert!(server.tools.contains_key(tool), "{tool}"); }
+    assert!(!server.args.iter().any(|arg| arg == "--caps"));
+}
+
+#[test]
+fn only_pure_js_and_builtin_edge_workflows_skip_confirmation() {
+    let data = tempfile::tempdir().unwrap();
+    let mut config = load_mcp_config(data.path()).unwrap();
+    let pure = grant_for("{op:'invoke',id:'js',uses:'js.run',with:{script:'return 1;'}}");
+    assert!(!pure.requires_confirmation(&config).unwrap());
+    for action in ["js.run", "skill.run"] {
+        let parameters = if action == "js.run" { "script:'return 1;'" } else { "skill:'demo',task:'填表'" };
+        let grant = grant_for(&format!("{{op:'invoke',id:'browser',uses:'{action}',with:{{{parameters},tools:[{{server:'browser.edge',tool:'browser_fill_form'}}]}}}}"));
+        assert!(!grant.requires_confirmation(&config).unwrap());
+    }
+    config.servers.extend(test_config(&data.path().join("unused")).servers);
+    let mixed = grant_for("{op:'invoke',id:'js',uses:'js.run',with:{script:'return 1;',tools:[{server:'browser.edge',tool:'browser_snapshot'},{server:'fixture',tool:'echo'}]}}");
+    assert!(mixed.requires_confirmation(&config).unwrap());
+    let named = grant_for("{op:'invoke',id:'read',uses:'mcp.call',with:{server:'browser.edge',tool:'browser_snapshot'}}");
+    config.servers.get_mut("browser.edge").unwrap().command = "custom-server.exe".into();
+    assert!(named.requires_confirmation(&config).unwrap());
+}
+
+#[test]
+fn release_form_verifies_before_single_submit_and_never_retries_uncertain_results() {
+    for (name, expected_submits, succeeds) in [("success", 1, true), ("wrong-values", 0, false), ("uncertain-submit", 1, false), ("existing-branch", 0, false)] {
+        let marker_dir = tempfile::tempdir().unwrap();
+        let marker = marker_dir.path().join(name);
+        let mut config = test_config(&marker);
+        for tool in ["browser_navigate", "browser_evaluate", "browser_type", "browser_select_option", "browser_take_screenshot", "browser_click"] {
+            config.servers.get_mut("fixture").unwrap().tools.insert(tool.into(), extensions::WorkflowMcpTool { access: extensions::WorkflowToolAccess::Write });
+        }
+        let content = include_str!("../../docs/examples/release-form/create-release-submit.json5").replace("browser.edge", "fixture");
+        let definition = parse_workflow_json5(&content).unwrap();
+        let registry = make_registry(config, WorkflowExternalGrant::for_definition(&definition).unwrap());
+        let (dir, mut repo, service) = git_support::init_repo();
+        git_support::write_file(dir.path(), "README.md", "initial");
+        git_support::commit_all(&repo, "initial");
+        if name == "existing-branch" { repo.branch("release/test", &repo.head().unwrap().peel_to_commit().unwrap(), false).unwrap(); }
+        let options = WorkflowRunOptions { input_vars: BTreeMap::from([
+            ("base".into(), "main".into()), ("target".into(), "release/test".into()),
+            ("summary".into(), "第一行\n第二行".into()), ("environment".into(), "2".into()),
+            ("completionDate".into(), "2026-10-12".into()),
+        ]), ..Default::default() };
+        let outcome = WorkflowExecutor::with_actions(&service, &registry).run(&mut repo, &definition, options, |_| {});
+        assert_eq!(outcome.is_ok(), succeeds, "{name}: {outcome:?}");
+        let writes = std::fs::read_to_string(&marker).unwrap_or_default();
+        assert_eq!(writes.lines().filter(|line| *line == "submit").count(), expected_submits, "{name}");
+        assert!(repo.find_branch("release/test", git2::BranchType::Local).is_ok());
+    }
+}
+
+#[test]
+#[ignore = "需要本机 Edge、已安装的浏览器组件和联网；只提交 Selenium 公开测试表单"]
+fn release_form_real_edge_creates_submits_and_cleans_snapshots() {
+    let data_dir = std::path::PathBuf::from(std::env::var("KHASLANA_BROWSER_TEST_DATA_DIR").expect("指定已有浏览器组件的数据目录"));
+    assert!(browser_runtime::ready(&data_dir));
+    let config_dir = tempfile::tempdir().unwrap();
+    let config = load_mcp_config(config_dir.path()).unwrap();
+    let definition = parse_workflow_json5(include_str!("../../docs/examples/release-form/create-release-submit.json5")).unwrap();
+    let grant = WorkflowExternalGrant::for_definition(&definition).unwrap();
+    assert!(!grant.as_ref().unwrap().requires_confirmation(&config).unwrap());
+    let (dir, mut repo, service) = git_support::init_repo();
+    git_support::write_file(dir.path(), "README.md", "initial");
+    git_support::commit_all(&repo, "initial");
+    let options = WorkflowRunOptions { input_vars: BTreeMap::from([
+        ("base".into(), "main".into()), ("target".into(), "release/browser-test".into()),
+        ("summary".into(), "第一行测试\n第二行说明".into()), ("environment".into(), "2".into()),
+        ("completionDate".into(), "2026-10-12".into()),
+    ]), ..Default::default() };
+    let mut registry = WorkflowActionRegistry::default();
+    register_external_actions_with_ai(&mut registry, config, grant, None, None, Some(&data_dir)).unwrap();
+    WorkflowExecutor::with_actions(&service, &registry).run(&mut repo, &definition, options, |event| {
+        if let WorkflowProgressEvent::StepStarted { index, .. } = event { println!("开始步骤 {index}"); }
+    }).unwrap();
+    assert_eq!(repo.head().unwrap().shorthand().unwrap(), "release/browser-test");
+    assert!(registry.finish().is_empty());
+    let sessions = data_dir.join("workflow-browser-sessions");
+    for entry in std::fs::read_dir(sessions).unwrap().flatten() {
+        if !entry.path().join("snapshots.json").exists() {
+            assert!(std::fs::read_dir(entry.path().join("snapshots")).unwrap().next().is_none());
+            for output in std::fs::read_dir(entry.path().join("outputs")).unwrap().flatten() {
+                assert!(!output.file_name().to_string_lossy().ends_with(".yml"));
+            }
+        }
+    }
+}
+
 fn make_registry(config: WorkflowMcpConfig, grant: Option<WorkflowExternalGrant>) -> WorkflowActionRegistry {
     let mut registry = WorkflowActionRegistry::default();
     register_external_actions(&mut registry, config, grant).unwrap();

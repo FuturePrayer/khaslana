@@ -1295,6 +1295,9 @@ impl RepositoryView {
             UiEvent::WorkflowTemplatesLoaded { request_id, result } => {
                 self.apply_workflow_templates(request_id, result, cx);
             }
+            UiEvent::WorkflowBrowserCleanupFinished { warnings } => {
+                for warning in warnings { self.notify_warning(warning, cx); }
+            }
             UiEvent::WorkflowRemoteCatalogLoaded { request_id, result } => {
                 self.apply_remote_workflow_catalog(request_id, result, cx);
             }
@@ -1330,6 +1333,7 @@ impl RepositoryView {
                 message,
                 snapshot,
                 log,
+                cleanup_warnings,
             } => {
                 if !self.tab(identity.tab_id).is_some_and(|tab| identity.matches_tab(tab)) {
                     return;
@@ -1379,12 +1383,14 @@ impl RepositoryView {
                     self.load_branch_sync_status_for_tab(tab_id, path, remote, load_id, request_id);
                 }
                 self.notify_completion(&toast_message, cx);
+                for warning in cleanup_warnings { self.notify_warning(warning, cx); }
             }
-            UiEvent::WorkflowStopped { identity, error, cancelled, snapshot } => {
+            UiEvent::WorkflowStopped { identity, error, cancelled, snapshot, cleanup_warnings } => {
                 if !self.tab(identity.tab_id).is_some_and(|tab| identity.matches_tab(tab)) {
                     return;
                 }
                 let tab_id = identity.tab_id;
+                for warning in cleanup_warnings { self.notify_warning(warning, cx); }
                 let mut full_status_request = None;
                 let mut sync_request = None;
                 self.with_tab_context(tab_id, |this| {

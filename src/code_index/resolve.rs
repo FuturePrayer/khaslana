@@ -31,6 +31,7 @@ struct SymbolCandidate {
     private: bool,
     static_member: bool,
     file_path: Arc<str>,
+    java_parameters: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -83,12 +84,17 @@ impl Registry {
             let stem = node.file_path.rsplit_once('.').map_or(node.file_path.as_ref(), |(stem, _)| stem)
                 .replace(['/', '\\'], ".");
             let stem = stem.strip_suffix(".mod").unwrap_or(&stem);
-            let logical_container = if scope.is_empty() { stem.to_string() } else { format!("{stem}.{scope_name}") };
+            let logical_container = if super::graph::lang_of_rel_path(&node.file_path) == Some(super::LangId::Java) {
+                match properties["java_package"].as_str().filter(|package| !package.is_empty()) {
+                    Some(package) => format!("{package}.{scope_name}"), None => scope_name.clone(),
+                }
+            } else if scope.is_empty() { stem.to_string() } else { format!("{stem}.{scope_name}") };
             let candidate = SymbolCandidate { id: node.id,
                 qualified_name: Arc::clone(&node.qualified_name), scope, scope_name, logical_container,
                 language: super::graph::lang_of_rel_path(&node.file_path),
                 private, static_member,
                 file_path: Arc::clone(&node.file_path),
+                java_parameters: serde_json::from_value(properties["java_parameters"].clone()).ok(),
                 callable: matches!(node.label, NodeLabel::Function | NodeLabel::Method),
                 container: matches!(node.label, NodeLabel::Class | NodeLabel::Struct | NodeLabel::Interface | NodeLabel::Trait | NodeLabel::Enum) };
             if files.insert(Arc::clone(&node.file_path)) {
@@ -161,9 +167,25 @@ impl Registry {
     pub(super) fn resolve_prepared(
         &self, name: &str, calling_file: &str, imports: &ImportContext, qualifier: Option<&str>, scope: &[String],
     ) -> Option<ResolvedTarget> {
+        self.resolve_typed(name, calling_file, imports, qualifier, scope, None)
+    }
+
+    pub(super) fn resolve_typed<'a>(
+        &'a self, name: &str, calling_file: &str, imports: &ImportContext, qualifier: Option<&str>, scope: &[String],
+        call: Option<&super::java::JavaCall>,
+    ) -> Option<ResolvedTarget> {
         let bucket = self.name_index.get(name)?;
         let language = super::graph::lang_of_rel_path(calling_file);
         let java = language == Some(super::LangId::Java);
+        if java && call.is_some_and(|call| call.unknown_receiver) { return None; }
+        let qualifier = call.and_then(|call| call.receiver_type.as_deref()).or(qualifier);
+        let choose = |candidates: Vec<&'a SymbolCandidate>| {
+            // 重载筛选只能在同一声明容器内进行，不能用实参类型消除不同类的歧义。
+            if java && candidates.first().is_some_and(|first| candidates.iter().any(|candidate|
+                candidate.file_path != first.file_path || candidate.scope != first.scope)) { return None; }
+            if java { super::java::select(candidates, |candidate| candidate.java_parameters.as_ref(), call) }
+            else { unique(candidates.into_iter()) }
+        };
         let explicit_members = matches!(language,
             Some(super::LangId::Rust | super::LangId::Python | super::LangId::JavaScript | super::LangId::TypeScript | super::LangId::Tsx | super::LangId::Go));
         let compatible = |candidate: &&SymbolCandidate| same_language(language, candidate.language);
@@ -176,43 +198,44 @@ impl Registry {
             // this/self 没有当前类的定义时，不得跳到其他文件的同名类或唯一方法。
             if matches!(qualifier, "self" | "this" | "Self") {
                 if scope.is_empty() { return None; }
-                return unique(local.iter().map(|id| &bucket.candidates[*id]).filter(compatible)
-                    .filter(|candidate| candidate.scope == scope)).map(|candidate| target(candidate, 0.95, "scope"));
+                return choose(local.iter().map(|id| &bucket.candidates[*id]).filter(compatible)
+                    .filter(|candidate| candidate.scope == scope).collect()).map(|candidate| target(candidate, 0.95, "scope"));
             }
             let normalized = qualifier.replace("::", ".");
             let qualifier = normalized.trim_start_matches("crate.");
             let ids = bucket.qualified.get(qualifier.rsplit('.').next()?)?;
             let qualified = |candidate: &&SymbolCandidate| same_language(language, candidate.language)
                 && qualifier_matches(candidate, qualifier)
-                && (!java || candidate.static_member)
+                && (!java || candidate.static_member || call.is_some_and(|call| call.instance))
                 && (!java || candidate.file_path.as_ref() == calling_file || imports.files.contains(&candidate.file_path)
                     || std::path::Path::new(candidate.file_path.as_ref()).parent() == std::path::Path::new(calling_file).parent())
                 && (!java || !candidate.private || candidate.file_path.as_ref() == calling_file && candidate.scope == scope);
-            if let Some(candidate) = unique(local.iter().map(|id| &bucket.candidates[*id]).filter(qualified)) {
-                return Some(target(candidate, 0.90, "suffix"));
+            let candidates: Vec<_> = local.iter().map(|id| &bucket.candidates[*id]).filter(qualified).collect();
+            if !candidates.is_empty() {
+                return choose(candidates).map(|candidate| target(candidate, 0.90, "suffix"));
             }
-            return unique(ids.iter().map(|id| &bucket.candidates[*id]).filter(qualified))
+            return choose(ids.iter().map(|id| &bucket.candidates[*id]).filter(qualified).collect())
                 .map(|candidate| target(candidate, 0.90, "suffix"));
         }
         if !scope.is_empty() {
             let mut candidates = local.iter().map(|id| &bucket.candidates[*id]).filter(eligible)
                 .filter(|candidate| candidate.scope == scope).peekable();
             if candidates.peek().is_some() {
-                return unique(candidates).map(|candidate| target(candidate, 0.95, "scope"));
+                return choose(candidates.collect()).map(|candidate| target(candidate, 0.95, "scope"));
             }
         }
         let mut candidates = local.iter().map(|id| &bucket.candidates[*id]).filter(eligible).peekable();
         if candidates.peek().is_some() {
             // 当前层存在歧义就停止，不能把本地重载错误转移到导入的同名方法。
-            return unique(candidates).map(|candidate| target(candidate, 0.95, "local"));
+            return choose(candidates.collect()).map(|candidate| target(candidate, 0.95, "local"));
         }
         // 只遍历可达文件中的同名符号，避免常见名字扫全仓库。
-        if let Some(candidate) = unique(imports.files.iter().filter_map(|file| bucket.local.get(file.as_ref()))
+        if let Some(candidate) = choose(imports.files.iter().filter_map(|file| bucket.local.get(file.as_ref()))
             .flat_map(|ids| ids.iter().map(|id| &bucket.candidates[*id]))
             .filter(|candidate| same_language(language, candidate.language)
                 && if java { candidate.static_member && !candidate.private
                     && imports.static_members.get(&candidate.file_path).is_some_and(|members| members.contains(name) || members.contains("*"))
-                } else { eligible(candidate) })) {
+                } else { eligible(candidate) }).collect()) {
             return Some(target(candidate, 0.90, "import_map"));
         }
         // Java 裸方法只能来自当前类或已导入的静态成员；全仓库唯一不代表可达。

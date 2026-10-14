@@ -40,7 +40,7 @@ pub use storage::{
 pub use types::*;
 pub use workflow::{
     RemoteBranchGuardAction, WorkflowDefaults, WorkflowDefinition, WorkflowExecutor,
-    WorkflowInputDefinition, WorkflowPreview, WorkflowPreviewStep, WorkflowProgressEvent,
+    WorkflowInputDefinition, WorkflowInputKind, WorkflowInputOption, WorkflowPreview, WorkflowPreviewStep, WorkflowProgressEvent,
     WorkflowRunControl, WorkflowRunOptions, WorkflowRunResult, WorkflowSourceBranch, WorkflowStep,
     WorkflowAction, WorkflowActionPreview, WorkflowActionRegistry, WorkflowActionResult,
     parse_workflow_json5,

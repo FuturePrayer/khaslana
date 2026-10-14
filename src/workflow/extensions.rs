@@ -1,5 +1,5 @@
 //! v2 工作流的本地 MCP 与受限 JavaScript 宿主动作。
-//! 模板只能引用用户在数据目录中显式配置的服务和工具；每次运行还须取得授权令牌。
+//! 自定义服务需要本次运行确认；纯 JS 和客户端内置 Edge 自动准备授权令牌。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -21,6 +21,7 @@ use crate::ai::client::{AgentChatMessage, ChatClient, ToolSchema};
 use crate::proxy::NetworkProxySettings;
 use crate::{GitError, GitService, Result};
 use super::browser_runtime;
+use super::browser_artifacts::{BrowserArtifacts, BrowserCleanupWarnings};
 use super::{WorkflowAction, WorkflowActionPreview, WorkflowActionRegistry, WorkflowActionResult,
     WorkflowDefinition, WorkflowRunControl, WorkflowStep};
 
@@ -183,9 +184,23 @@ impl WorkflowExternalGrant {
         self.tools.iter().any(|(server, _)| config.servers.get(server)
             .is_some_and(|entry| entry.command == browser_runtime::COMMAND_MARKER))
     }
+
+    pub fn requires_confirmation(&self, config: &WorkflowMcpConfig) -> Result<bool> {
+        let mut confirmation = !self.skills.is_empty() && self.tools.is_empty();
+        for (server, tool) in &self.tools {
+            config.tool_access(server, tool)?;
+            confirmation |= !config.is_builtin_browser(server);
+        }
+        // 不调用 Edge 的独立 AI Skill 仍沿用原来的内容确认。
+        Ok(confirmation)
+    }
 }
 
 impl WorkflowMcpConfig {
+    fn is_builtin_browser(&self, server: &str) -> bool {
+        matches!(server, browser_runtime::SERVER_ID | browser_runtime::LEGACY_SERVER_ID) && self.servers.get(server)
+            .is_some_and(|entry| entry.command == browser_runtime::COMMAND_MARKER && entry.enabled)
+    }
     fn tool_access(&self, server: &str, tool: &str) -> Result<WorkflowToolAccess> {
         let entry = self.servers.get(server).ok_or_else(||
             GitError::Message(format!("MCP 服务未配置：{server}")))?;
@@ -261,6 +276,9 @@ fn read_mcp_config_file(data_dir: &Path) -> Result<WorkflowMcpConfig> {
 
 fn validate_custom_mcp_config(config: &WorkflowMcpConfig) -> Result<()> {
     for (name, server) in &config.servers {
+        if server.command == browser_runtime::COMMAND_MARKER {
+            return Err(GitError::Message("内置 Edge 启动标记不能配置为自定义 MCP 命令".into()));
+        }
         if name.trim().is_empty() || server.command.trim().is_empty()
             || (!server.auto_discover && server.tools.is_empty()) {
             return Err(GitError::Message(format!("MCP 服务 {name} 缺少命令或工具白名单")));
@@ -277,9 +295,30 @@ fn validate_custom_mcp_config(config: &WorkflowMcpConfig) -> Result<()> {
 
 pub fn builtin_browser_server() -> WorkflowMcpServer {
     let tools = [
+        ("browser_close", WorkflowToolAccess::Write),
+        ("browser_console_messages", WorkflowToolAccess::Read),
+        ("browser_drag", WorkflowToolAccess::Write),
+        ("browser_drop", WorkflowToolAccess::Write),
+        ("browser_emulate_media", WorkflowToolAccess::Write),
+        ("browser_evaluate", WorkflowToolAccess::Write),
+        ("browser_file_upload", WorkflowToolAccess::Write),
+        ("browser_fill_form", WorkflowToolAccess::Write),
+        ("browser_find", WorkflowToolAccess::Read),
+        ("browser_handle_dialog", WorkflowToolAccess::Write),
+        ("browser_hover", WorkflowToolAccess::Write),
         ("browser_navigate", WorkflowToolAccess::Write),
+        ("browser_navigate_back", WorkflowToolAccess::Write),
+        ("browser_network_request", WorkflowToolAccess::Read),
+        ("browser_network_requests", WorkflowToolAccess::Read),
+        ("browser_press_key", WorkflowToolAccess::Write),
+        ("browser_resize", WorkflowToolAccess::Write),
+        ("browser_run_code_unsafe", WorkflowToolAccess::Write),
+        ("browser_select_option", WorkflowToolAccess::Write),
         ("browser_snapshot", WorkflowToolAccess::Read),
+        ("browser_take_screenshot", WorkflowToolAccess::Read),
         ("browser_type", WorkflowToolAccess::Write),
+        ("browser_wait_for", WorkflowToolAccess::Write),
+        ("browser_tabs", WorkflowToolAccess::Write),
         ("browser_click", WorkflowToolAccess::Write),
     ].into_iter().map(|(name, access)| (name.into(), WorkflowMcpTool { access })).collect();
     WorkflowMcpServer { command: browser_runtime::COMMAND_MARKER.into(), args: Vec::new(), tools,
@@ -432,9 +471,23 @@ pub fn register_external_actions_with_ai(
     proxy_url: Option<String>,
     skill_data_dir: Option<&Path>,
 ) -> Result<()> {
+    register_external_actions_with_cleanup(registry, config, grant, ai_settings, proxy_url, skill_data_dir,
+        Arc::new(Mutex::new(Vec::new())))
+}
+
+pub fn register_external_actions_with_cleanup(
+    registry: &mut WorkflowActionRegistry,
+    config: WorkflowMcpConfig,
+    grant: Option<WorkflowExternalGrant>,
+    ai_settings: Option<AiProviderSettings>,
+    proxy_url: Option<String>,
+    skill_data_dir: Option<&Path>,
+    cleanup_warnings: BrowserCleanupWarnings,
+) -> Result<()> {
     let host = Arc::new(WorkflowExternalHost {
         config, grant, sessions: Mutex::new(BTreeMap::new()),
         data_dir: skill_data_dir.map(Path::to_path_buf),
+        cleanup_warnings,
     });
     registry.register("mcp.call", Arc::new(McpCallAction(host.clone())))?;
     registry.register("js.run", Arc::new(JsRunAction(host.clone())))?;
@@ -449,21 +502,34 @@ struct WorkflowExternalHost {
     grant: Option<WorkflowExternalGrant>,
     sessions: Mutex<BTreeMap<String, McpSession>>,
     data_dir: Option<std::path::PathBuf>,
+    cleanup_warnings: BrowserCleanupWarnings,
 }
 
 struct McpSession {
-    runtime: tokio::runtime::Runtime,
-    client: RunningService<RoleClient, ()>,
+    runtime: Option<tokio::runtime::Runtime>,
+    client: Option<RunningService<RoleClient, ()>>,
     tools: Vec<rmcp::model::Tool>,
+    artifacts: Option<BrowserArtifacts>,
 }
 
 impl Drop for McpSession {
     fn drop(&mut self) {
-        let _ = self.runtime.block_on(self.client.close_with_timeout(Duration::from_secs(4)));
+        if let Some(mut client) = self.client.take() {
+            let _ = self.runtime.as_ref().expect("MCP 运行时未关闭")
+                .block_on(client.close_with_timeout(Duration::from_secs(4)));
+            drop(client);
+        }
+        // timeout 后仍有 transport 任务时，先关闭运行时再清理，防止迟到写入。
+        if let Some(runtime) = self.runtime.take() { runtime.shutdown_timeout(Duration::from_secs(4)); }
+        self.artifacts.take();
     }
 }
 
 impl WorkflowExternalHost {
+    fn finish(&self) -> Vec<String> {
+        self.sessions.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        std::mem::take(&mut *self.cleanup_warnings.lock().unwrap_or_else(|p| p.into_inner()))
+    }
     fn check_tool(&self, server: &str, tool: &str) -> Result<&WorkflowMcpServer> {
         if !self.grant.as_ref().is_some_and(|grant| grant.permits_tool(server, tool)) {
             return Err(GitError::Message(format!("工作流尚未授权 MCP 工具：{server} / {tool}")));
@@ -474,6 +540,10 @@ impl WorkflowExternalHost {
 
     fn connect_session(&self, server: &str, config: &WorkflowMcpServer,
         control: &WorkflowRunControl, deadline: Instant) -> Result<McpSession> {
+        let artifacts = if self.config.is_builtin_browser(server) {
+            Some(BrowserArtifacts::new(self.data_dir.as_deref().ok_or_else(||
+                GitError::Message("无法定位 Edge 会话输出目录".into()))?, self.cleanup_warnings.clone())?)
+        } else { None };
         let (command_path, command_args) = if config.command == browser_runtime::COMMAND_MARKER {
             let data_dir = self.data_dir.as_deref().ok_or_else(||
                 GitError::Message("无法定位浏览器 MCP 运行组件目录".into()))?;
@@ -483,6 +553,9 @@ impl WorkflowExternalHost {
                     browser_runtime::direct_proxy_config(data_dir)?.to_string_lossy().into_owned()]);
             }
             args.extend(config.args.iter().cloned());
+            if let Some(artifacts) = &artifacts {
+                args.extend(["--output-dir".into(), artifacts.output_dir().to_string_lossy().into_owned()]);
+            }
             (path, args)
         } else {
             (std::path::PathBuf::from(&config.command), config.args.clone())
@@ -512,7 +585,7 @@ impl WorkflowExternalHost {
             };
             Ok((client, tools))
         })?;
-        Ok(McpSession { runtime, client, tools })
+        Ok(McpSession { runtime: Some(runtime), client: Some(client), tools, artifacts })
     }
 
     fn skill_tool_catalog(&self, allowed: &BTreeSet<(String, String)>,
@@ -556,7 +629,7 @@ impl WorkflowExternalHost {
         if argument_bytes.len() > ARGUMENT_MAX_BYTES {
             return Err(GitError::Message("MCP 工具参数超过 256 KiB".into()));
         }
-        let Value::Object(arguments) = arguments else {
+        let Value::Object(mut arguments) = arguments else {
             return Err(GitError::Message("MCP 工具参数必须是对象".into()));
         };
         let mut sessions = self.sessions.lock().unwrap();
@@ -565,8 +638,12 @@ impl WorkflowExternalHost {
             sessions.insert(server.to_owned(), session);
         }
         let session = sessions.get_mut(server).expect("MCP 会话已创建");
-        let outcome = session.runtime.block_on(async {
-            let client = &session.client;
+        if let Some(artifacts) = &mut session.artifacts { artifacts.prepare(tool, &mut arguments)?; }
+        if serde_json::to_vec(&arguments).map_err(json_encode_error)?.len() > ARGUMENT_MAX_BYTES {
+            return Err(GitError::Message("MCP 工具参数超过 256 KiB".into()));
+        }
+        let outcome = session.runtime.as_ref().expect("MCP 运行时未关闭").block_on(async {
+            let client = session.client.as_ref().expect("MCP 会话未关闭");
             let tools = &session.tools;
             let selected = tools.iter().find(|entry| entry.name == tool)
                 .ok_or_else(|| GitError::Message(format!("MCP 服务 {server} 未提供工具 {tool}")))?;
@@ -578,6 +655,9 @@ impl WorkflowExternalHost {
                 client.call_tool(CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments)),
                 control, deadline, "MCP 工具调用",
             ).await?;
+            if let Some(artifacts) = &mut session.artifacts {
+                artifacts.record_result(&serde_json::to_value(&result.content).map_err(json_encode_error)?)?;
+            }
             if result.is_error == Some(true) {
                 let detail = serde_json::to_value(&result.content).ok()
                     .and_then(|value| value.as_array().and_then(|parts| parts.iter()
@@ -913,15 +993,16 @@ pub fn discover_skill_packages(data_dir: &Path) -> Result<Vec<(String, String)>>
 struct McpCallAction(Arc<WorkflowExternalHost>);
 
 impl WorkflowAction for McpCallAction {
+    fn finish(&self) -> Vec<String> { self.0.finish() }
     fn preview(&self, _service: &GitService, _repo: &Repository,
         arguments: &Value) -> Result<WorkflowActionPreview> {
         let (server, tool, _) = mcp_arguments(arguments)?;
         let access = self.0.config.tool_access(server, tool)?;
         Ok(WorkflowActionPreview {
             summary: format!("MCP 工具：{server} / {tool}"),
-            details: vec![format!("权限：{}；运行前需确认", match access {
+            details: vec![format!("权限：{}；{}", match access {
                 WorkflowToolAccess::Read => "读取", WorkflowToolAccess::Write => "写入",
-            })],
+            }, if self.0.config.is_builtin_browser(server) { "内置 Edge 无需确认" } else { "运行前需确认" })],
             output: None,
         })
     }
@@ -946,6 +1027,7 @@ impl WorkflowAction for McpCallAction {
 struct JsRunAction(Arc<WorkflowExternalHost>);
 
 impl WorkflowAction for JsRunAction {
+    fn finish(&self) -> Vec<String> { self.0.finish() }
     fn preview(&self, _service: &GitService, _repo: &Repository,
         arguments: &Value) -> Result<WorkflowActionPreview> {
         let (_, tools) = js_arguments(arguments)?;
@@ -954,7 +1036,8 @@ impl WorkflowAction for JsRunAction {
         }
         Ok(WorkflowActionPreview {
             summary: "执行 JavaScript 规则".into(),
-            details: vec![format!("可调用 {} 个已声明 MCP 工具；运行前需确认", tools.len())],
+            details: vec![format!("可调用 {} 个已声明 MCP 工具；{}", tools.len(),
+                if tools.iter().all(|(server, _)| self.0.config.is_builtin_browser(server)) { "无需确认" } else { "运行前需确认" })],
             output: None,
         })
     }
@@ -1086,6 +1169,7 @@ impl SkillRunAction {
 }
 
 impl WorkflowAction for SkillRunAction {
+    fn finish(&self) -> Vec<String> { self.host.finish() }
     fn preview(&self, _service: &GitService, _repo: &Repository,
         arguments: &Value) -> Result<WorkflowActionPreview> {
         let (name, _, tools) = skill_arguments(arguments)?;
@@ -1101,7 +1185,8 @@ impl WorkflowAction for SkillRunAction {
         if !self.ai_settings.as_ref().is_some_and(AiProviderSettings::is_usable) {
             return Err(GitError::Message("运行 Skill 前请先启用并配置 AI 供应商".into()));
         }
-        let mut details = vec![format!("最多 {SKILL_MAX_ROUNDS} 轮、{SKILL_MAX_CALLS} 次工具调用；允许 {} 个 MCP 工具；运行前需确认", tools.len())];
+        let mut details = vec![format!("最多 {SKILL_MAX_ROUNDS} 轮、{SKILL_MAX_CALLS} 次工具调用；允许 {} 个 MCP 工具；{}", tools.len(),
+            if !tools.is_empty() && tools.iter().all(|(server, _)| self.host.config.is_builtin_browser(server)) { "内置 Edge 无需确认" } else { "运行前需确认" })];
         if let Some(guard) = guard {
             details.push(format!("页面守卫：{}", guard.url));
         }

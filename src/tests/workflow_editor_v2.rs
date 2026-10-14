@@ -1,5 +1,19 @@
 use super::*;
 
+#[test]
+fn all_form_types_roundtrip_through_both_editors_and_ai_fill() {
+    for version in [1, 2] {
+        let source = format!("{{version:{version},inputs:{{text:{{label:'主题'}},summary:{{type:'textarea',default:'  第一行\\n第二行  '}},env:{{type:'select',options:[{{label:'验证环境',value:'uat'}},{{label:'生产环境',value:'prod'}}]}},date:{{type:'date',default:'${{date:%Y-%m-%d}}'}}}},steps:[{{op:'ensureClean'}}]}}");
+        roundtrip(&source);
+        let original = parse_workflow_json5(&source).unwrap();
+        let mut ai = WorkflowEditorData { version, ..Default::default() };
+        apply_ai_generated_to_editor_data(&mut ai, &source).unwrap();
+        assert_eq!(build_workflow_definition(&ai).unwrap().inputs, original.inputs);
+        ai.inputs.iter_mut().find(|input| input.key == "summary").unwrap().default_value = " \n\n ".into();
+        assert_eq!(build_workflow_definition(&ai).unwrap().inputs["summary"].default.as_deref(), Some(" \n\n "));
+    }
+}
+
 fn roundtrip(text: &str) -> WorkflowDefinition {
     let original = parse_workflow_json5(text).unwrap();
     let editor = workflow_editor_data_from_definition(&original, "demo").unwrap();

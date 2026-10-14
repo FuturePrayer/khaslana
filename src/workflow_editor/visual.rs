@@ -29,7 +29,7 @@ pub(super) fn badge(label: impl Into<gpui::SharedString>) -> gpui::Div {
 }
 
 pub(super) fn icon_button(id: impl Into<gpui::ElementId>, label: &str, name: IconName, enabled: bool) -> Button {
-    Button::new(id).ghost().compact().icon(icon(name, ui_theme::WORKFLOW_META))
+    Button::new(id).ghost().compact().icon(icon(name, ui_theme::CONTENT_SECONDARY))
         .tooltip(label.to_string()).accessibility_label(label.to_string()).disabled(!enabled)
         .w(px(28.0)).h(px(28.0)).min_w(px(0.0)).rounded(px(ui_theme::RADIUS_XS))
 }
@@ -38,8 +38,8 @@ pub(super) fn menu_button(id: impl Into<gpui::ElementId>, label: impl Into<gpui:
     // 下拉需要原生 label 测量文字，宽度由外层字段容器分配，不能在弹层包装内 flex_1。
     Button::new(id).small().label(label).dropdown_caret(true).disabled(!enabled)
         .w_full().h(px(36.0)).min_w(px(0.0)).px_3()
-        .bg(rgb(ui_theme::WB_PANEL)).text_color(rgb(ui_theme::CONTENT_PRIMARY))
-        .border_1().border_color(rgb(ui_theme::WORKFLOW_OUTLINE)).rounded(px(ui_theme::RADIUS_XS))
+        .bg(rgb(ui_theme::WB_INPUT_SURFACE)).text_color(rgb(ui_theme::CONTENT_PRIMARY))
+        .border_1().border_color(rgb(ui_theme::BORDER_MUTED)).rounded(px(ui_theme::RADIUS_SM))
 }
 
 pub(super) fn step_icon(step: &WorkflowEditorStepData) -> (IconName, &'static str) {
@@ -80,8 +80,14 @@ impl RepositoryView {
     pub(super) fn document_input(&self, id: WorkflowEditorFieldId, _window: &Window, _cx: &mut Context<Self>) -> gpui::AnyElement {
         let field_id = FieldId::WorkflowEditor(id);
         let blocked = self.active_operation_blocker_message().is_some() && !self.operation_blocker_allows_text_field(field_id);
-        let height = if matches!(id, WorkflowEditorFieldId::StepParam { slot: WorkflowStepSlot::Task, .. }) { 72.0 } else { 128.0 };
-        self.kit_field(field_id).map(|field| field.render_workflow_document(height, blocked))
+        let code = matches!(id, WorkflowEditorFieldId::StepParam { slot: WorkflowStepSlot::Script | WorkflowStepSlot::JsInput | WorkflowStepSlot::Arguments | WorkflowStepSlot::ToolArguments | WorkflowStepSlot::Tools, .. });
+        let height = match id {
+            WorkflowEditorFieldId::StepParam { slot: WorkflowStepSlot::Script, .. } => 200.0,
+            WorkflowEditorFieldId::StepParam { slot: WorkflowStepSlot::Task, .. } => 88.0,
+            WorkflowEditorFieldId::InputPart { part: WorkflowInputPart::Default, .. } => 96.0,
+            _ => 128.0,
+        };
+        self.kit_field(field_id).map(|field| field.render_workflow_document(height, code, blocked))
             .unwrap_or_else(|| div().into_any_element())
     }
 
@@ -214,9 +220,10 @@ impl RepositoryView {
         let content = column().gap_2()
             .child(hint("仅在步骤需要外部能力时添加。Skill 由 AI 按任务调用；JavaScript 在脚本中通过 mcp.call(...) 调用。"))
             .child(div().flex().items_start().gap_3().child(text("允许调用").w(px(108.0)).pt_2().flex_none())
-                .child(measure_menu_field(div().relative().flex().flex_1().min_w_0().items_center().gap_1().rounded(px(ui_theme::RADIUS_XS))
+                .child(measure_menu_field(div().relative().flex().flex_1().min_w_0().items_center().gap_1()
+                    .bg(rgb(ui_theme::WB_INPUT_SURFACE)).rounded(px(ui_theme::RADIUS_SM))
                     // 边框独立绘制，箭头触发器的右边界与整个字段相同。
-                    .child(div().absolute().inset_0().border_1().border_color(rgb(ui_theme::WORKFLOW_OUTLINE)).rounded(px(ui_theme::RADIUS_XS)))
+                    .child(div().absolute().inset_0().border_1().border_color(rgb(ui_theme::BORDER_MUTED)).rounded(px(ui_theme::RADIUS_SM)))
                     .child(chips.pl_1().py_1()).child(div().w(px(36.0)).h(px(36.0)).flex_none().child(menu_button)), tool_measure)));
         column().child(Collapsible::new().open(expanded).gap_2().child(toggle).content(content))
     }
@@ -268,7 +275,8 @@ impl RepositoryView {
     pub(super) fn document_variable_card(&self, id: String, name: String, description: String, default: Option<String>, cx: &Context<Self>) -> gpui::Div {
         let copied = name.clone();
         card().border_0().gap_1().bg(rgb(ui_theme::WORKFLOW_SURFACE))
-            .child(div().flex().items_center().gap_1().child(text(name.clone()).font_weight(gpui::FontWeight::SEMIBOLD).flex_1().min_w_0())
+            .child(div().flex().items_center().gap_1().child(text(name.clone()).font_family("Consolas").text_size(px(13.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD).flex_1().min_w_0())
                 .child(icon_button(format!("workflow-v2-variable-copy-{id}"), &format!("复制 {name}"), IconName::Copy, true)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(copied.clone()));

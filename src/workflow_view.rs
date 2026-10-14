@@ -7,6 +7,9 @@ use std::sync::Arc;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::SystemTime;
 
+mod inputs;
+use inputs::WorkflowInputControl;
+
 use crate::ui::theme::rgb;
 use chrono::{DateTime, Local};
 use directories::BaseDirs;
@@ -25,7 +28,7 @@ use khaslana::workflow::remote_templates::{
     MANAGED_TEMPLATE_DIR, RemoteTemplateEntry, download_cnb_template, list_cnb_templates,
 };
 use khaslana::workflow::extensions::{
-    WorkflowExternalGrant, load_mcp_config, register_external_actions_with_ai,
+    WorkflowExternalGrant, load_mcp_config, register_external_actions_with_ai, register_external_actions_with_cleanup,
 };
 use khaslana::workflow::browser_runtime;
 
@@ -53,6 +56,8 @@ pub(crate) struct WorkflowInputFieldState {
     label: String,
     description: Option<String>,
     required: bool,
+    pub(crate) definition: WorkflowInputDefinition,
+    control: Option<WorkflowInputControl>,
     /// 持业务真值的文本框（Kit 输入宿主经 `try_field` 读写这里）。
     pub(crate) field: TextFieldState,
 }
@@ -302,6 +307,8 @@ impl WorkflowInputFieldState {
                 .filter(|description| !description.is_empty())
                 .map(ToOwned::to_owned),
             required: input.required,
+            definition: input.clone(),
+            control: None,
             field,
         }
     }
@@ -318,6 +325,10 @@ impl RepositoryView {
         self.status = "正在刷新工作流模板".to_string();
         let tx = self.tx.clone();
         self.tasks.spawn(TaskKind::Short, move || {
+            if let Some(data_dir) = khaslana::storage::active_data_dir() {
+                let warnings = khaslana::workflow::browser_artifacts::retry_browser_cleanup(&data_dir);
+                if !warnings.is_empty() { send_ui_event(&tx, UiEvent::WorkflowBrowserCleanupFinished { warnings }); }
+            }
             let result = load_workflow_templates();
             send_ui_event(&tx, UiEvent::WorkflowTemplatesLoaded { request_id, result });
         });
@@ -625,6 +636,12 @@ impl RepositoryView {
             self.last_error = Some("已有操作正在运行".into());
             return;
         }
+        for input in &self.workflow_state.inputs {
+            if let Err(error) = input.definition.validate_value(&input.key, &input.field.value) {
+                self.last_error = Some(error.to_string());
+                return;
+            }
+        }
         let external_grant = match WorkflowExternalGrant::for_definition(&definition) {
             Ok(grant) => grant,
             Err(err) => { self.last_error = Some(err.to_string()); return; }
@@ -665,19 +682,27 @@ impl RepositoryView {
                         Ok(lines) => lines,
                         Err(err) => { self.last_error = Some(err.to_string()); return; }
                     };
-                    self.workflow_state.pending_external = Some(WorkflowPendingExternal {
+                    let confirmation = match grant.requires_confirmation(&config) {
+                        Ok(confirmation) => confirmation,
+                        Err(error) => { self.last_error = Some(error.to_string()); return; }
+                    };
+                    let prepared = WorkflowPendingExternal {
                         tab_id,
                         definition_generation: self.workflow_state.definition_generation,
                         config,
                         grant,
-                    });
-                    self.active_dialog = Some(DialogState::ConfirmWorkflowExternal {
-                        tab_id,
-                        definition_generation: self.workflow_state.definition_generation,
-                        permissions,
-                    });
-                    self.last_error = None;
-                    return;
+                    };
+                    if confirmation {
+                        self.workflow_state.pending_external = Some(prepared);
+                        self.active_dialog = Some(DialogState::ConfirmWorkflowExternal {
+                            tab_id,
+                            definition_generation: self.workflow_state.definition_generation,
+                            permissions,
+                        });
+                        self.last_error = None;
+                        return;
+                    }
+                    Some(prepared)
                 }
             }
         } else { None };
@@ -708,15 +733,16 @@ impl RepositoryView {
             this.last_error = None;
         });
         self.tasks.spawn(if external.is_some() { TaskKind::External } else { TaskKind::Long }, move || {
+            let cleanup_report = Arc::new(std::sync::Mutex::new(Vec::new()));
             let result = catch_unwind(AssertUnwindSafe(
                 || -> khaslana::Result<(RepositorySnapshot, Vec<WorkflowLogEntry>, String)> {
                     let mut repo = Repository::open(&repo_path)?;
                     let mut log: Vec<WorkflowLogEntry> = Vec::new();
                     let mut registry = khaslana::WorkflowActionRegistry::default();
                     if let Some(external) = external {
-                        register_external_actions_with_ai(&mut registry, external.config,
+                        register_external_actions_with_cleanup(&mut registry, external.config,
                             Some(external.grant), Some(ai_settings), ai_proxy,
-                            external_data_dir.as_deref())?;
+                            external_data_dir.as_deref(), cleanup_report.clone())?;
                     }
                     let result = WorkflowExecutor::with_actions(&service, &registry).run_with_control(
                         &mut repo, &definition, options, &control,
@@ -733,6 +759,7 @@ impl RepositoryView {
                     Ok((result.snapshot, log, message))
                 },
             ));
+            let cleanup_warnings = std::mem::take(&mut *cleanup_report.lock().unwrap_or_else(|p| p.into_inner()));
             match result {
                 Ok(Ok((snapshot, log, message))) => {
                     send_ui_event(
@@ -742,6 +769,7 @@ impl RepositoryView {
                             message,
                             snapshot,
                             log,
+                            cleanup_warnings,
                         },
                     );
                 }
@@ -767,6 +795,7 @@ impl RepositoryView {
                         error,
                         cancelled,
                         snapshot,
+                        cleanup_warnings,
                     });
                 }
             }
@@ -848,7 +877,7 @@ impl RepositoryView {
     fn workflow_missing_required_input(inputs: &[WorkflowInputFieldState]) -> bool {
         inputs
             .iter()
-            .any(|input| input.required && input.field.value.trim().is_empty())
+            .any(|input| input.definition.validate_value(&input.key, &input.field.value).is_err())
     }
 
     /// 工作流快捷键触发入口：按文件名解析模板 → 重读磁盘最新内容（模板被
@@ -2064,7 +2093,10 @@ impl RepositoryView {
                                         )
                                     }),
                             )
-                            .child(self.input(FieldId::WorkflowInput(index), false, window, cx))
+                            .child(self.render_workflow_input_control(index, window, cx))
+                            .when_some(input.definition.validate_value(&input.key, &input.field.value).err(), |this, error| {
+                                this.child(div().text_size(px(11.0)).text_color(rgb(ui_theme::DESTRUCTIVE)).child(error.to_string()))
+                            })
                             .when_some(input.description.clone(), |this, description| {
                                 this.child(
                                     div()

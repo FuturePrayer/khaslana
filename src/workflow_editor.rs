@@ -23,10 +23,11 @@ use std::path::{Path, PathBuf};
 mod v2;
 mod document;
 mod visual;
+mod inputs;
 
 use gpui::{Context, IntoElement, Window, div, prelude::*, px};
 use khaslana::{
-    RemoteBranchGuardAction, WorkflowDefinition, WorkflowInputDefinition, WorkflowStep,
+    RemoteBranchGuardAction, WorkflowDefinition, WorkflowInputDefinition, WorkflowInputKind, WorkflowInputOption, WorkflowStep,
     parse_workflow_json5,
 };
 
@@ -77,6 +78,8 @@ pub(crate) enum WorkflowInputPart {
     Description,
     /// 默认值（default）。
     Default,
+    OptionLabel(usize),
+    OptionValue(usize),
 }
 
 /// 步骤文本参数槽。槽跨步骤类型复用：切换步骤类型时同槽位值保留。
@@ -494,6 +497,8 @@ impl WorkflowEditorStepData {
 /// 输入变量编辑行数据。
 #[derive(Clone, Debug)]
 pub(crate) struct WorkflowEditorInputRowData {
+    pub(crate) kind: WorkflowInputKind,
+    pub(crate) options: Vec<WorkflowInputOption>,
     pub(crate) key: String,
     pub(crate) label: String,
     /// 运行页输入框下方的说明文字（领域层 `description` 字段）。
@@ -681,6 +686,8 @@ pub(crate) fn workflow_editor_data_from_definition(
         .inputs
         .iter()
         .map(|(key, input)| WorkflowEditorInputRowData {
+            kind: input.kind,
+            options: input.options.clone(),
             key: key.clone(),
             label: optional(&input.label),
             description: optional(&input.description),
@@ -854,10 +861,12 @@ pub(crate) fn build_workflow_definition(
         }
         let label = input.label.trim();
         let description = input.description.trim();
-        let default = input.default_value.trim();
+        let default = if input.kind == WorkflowInputKind::Textarea { input.default_value.as_str() } else { input.default_value.trim() };
         inputs.insert(
             key.to_string(),
             WorkflowInputDefinition {
+                kind: input.kind,
+                options: if input.kind == WorkflowInputKind::Select { input.options.clone() } else { Vec::new() },
                 label: (!label.is_empty()).then(|| label.to_string()),
                 description: (!description.is_empty()).then(|| description.to_string()),
                 default: (!default.is_empty()).then(|| default.to_string()),
@@ -894,9 +903,9 @@ pub(crate) fn build_workflow_definition(
         vars,
         steps,
     };
+    let serialized = json5::to_string(&definition).map_err(|error| error.to_string())?;
+    parse_workflow_json5(&serialized).map_err(|error| error.to_string())?;
     if data.version == 2 {
-        let serialized = json5::to_string(&definition).map_err(|error| error.to_string())?;
-        parse_workflow_json5(&serialized).map_err(|error| error.to_string())?;
         khaslana::workflow::extensions::WorkflowExternalGrant::for_definition(&definition)
             .map_err(|error| error.to_string())?;
     }
@@ -1021,6 +1030,8 @@ impl WorkflowEditorPreset {
                 data.name = "新建功能分支并推送".to_string();
                 data.file_name = "feature-branch".to_string();
                 data.inputs = vec![WorkflowEditorInputRowData {
+                    kind: WorkflowInputKind::Text,
+                    options: Vec::new(),
                     key: "target".to_string(),
                     label: "新分支名".to_string(),
                     description: String::new(),
@@ -1044,6 +1055,8 @@ impl WorkflowEditorPreset {
                 data.name = "合并分支并推送".to_string();
                 data.file_name = "merge-and-push".to_string();
                 data.inputs = vec![WorkflowEditorInputRowData {
+                    kind: WorkflowInputKind::Text,
+                    options: Vec::new(),
                     key: "source".to_string(),
                     label: "要合并的分支".to_string(),
                     description: String::new(),
@@ -1292,6 +1305,8 @@ pub(crate) struct WorkflowEditorInputRowState {
     pub(crate) label_field: Option<TextFieldState>,
     pub(crate) description_field: Option<TextFieldState>,
     pub(crate) default_field: Option<TextFieldState>,
+    pub(crate) option_fields: Vec<(TextFieldState, TextFieldState)>,
+    pub(crate) kind_control: Option<gpui::Entity<gpui_kit::component::select::SelectState<Vec<String>>>>,
 }
 
 pub(crate) struct WorkflowEditorVarRowState {
@@ -1354,6 +1369,8 @@ impl WorkflowEditorState {
                 label_field: None,
                 description_field: None,
                 default_field: None,
+                option_fields: Vec::new(),
+                kind_control: None,
             });
         self.var_fields
             .resize_with(self.data.vars.len(), || WorkflowEditorVarRowState {
@@ -1411,6 +1428,10 @@ impl WorkflowEditorState {
             if let Some(field) = &row_state.default_field {
                 row.default_value = field.value.clone();
             }
+            for (option, (label, value)) in row.options.iter_mut().zip(&row_state.option_fields) {
+                option.label = label.value.clone();
+                option.value = value.value.clone();
+            }
         }
         for (index, row_state) in self.var_fields.iter().enumerate() {
             let Some(row) = self.data.vars.get_mut(index) else {
@@ -1453,8 +1474,9 @@ impl RepositoryView {
         }
         self.refresh_ai_extensions();
         self.pending_workflow_edit = None;
+        // V2 是主页面；只有 V1 向导占用模态弹窗，避免锁住导航与工具栏。
+        self.active_dialog = (editor.data.version != 2).then_some(crate::DialogState::WorkflowEditor);
         self.workflow_editor = Some(editor);
-        self.active_dialog = Some(crate::DialogState::WorkflowEditor);
         self.last_error = None;
         cx.notify();
     }
@@ -1719,8 +1741,15 @@ impl RepositoryView {
         if self.ai_thinking_overlay.is_some() { return false; }
         self.workflow_editor
             .as_ref()
-            .is_some_and(|state| state.kind_menu_open.is_some() || state.guard_menu_open.is_some()
-                || (state.data.version == 2 && state.step_picker_open))
+            .is_some_and(|state| {
+                if state.data.version == 2 {
+                    // 页面隐藏或被真正的弹窗覆盖时，Esc 不应关闭下层步骤选择器。
+                    return self.workflow_document_editor_visible() && state.step_picker_open
+                        && self.active_dialog.is_none()
+                        && self.top_overlay_kind() == crate::TopOverlayKind::Dialog;
+                }
+                state.kind_menu_open.is_some() || state.guard_menu_open.is_some()
+            })
     }
 
     /// 关闭编辑器的全部下拉菜单；返回是否有菜单被关闭（决定是否 notify）。
@@ -1797,6 +1826,8 @@ impl RepositoryView {
     pub(crate) fn workflow_editor_add_input_row(&mut self) {
         if let Some(state) = self.workflow_editor.as_mut() {
             state.data.inputs.push(WorkflowEditorInputRowData {
+                kind: WorkflowInputKind::Text,
+                options: Vec::new(),
                 key: String::new(),
                 label: String::new(),
                 description: String::new(),
@@ -1815,15 +1846,6 @@ impl RepositoryView {
                 if index < state.input_fields.len() {
                     state.input_fields.remove(index);
                 }
-            }
-        }
-    }
-
-    /// 切换第 index 条输入变量的必填开关。
-    pub(crate) fn workflow_editor_toggle_input_required(&mut self, index: usize) {
-        if let Some(state) = self.workflow_editor.as_mut() {
-            if let Some(row) = state.data.inputs.get_mut(index) {
-                row.required = !row.required;
             }
         }
     }
@@ -1893,6 +1915,11 @@ impl RepositoryView {
                     row_state.default_field =
                         Some(TextFieldState::new(cx, "默认值").with_value(&row.default_value));
                 }
+                while row_state.option_fields.len() < row.options.len() {
+                    let option = &row.options[row_state.option_fields.len()];
+                    row_state.option_fields.push((TextFieldState::new(cx, "显示名称").with_value(&option.label),
+                        TextFieldState::new(cx, "实际值").with_value(&option.value)));
+                }
             }
             let vars = state.data.vars.clone();
             for (index, row) in vars.iter().enumerate() {
@@ -1934,6 +1961,8 @@ impl RepositoryView {
                     WorkflowInputPart::Label => row_state.label_field.as_ref()?,
                     WorkflowInputPart::Description => row_state.description_field.as_ref()?,
                     WorkflowInputPart::Default => row_state.default_field.as_ref()?,
+                    WorkflowInputPart::OptionLabel(option) => &row_state.option_fields.get(option)?.0,
+                    WorkflowInputPart::OptionValue(option) => &row_state.option_fields.get(option)?.1,
                 }
             }
             WorkflowEditorFieldId::VarPart { index, key } => {
@@ -1970,6 +1999,8 @@ impl RepositoryView {
                     WorkflowInputPart::Label => row_state.label_field.as_mut(),
                     WorkflowInputPart::Description => row_state.description_field.as_mut(),
                     WorkflowInputPart::Default => row_state.default_field.as_mut(),
+                    WorkflowInputPart::OptionLabel(option) => row_state.option_fields.get_mut(option).map(|fields| &mut fields.0),
+                    WorkflowInputPart::OptionValue(option) => row_state.option_fields.get_mut(option).map(|fields| &mut fields.1),
                 }
             }
             WorkflowEditorFieldId::VarPart { index, key } => {
@@ -2018,6 +2049,15 @@ impl RepositoryView {
                         index,
                         part,
                     }));
+                }
+            }
+        }
+        for (index, row_state) in state.input_fields.iter().enumerate() {
+            for (option, (label, value)) in row_state.option_fields.iter().enumerate() {
+                for (part, field) in [(WorkflowInputPart::OptionLabel(option), label), (WorkflowInputPart::OptionValue(option), value)] {
+                    if field.focus.is_focused(window) {
+                        return Some(FieldId::WorkflowEditor(WorkflowEditorFieldId::InputPart { index, part }));
+                    }
                 }
             }
         }
@@ -2611,15 +2651,12 @@ impl RepositoryView {
             _ => self.render_wizard_step_review(),
         };
 
-        div()
+        crate::ui::components::floating_panel()
             .id("workflow-editor-panel")
             .w(panel_width)
             .max_h(panel_max_height)
-            .rounded_sm()
             .border_1()
             .border_color(rgb(ui_theme::BORDER_MUTED))
-            .bg(rgb(ui_theme::WB_PANEL))
-            .shadow_lg()
             .flex()
             .flex_col()
             .occlude()
@@ -2674,7 +2711,7 @@ impl RepositoryView {
                         "以 V2 编辑副本", !editor.ai_loading,
                         |this, _, cx| this.workflow_editor_copy_as_v2(cx), cx,
                     )))
-                    .child(self.primary_button(
+                    .child(self.button(
                         "关闭",
                         true,
                         |this, _, _| this.close_workflow_editor(),
@@ -2701,6 +2738,7 @@ impl RepositoryView {
                     .flex_1()
                     .min_h(px(0.0))
                     .p_4()
+                    .bg(rgb(ui_theme::WORKFLOW_SURFACE))
                     .overflow_y_scroll()
                     .track_scroll(&scroll_handle)
                     .child(content)
@@ -2719,10 +2757,11 @@ impl RepositoryView {
                         .px_3()
                         .py_2()
                         .border_1()
-                        .border_color(rgb(ui_theme::DESTRUCTIVE))
+                        .border_color(rgb(ui_theme::FEEDBACK_ERROR_BORDER))
+                        .bg(rgb(ui_theme::FEEDBACK_ERROR_BG))
                         .rounded(px(ui_theme::RADIUS_XS))
                         .text_size(px(12.0))
-                        .text_color(rgb(ui_theme::DESTRUCTIVE))
+                        .text_color(rgb(ui_theme::FEEDBACK_ERROR_TEXT))
                         .child(error),
                 )
             })
@@ -2921,9 +2960,8 @@ impl RepositoryView {
                                         false => "用一句话描述你想要的工作流，AI 生成步骤与变量并自动填入后续各步，你只需检查和微调。",
                                     }),
                             )
-                            .child(self.input(
-                                FieldId::WorkflowEditor(WorkflowEditorFieldId::AiDescription),
-                                false,
+                            .child(self.document_input(
+                                WorkflowEditorFieldId::AiDescription,
                                 window,
                                 cx,
                             ))
@@ -2942,9 +2980,8 @@ impl RepositoryView {
                             .flex_col()
                             .gap_1()
                             .child(workflow_editor_field_label("模板名称（可选）", false))
-                            .child(self.input(
-                                FieldId::WorkflowEditor(WorkflowEditorFieldId::Name),
-                                false,
+                            .child(self.document_input(
+                                WorkflowEditorFieldId::Name,
                                 window,
                                 cx,
                             )),
@@ -2955,9 +2992,8 @@ impl RepositoryView {
                             .flex_col()
                             .gap_1()
                             .child(workflow_editor_field_label("保存文件名（.json5）", true))
-                            .child(self.input(
-                                FieldId::WorkflowEditor(WorkflowEditorFieldId::FileName),
-                                false,
+                            .child(self.document_input(
+                                WorkflowEditorFieldId::FileName,
                                 window,
                                 cx,
                             )),
@@ -3079,9 +3115,8 @@ impl RepositoryView {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(div().w(px(200.0)).child(self.input(
-                            FieldId::WorkflowEditor(WorkflowEditorFieldId::PickerSearch),
-                            true,
+                        .child(div().w(px(200.0)).child(self.document_input(
+                            WorkflowEditorFieldId::PickerSearch,
                             window,
                             cx,
                         )))
@@ -3351,12 +3386,11 @@ impl RepositoryView {
                         slot.label(),
                         kind.slot_required(*slot),
                     ))
-                    .child(self.input(
-                        FieldId::WorkflowEditor(WorkflowEditorFieldId::StepParam {
+                    .child(self.document_input(
+                        WorkflowEditorFieldId::StepParam {
                             step: index,
                             slot: *slot,
-                        }),
-                        false,
+                        },
                         window,
                         cx,
                     )),
@@ -3723,11 +3757,12 @@ impl RepositoryView {
         div()
             .flex()
             .flex_col()
-            .gap_1p5()
-            .p_2p5()
+            .gap_3()
+            .p_3()
             .border_1()
             .border_color(rgb(ui_theme::BORDER_MUTED))
             .rounded(px(ui_theme::RADIUS_MD))
+            .bg(rgb(ui_theme::WB_PANEL))
             // 卡头：键徽标 + 引用标签 + 删除
             .child(
                 div()
@@ -3782,12 +3817,11 @@ impl RepositoryView {
                     .child(field_column(
                         "变量名",
                         true,
-                        self.input(
-                            FieldId::WorkflowEditor(WorkflowEditorFieldId::InputPart {
+                        self.document_input(
+                            WorkflowEditorFieldId::InputPart {
                                 index,
                                 part: WorkflowInputPart::Key,
-                            }),
-                            false,
+                            },
                             window,
                             cx,
                         ),
@@ -3795,55 +3829,28 @@ impl RepositoryView {
                     .child(field_column(
                         "显示名（可选）",
                         false,
-                        self.input(
-                            FieldId::WorkflowEditor(WorkflowEditorFieldId::InputPart {
+                        self.document_input(
+                            WorkflowEditorFieldId::InputPart {
                                 index,
                                 part: WorkflowInputPart::Label,
-                            }),
-                            false,
+                            },
                             window,
                             cx,
                         ),
                     )),
             )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(field_column(
-                        "说明（可选，运行时展示）",
-                        false,
-                        self.input(
-                            FieldId::WorkflowEditor(WorkflowEditorFieldId::InputPart {
-                                index,
-                                part: WorkflowInputPart::Description,
-                            }),
-                            false,
-                            window,
-                            cx,
-                        ),
-                    ))
-                    .child(field_column(
-                        "默认值（可选）",
-                        false,
-                        self.input(
-                            FieldId::WorkflowEditor(WorkflowEditorFieldId::InputPart {
-                                index,
-                                part: WorkflowInputPart::Default,
-                            }),
-                            false,
-                            window,
-                            cx,
-                        ),
-                    )),
-            )
-            .child(self.toggle_row(
-                "workflow-editor-input-required",
-                "必填",
-                row.required,
-                move |this, _, _| this.workflow_editor_toggle_input_required(index),
-                cx,
-            ))
+            .child(field_column("说明（可选，运行时展示）", false,
+                self.document_input(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Description }, window, cx)))
+            .child(div().flex().flex_wrap().items_center().gap_3()
+                .child(workflow_editor_field_label("输入类型", false))
+                .child(div().w(px(140.0)).child(self.render_workflow_editor_input_type(index)))
+                .child(div().flex().items_center().gap_2().child(self.toggle_switch(
+                format!("workflow-editor-input-required-{index}"), row.required, false,
+                move |this, next, _, _| { if let Some(row) = this.workflow_editor.as_mut().and_then(|editor| editor.data.inputs.get_mut(index)) { row.required = next; } }, cx,
+                )).child(document::hint("必填"))))
+            .child(field_column("默认值（可选）", false,
+                self.document_input(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Default }, window, cx)))
+            .child(self.render_workflow_editor_options(index, window, cx))
             .into_any_element()
     }
 
@@ -3872,11 +3879,12 @@ impl RepositoryView {
         div()
             .flex()
             .flex_col()
-            .gap_1p5()
-            .p_2p5()
+            .gap_3()
+            .p_3()
             .border_1()
             .border_color(rgb(ui_theme::BORDER_MUTED))
             .rounded(px(ui_theme::RADIUS_MD))
+            .bg(rgb(ui_theme::WB_PANEL))
             .child(
                 div()
                     .flex()
@@ -3929,12 +3937,11 @@ impl RepositoryView {
                     .child(field_column(
                         "变量名",
                         true,
-                        self.input(
-                            FieldId::WorkflowEditor(WorkflowEditorFieldId::VarPart {
+                        self.document_input(
+                            WorkflowEditorFieldId::VarPart {
                                 index,
                                 key: true,
-                            }),
-                            false,
+                            },
                             window,
                             cx,
                         ),
@@ -3942,12 +3949,11 @@ impl RepositoryView {
                     .child(field_column(
                         "值",
                         false,
-                        self.input(
-                            FieldId::WorkflowEditor(WorkflowEditorFieldId::VarPart {
+                        self.document_input(
+                            WorkflowEditorFieldId::VarPart {
                                 index,
                                 key: false,
-                            }),
-                            false,
+                            },
                             window,
                             cx,
                         ),
@@ -4195,31 +4201,17 @@ fn field_column(
         .into_any_element()
 }
 
-/// 变量卡片右上角的 ✕ 删除微按钮。
+/// 变量卡片删除操作复用 Kit 的焦点、键盘和提示语义。
 fn workflow_editor_card_remove_button(
     id: String,
     on_click: impl Fn(&mut RepositoryView, &mut Context<RepositoryView>) + 'static,
     cx: &mut Context<RepositoryView>,
 ) -> gpui::AnyElement {
-    div()
-        .id(id)
-        .size(px(20.0))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(ui_theme::RADIUS_XS))
-        .text_size(px(11.0))
-        .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-        .cursor_pointer()
-        .hover(|this| {
-            this.bg(rgb(ui_theme::COLOR_WARNING))
-                .text_color(rgb(ui_theme::COLOR_WARNING_FOREGROUND))
-        })
+    visual::icon_button(id, "删除此项", gpui_kit::assets::IconName::Trash, true)
+        .icon(visual::icon(gpui_kit::assets::IconName::Trash, ui_theme::DESTRUCTIVE))
         .on_click(cx.listener(move |this, _event, _window, cx| {
             on_click(this, cx);
         }))
-        .child("✕")
         .into_any_element()
 }
 

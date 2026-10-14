@@ -30,6 +30,7 @@ fn malformed_tool_arguments_fail_before_resolving_or_refreshing_a_repository() {
         ("search_graph", json!({"query":"target","offset":-1})),
         ("search_graph", json!({"query":"target","offset":u64::MAX})),
         ("search_graph", json!({"query":"target","generation":false})),
+        ("search_graph", json!({"query":"target","detail":"unknown"})),
         ("trace_path", json!({"function_name":"target","direction":"sideways"})),
         ("check_index_coverage", json!({"paths":[1]})),
         ("refresh_index", json!({"mode":"unknown"})),
@@ -72,4 +73,42 @@ fn missing_index_is_not_reported_as_a_successful_empty_search() {
     let reply = response(&server, json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
         "params":{"name":"search_graph","arguments":{"query":"existing_symbol"}}}));
     assert_eq!(reply["result"]["isError"], true, "{reply}");
+}
+
+#[test]
+fn compact_queries_keep_identity_pagination_and_direct_call_evidence() {
+    let (dir, _repo, _service) = init_repo();
+    let data = tempfile::tempdir().unwrap();
+    write_file(dir.path(), "lib.rs", "/// Target documentation.\nfn target() {}\nfn caller() { target(); target(); }\n");
+    write_file(dir.path(), "other.rs", "fn cross() { target(); }\n");
+    let db = data.path().join("index.db");
+    let mut options = super::super::pipeline::PipelineOptions::new(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)), Box::new(|_| {}));
+    super::super::run_index(dir.path(), &db, true, &mut options).unwrap();
+    let server = McpServer::for_test(dir.path(), db);
+    let call = |name: &str, arguments: Value| {
+        let reply = response(&server, json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":name,"arguments":arguments}}));
+        assert_ne!(reply["result"]["isError"], true, "{reply}");
+        let payload: Value = serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload, reply["result"]["structuredContent"]);
+        payload
+    };
+    let compact = call("search_graph", json!({"name_pattern":"^target$"}));
+    let full = call("search_graph", json!({"name_pattern":"^target$", "detail":"full"}));
+    assert!(compact["results"][0]["docstring"].is_null());
+    assert_eq!(full["results"][0]["docstring"], "Target documentation.");
+    assert_eq!(compact["results"][0]["qualified_name"], full["results"][0]["qualified_name"]);
+    assert_eq!(compact["generation"], full["generation"]);
+    let inbound = call("trace_path", json!({"function_name":"target","direction":"inbound","depth":1}));
+    let original = call("trace_path", json!({"function_name":"target","direction":"inbound","depth":1,"detail":"full"}));
+    assert_eq!(inbound["callers_total"], original["callers_total"]);
+    assert_eq!(inbound["callers"][0]["call_sites"]["count"], 2);
+    assert_eq!(inbound["callers"][0]["call_sites"]["lines"], json!([3,3]));
+    assert!(inbound["callers"][0]["call_sites"]["file_path"].is_null());
+    assert_eq!(inbound["callers"][0]["file_path"], original["callers"][0]["call_sites"]["file_path"]);
+    assert!(inbound["coverage_note"].is_null());
+    assert!(inbound.to_string().len() < original.to_string().len());
+    let outbound = call("trace_path", json!({"function_name":"cross","direction":"outbound","depth":1}));
+    assert_eq!(outbound["callees"][0]["file_path"], "lib.rs");
+    assert_eq!(outbound["callees"][0]["call_sites"]["file_path"], "other.rs");
 }

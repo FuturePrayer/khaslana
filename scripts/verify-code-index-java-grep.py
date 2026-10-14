@@ -131,6 +131,40 @@ class Neighbor extends OtherBase {
     }
 }
 """,
+    "STRING.java": """package demo;
+public class STRING {
+    public static String emptyIf(String value, String fallback) { return fallback; }
+    public static String emptyIf(Object value, String fallback) { return fallback; }
+    public static String single(String value, String fallback) { return fallback; }
+}
+""",
+    "OverloadCaller.java": """package demo;
+import demo.STRING;
+public class OverloadCaller {
+    public void direct() {
+        STRING.emptyIf("text", "fallback");
+        STRING.single("text", "fallback");
+    }
+    public void nested() {
+        consume(STRING.emptyIf("nested", "fallback"));
+        consume(STRING.single("nested", "fallback"));
+    }
+    public void overloaded(int value) {
+        STRING.single("int", "fallback");
+    }
+    public void overloaded(String value) {}
+    public void byObject(Object value) {
+        STRING.emptyIf(value, "fallback");
+    }
+    public void byInstance(Service service) {
+        service.execute();
+    }
+    public void unknown() {
+        STRING.emptyIf(externalFactory(), "fallback");
+    }
+    private void consume(String value) {}
+}
+""",
 }
 
 
@@ -184,7 +218,7 @@ def main():
             method_pattern = r"^\s*(?:(?:public|private)\s+)?(?:static\s+)?(?:Object|String|int|void)\s+(\w+)\s*\("
             expected_types = {(path, line, re.search(type_pattern, text).group(1)) for path, line, text in rg_matches(repo, type_pattern)}
             expected_methods = {(path, line, re.search(method_pattern, text).group(1)) for path, line, text in rg_matches(repo, method_pattern)}
-            indexed_types = session.tool("search_graph", {"name_pattern": "^(PrivateOwner|Tools|Caller|StaticCaller|Service|State|SameFile|Neighbor)$", "limit": 200})
+            indexed_types = session.tool("search_graph", {"name_pattern": "^(PrivateOwner|Tools|Caller|StaticCaller|Service|State|SameFile|Neighbor|STRING|OverloadCaller)$", "limit": 200})
             indexed_methods = session.tool("search_graph", {"label": "Method", "limit": 200})
             for indexed, expected in [(indexed_types, expected_types), (indexed_methods, expected_methods)]:
                 assert not indexed["has_more"], indexed
@@ -195,7 +229,7 @@ def main():
             assert parsed["callers_total"] == 1, parsed
             sites = parsed["callers"][0]["call_sites"]
             assert sites["count"] == len(static_locations) == 2, sites
-            assert {(sites["file_path"], line) for line in sites["lines"]} == {(path, line) for path, line, _ in static_locations}
+            assert {(sites.get("file_path", parsed["callers"][0]["file_path"]), line) for line in sites["lines"]} == {(path, line) for path, line, _ in static_locations}
             mapped = session.tool("trace_path", {"function_name": "mappingDataSet", "direction": "inbound", "depth": 1})
             assert mapped["callers_total"] == len(rg_matches(repo, r"^\s*mappingDataSet\s*\(")) == 1
             private = session.tool("trace_path", {"function_name": "newResponseContext", "direction": "inbound", "depth": 1})
@@ -208,6 +242,32 @@ def main():
             assert local["callers_total"] == len(owned_local_calls) == 1
             assert local["callers"][0]["name"] == "invoke"
             assert local["callers"][0]["call_sites"]["lines"] == [line for _, line in owned_local_calls]
+            overloads = session.tool("search_graph", {"name_pattern": "^emptyIf$"})["results"]
+            string_qn = next(hit["qualified_name"] for hit in overloads if "String value," in hit["signature"])
+            object_qn = next(hit["qualified_name"] for hit in overloads if "Object value," in hit["signature"])
+            string_calls = session.tool("trace_path", {"function_name": string_qn, "direction": "inbound", "depth": 1})
+            object_calls = session.tool("trace_path", {"function_name": object_qn, "direction": "inbound", "depth": 1})
+            assert [caller["name"] for caller in string_calls["callers"]] == ["direct", "nested"], string_calls
+            assert [caller["name"] for caller in object_calls["callers"]] == ["byObject"], object_calls
+            indexed_overload_lines = sorted(line for result in [string_calls, object_calls]
+                                            for caller in result["callers"] for line in caller["call_sites"]["lines"])
+            overload_locations = rg_matches(repo, r"STRING\.emptyIf\s*\(")
+            known_lines = sorted(line for _, line, text in overload_locations if "externalFactory" not in text)
+            assert indexed_overload_lines == known_lines and len(overload_locations) == 4
+            single = session.tool("trace_path", {"function_name": "single", "direction": "inbound", "depth": 1})
+            overloaded = next(caller for caller in single["callers"] if caller["name"] == "overloaded")
+            assert not overloaded["qualified_name"].endswith("#2"), overloaded
+            assert single["callers_total"] == 3 and overloaded["call_sites"]["lines"] == [13]
+            instance = session.tool("trace_path", {"function_name": "execute", "direction": "inbound", "depth": 1})
+            assert instance["callers_total"] == 1 and instance["callers"][0]["name"] == "byInstance", instance
+            assert instance["callers"][0]["call_sites"]["count"] == len(rg_matches(repo, r"service\.execute\s*\(")) == 1
+            text_bytes = {}
+            for detail in ["compact", "full"]:
+                result = session.rpc("tools/call", {"name": "trace_path", "arguments": {
+                    "function_name": string_qn, "direction": "inbound", "depth": 1, "detail": detail}})
+                assert not result.get("isError"), result
+                text_bytes[detail] = len(result["content"][0]["text"].encode("utf-8"))
+            assert text_bytes["compact"] < text_bytes["full"]
             output = {"java_files_rg_vs_index": [java_files, dict(overview["languages"])["java"]],
                       "type_definitions_rg_vs_index": [len(expected_types), indexed_types["total"]],
                       "method_definitions_rg_vs_index": [len(expected_methods), indexed_methods["total"]],
@@ -216,6 +276,12 @@ def main():
                       "static_import_calls_rg_vs_index": [1, mapped["callers_total"]],
                       "private_method_false_callers": private["callers_total"],
                       "local_raw_grep_hits": len(local_calls), "local_scope_checked_calls_vs_index": [len(owned_local_calls), local["callers_total"]],
+                      "overload_raw_grep_calls": len(overload_locations),
+                      "overload_known_calls_rg_vs_index": [len(known_lines), len(indexed_overload_lines)],
+                      "unknown_overload_false_callers": sum(caller["name"] == "unknown" for result in [string_calls, object_calls] for caller in result["callers"]),
+                      "overloaded_caller_qualified_name": overloaded["qualified_name"],
+                      "instance_calls_rg_vs_index": [1, instance["callers"][0]["call_sites"]["count"]],
+                      "trace_inner_text_utf8_bytes": text_bytes,
                       "needs_rebuild": status["needs_rebuild"]}
             print(json.dumps(output, ensure_ascii=False, indent=2))
         finally:

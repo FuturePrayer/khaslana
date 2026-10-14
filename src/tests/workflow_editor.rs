@@ -71,6 +71,8 @@ fn build_workflow_definition_validates_inputs() {
     // 变量名为空
     let mut data = minimal_data();
     data.inputs.push(WorkflowEditorInputRowData {
+        kind: WorkflowInputKind::Text,
+        options: Vec::new(),
         key: " ".to_string(),
         label: String::new(),
         description: String::new(),
@@ -83,6 +85,8 @@ fn build_workflow_definition_validates_inputs() {
     // 保留前缀
     let mut data = minimal_data();
     data.inputs.push(WorkflowEditorInputRowData {
+        kind: WorkflowInputKind::Text,
+        options: Vec::new(),
         key: "git.branch".to_string(),
         label: String::new(),
         description: String::new(),
@@ -96,6 +100,8 @@ fn build_workflow_definition_validates_inputs() {
     let mut data = minimal_data();
     for _ in 0..2 {
         data.inputs.push(WorkflowEditorInputRowData {
+            kind: WorkflowInputKind::Text,
+            options: Vec::new(),
             key: "target".to_string(),
             label: String::new(),
             description: String::new(),
@@ -109,6 +115,8 @@ fn build_workflow_definition_validates_inputs() {
     // 正常：空 label/default 转 None，非空保留
     let mut data = minimal_data();
     data.inputs.push(WorkflowEditorInputRowData {
+        kind: WorkflowInputKind::Text,
+        options: Vec::new(),
         key: "target".to_string(),
         label: " 目标分支 ".to_string(),
         description: String::new(),
@@ -225,6 +233,8 @@ fn extract_template_var_refs_scans_and_filters_builtins() {
 fn step_binding_reports_used_unknown_and_outputs() {
     let mut inputs = minimal_data();
     inputs.inputs.push(WorkflowEditorInputRowData {
+        kind: WorkflowInputKind::Text,
+        options: Vec::new(),
         key: "target".to_string(),
         label: String::new(),
         description: String::new(),
@@ -414,6 +424,8 @@ fn definition_to_editor_data_round_trip_all_variants() {
             m.insert(
                 "target".to_string(),
                 WorkflowInputDefinition {
+                    kind: khaslana::WorkflowInputKind::Text,
+                    options: Vec::new(),
                     label: Some("目标分支".to_string()),
                     description: Some("要创建的分支名".to_string()),
                     default: Some("feature-x".to_string()),

@@ -7,6 +7,21 @@ use tempfile::TempDir;
 use super::*;
 use crate::git::test_support::git_test_support as git_support;
 
+#[test]
+fn invalid_form_values_stop_before_git_creates_a_branch() {
+    let (dir, mut repo, service) = git_support::init_repo();
+    git_support::write_file(dir.path(), "README.md", "initial");
+    git_support::commit_all(&repo, "initial");
+    for input in ["{type:'select',options:[{label:'验证',value:'uat'}]}", "{type:'date'}"] {
+        let definition = parse_workflow_json5(&format!("{{version:1,inputs:{{field:{input}}},steps:[{{op:'createBranch',name:'release/form-test',from:'main',checkout:true}}]}}")).unwrap();
+        let options = WorkflowRunOptions { input_vars: BTreeMap::from([("field".into(), "invalid".into())]), ..Default::default() };
+        assert!(WorkflowExecutor::new(&service).preview(&repo, &definition, &options).is_err());
+        assert!(WorkflowExecutor::new(&service).run(&mut repo, &definition, options, |_| {}).is_err());
+        assert!(repo.find_branch("release/form-test", BranchType::Local).is_err());
+        assert_eq!(repo.head().unwrap().shorthand().unwrap(), "main");
+    }
+}
+
 fn init_remote_workflow_repo() -> (TempDir, TempDir, Repository, GitService) {
     let remote_dir = TempDir::new().unwrap();
     let mut bare_opts = RepositoryInitOptions::new();
@@ -1489,6 +1504,8 @@ fn workflow_step_serialization_round_trip_all_variants() {
             m.insert(
                 "target".to_string(),
                 WorkflowInputDefinition {
+                    kind: WorkflowInputKind::Text,
+                    options: Vec::new(),
                     label: Some("目标分支".to_string()),
                     description: None,
                     default: Some("A-${date:%Y%m%d}".to_string()),

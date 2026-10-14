@@ -20,7 +20,7 @@ use crate::types::Result;
 pub const CODE_INDEX_SCHEMA_VERSION: u32 = 4;
 
 // 内容版本独立于 schema；v6 修正调用接收者、语言隔离、文件名和调用点证据。
-const INDEX_CONTENT_VERSION: &str = "6";
+const INDEX_CONTENT_VERSION: &str = "7";
 
 /// 建库路径：`<数据目录>/code-index/<repo哈希8>/index.db`。
 /// 目录不存在时创建。
@@ -562,42 +562,16 @@ impl CodeIndexStore {
 
     /// 读统计信息。空库返回 None（从未索引过）。
     pub fn read_stats(&self) -> Result<Option<IndexStats>> {
-        let has_nodes: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))
-            .map_err(|e| err(format!("统计节点失败：{e}")))?;
+        // 计数与 generation 同事务写入；旧库没有摘要时才扫描索引表。
+        let counts = self.conn.query_row("SELECT value FROM meta WHERE key='counts'", [], |row| row.get::<_, String>(0))
+            .ok().and_then(|value| serde_json::from_str::<[usize; 5]>(&value).ok());
+        let [has_nodes, symbols, edges, calls, files] = match counts {
+            Some(counts) => counts,
+            None => read_counts(&self.conn)?,
+        };
         if has_nodes == 0 {
             return Ok(None);
         }
-        let symbols: i64 = self
-            .conn
-            .query_row(
-                &format!(
-                    "SELECT COUNT(*) FROM nodes WHERE label IN ({})",
-                    SYMBOL_LABELS
-                        .iter()
-                        .map(|l| format!("'{l}'"))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ),
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-        let edges: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))
-            .unwrap_or(0);
-        let calls: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM edges WHERE type = 'CALLS'", [], |r| {
-                r.get(0)
-            })
-            .unwrap_or(0);
-        let files: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
-            .unwrap_or(0);
         let meta_of = |key: &str| -> String {
             self.conn
                 .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
@@ -609,11 +583,11 @@ impl CodeIndexStore {
             generation: meta_of("generation"),
             needs_rebuild: !self.has_search_metadata(),
             coverage: serde_json::from_str(&meta_of("coverage_summary")).unwrap_or_default(),
-            files: files as usize,
-            symbols: symbols as usize,
-            nodes: has_nodes as usize,
-            edges: edges as usize,
-            calls: calls as usize,
+            files,
+            symbols,
+            nodes: has_nodes,
+            edges,
+            calls,
             db_bytes: 0,
             indexed_at: meta_of("indexed_at").parse().unwrap_or(0),
             duration_ms: meta_of("duration_ms").parse().unwrap_or(0),
@@ -787,6 +761,15 @@ pub fn camel_split(input: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn read_counts(conn: &Connection) -> Result<[usize; 5]> {
+    let labels = SYMBOL_LABELS.iter().map(|label| format!("'{label}'")).collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT (SELECT COUNT(*) FROM nodes), (SELECT COUNT(*) FROM nodes WHERE label IN ({labels})),
+        (SELECT COUNT(*) FROM edges), (SELECT COUNT(*) FROM edges WHERE type='CALLS'), (SELECT COUNT(*) FROM file_hashes)");
+    conn.query_row(&sql, [], |row| Ok([row.get::<_, i64>(0)? as usize, row.get::<_, i64>(1)? as usize,
+        row.get::<_, i64>(2)? as usize, row.get::<_, i64>(3)? as usize, row.get::<_, i64>(4)? as usize]))
+        .map_err(|error| err(format!("统计索引失败：{error}")))
+}
+
 fn write_meta(tx: &Connection, graph: &GraphBuffer, meta: &CodeIndexMeta) -> Result<()> {
     tx.execute("DELETE FROM meta WHERE key != 'schema_version'", [])
         .map_err(|e| err(format!("清理旧元信息失败：{e}")))?;
@@ -794,6 +777,7 @@ fn write_meta(tx: &Connection, graph: &GraphBuffer, meta: &CodeIndexMeta) -> Res
     getrandom::fill(&mut generation_bytes).map_err(|e| err(format!("生成索引代际失败：{e}")))?;
     let generation: String = generation_bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     let coverage = super::coverage::summarize(graph).to_string();
+    let counts = serde_json::to_string(&read_counts(tx)?).unwrap();
     for (key, value) in [
         ("repo_name", meta.repo_name.as_str()),
         ("repo_path", meta.repo_path.as_str()),
@@ -804,6 +788,7 @@ fn write_meta(tx: &Connection, graph: &GraphBuffer, meta: &CodeIndexMeta) -> Res
         ("search_content_version", INDEX_CONTENT_VERSION),
         ("generation", generation.as_str()),
         ("coverage_summary", coverage.as_str()),
+        ("counts", counts.as_str()),
     ] {
         tx.execute(
         "INSERT INTO meta (key, value) VALUES (?1, ?2)

@@ -123,6 +123,17 @@ impl RepositoryView {
         field.render(compact, blocked, id == FieldId::AiApiKey)
     }
 
+    pub(crate) fn is_field_multiline(&self, id: FieldId) -> bool {
+        let workflow_multiline = match id {
+            FieldId::WorkflowInput(index) => self.workflow_state.inputs.get(index)
+                .is_some_and(|input| input.definition.kind == khaslana::WorkflowInputKind::Textarea),
+            FieldId::WorkflowEditor(workflow_editor::WorkflowEditorFieldId::InputPart { index, part: workflow_editor::WorkflowInputPart::Default }) =>
+                self.workflow_editor_input_kind(index) == Some(khaslana::WorkflowInputKind::Textarea),
+            _ => false,
+        };
+        workflow_multiline || Self::is_multiline_field(id)
+    }
+
     pub(crate) fn is_multiline_field(id: FieldId) -> bool {
         matches!(
             id,

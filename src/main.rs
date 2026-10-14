@@ -2601,13 +2601,16 @@ pub(crate) enum UiEvent {
         message: String,
         snapshot: RepositorySnapshot,
         log: Vec<WorkflowLogEntry>,
+        cleanup_warnings: Vec<String>,
     },
     WorkflowStopped {
         identity: WorkflowRunIdentity,
         error: String,
         cancelled: bool,
         snapshot: Option<RepositorySnapshot>,
+        cleanup_warnings: Vec<String>,
     },
+    WorkflowBrowserCleanupFinished { warnings: Vec<String> },
     /// 工作流模板目录后台刷新结果（目录 IO/JSON5 解析不占 UI 线程）。
     WorkflowTemplatesLoaded {
         request_id: u64,
@@ -3479,7 +3482,7 @@ pub(crate) struct RepositoryView {
     pub(crate) browser_runtime_notice: Option<String>,
     pub(crate) browser_runtime_origin: Option<RepoTabId>,
     pub(crate) browser_runtime_resume: Option<(RepoTabId, u64)>,
-    /// 工作流模板创建器状态（仅弹窗打开期间存在）。
+    /// 全局模板编辑草稿；V2 页面切换时保留，V1 使用模态向导。
     pub(crate) workflow_editor: Option<WorkflowEditorState>,
     /// 注释丢失确认前的暂存（编辑带注释模板时，确认后据此进入编辑器）。
     pub(crate) pending_workflow_edit: Option<workflow_editor::PendingWorkflowEdit>,
@@ -3801,6 +3804,8 @@ impl Render for RepositoryView {
         // 工作流模板编辑器：渲染前确保当前展示的文本框已创建
         //（field_mut 无 cx 不能惰性建框，text_input 的 paint 路径依赖它已存在）。
         self.ensure_workflow_editor_fields_inited(window, cx);
+        self.ensure_workflow_editor_input_controls(window, cx);
+        self.ensure_workflow_input_controls(window, cx);
         // Kit 输入字段：渲染期只有 `&self`，宿主实体必须在这里先建好并对齐。
         self.ensure_kit_fields(window, cx);
         self.ensure_conflict_editors(window, cx);
@@ -3901,8 +3906,8 @@ impl Render for RepositoryView {
                 }
             }))
             .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                // 页面内工作流编辑保持模态语义，避免背景仓库/导航操作改变草稿上下文。
-                if this.workflow_document_editor_blocks_mouse(event.position) {
+                // 只有添加步骤子弹窗拦截背景点击，V2 编辑页不锁住应用导航。
+                if this.workflow_document_picker_blocks_mouse(event.position) {
                     cx.stop_propagation();
                     return;
                 }
@@ -5036,3 +5041,7 @@ fn main() {
             cx.activate(true);
         });
 }
+
+#[cfg(all(test, target_os = "windows", target_env = "msvc"))]
+#[path = "tests/windows_stack.rs"]
+mod windows_stack_tests;

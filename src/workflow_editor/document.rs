@@ -11,8 +11,8 @@ pub(super) fn column() -> gpui::Div {
 }
 
 pub(super) fn card() -> gpui::Div {
-    column().p_3().border_1().border_color(rgb(ui_theme::WORKFLOW_OUTLINE))
-        .rounded(px(ui_theme::RADIUS_SM)).bg(rgb(ui_theme::WB_PANEL))
+    column().p_4().border_1().border_color(rgb(ui_theme::BORDER_MUTED))
+        .rounded(px(ui_theme::RADIUS_MD)).bg(rgb(ui_theme::WB_PANEL))
 }
 
 pub(super) fn text(value: impl Into<gpui::SharedString>) -> gpui::Div {
@@ -20,7 +20,7 @@ pub(super) fn text(value: impl Into<gpui::SharedString>) -> gpui::Div {
 }
 
 pub(super) fn hint(value: impl Into<gpui::SharedString>) -> gpui::Div {
-    div().text_size(px(13.0)).text_color(rgb(ui_theme::WORKFLOW_META)).child(value.into())
+    div().text_size(px(13.0)).line_height(px(20.0)).text_color(rgb(ui_theme::CONTENT_SECONDARY)).child(value.into())
 }
 
 pub(super) fn variable_rail_visible(width: f32) -> bool { width >= 1100.0 }
@@ -100,8 +100,7 @@ impl RepositoryView {
     }
 
     pub(crate) fn workflow_document_editor_visible(&self) -> bool {
-        matches!(self.active_dialog, Some(crate::DialogState::WorkflowEditor))
-            && self.workflow_editor.as_ref().is_some_and(|editor| editor.data.version == 2)
+        self.workflow_editor.as_ref().is_some_and(|editor| editor.data.version == 2)
             && self.main_mode == crate::MainMode::Workflow
     }
 
@@ -115,8 +114,9 @@ impl RepositoryView {
             .map(|editor| editor.picker_search_field.focus.clone())
     }
 
-    pub(crate) fn workflow_document_editor_blocks_mouse(&self, position: gpui::Point<gpui::Pixels>) -> bool {
-        self.workflow_document_editor_visible() && self.ai_thinking_overlay.is_none()
+    pub(crate) fn workflow_document_picker_blocks_mouse(&self, position: gpui::Point<gpui::Pixels>) -> bool {
+        self.workflow_document_picker_focus().is_some() && self.active_dialog.is_none()
+            && self.top_overlay_kind() == crate::TopOverlayKind::Dialog
             && self.workflow_editor.as_ref().is_some_and(|editor| editor.document_bounds.get().is_none_or(|bounds| !bounds.contains(&position)))
     }
 
@@ -173,7 +173,7 @@ impl RepositoryView {
 
     pub(super) fn document_field(&self, id: WorkflowEditorFieldId, label: &str, window: &Window,
         cx: &mut Context<Self>) -> gpui::Div {
-        let multiline = RepositoryView::is_multiline_field(FieldId::WorkflowEditor(id));
+        let multiline = self.is_field_multiline(FieldId::WorkflowEditor(id));
         div().flex().items_start().min_w_0().gap_3()
             .child(text(label.to_string()).w(px(108.0)).flex_none().pt(px(8.0)))
             .child(div().flex_1().min_w_0().child(self.document_input(id, window, cx)))
@@ -197,7 +197,7 @@ impl RepositoryView {
         }
         if editor.document_ai_open {
             document = document.child(card().child(text("描述工作流需求"))
-                .child(self.input(FieldId::WorkflowEditor(WorkflowEditorFieldId::AiDescription), false, window, cx))
+                .child(self.document_input(WorkflowEditorFieldId::AiDescription, window, cx))
                 .child(hint("AI 生成后请逐项检查，再保存模板。"))
                 .child(self.document_command("workflow-v2-ai-generate", if editor.ai_loading { "生成中…" } else { "生成模板" }, true, !editor.ai_loading && self.ai_settings.is_usable(), cx)
                     .tooltip(if self.ai_settings.is_usable() { "基于当前草稿生成或调整步骤" } else { "请先在设置中心配置并启用 AI" })
@@ -207,23 +207,33 @@ impl RepositoryView {
             .child(div().flex().flex_wrap().items_center().gap_4().child(text("工作流输入").font_weight(gpui::FontWeight::SEMIBOLD))
                 .child(hint("在运行时提供这些输入值，用于后续步骤引用")))
             .child(self.document_command("workflow-v2-input-add", "添加输入", false, true, cx)
-                .icon(icon(IconName::Plus, ui_theme::WORKFLOW_META)).ghost()
+                .icon(icon(IconName::Plus, ui_theme::CONTENT_SECONDARY))
                 .on_click(cx.listener(|this, _, _, cx| { this.workflow_editor_add_input_row(); cx.notify(); }))));
         if editor.data.inputs.is_empty() { inputs = inputs.child(hint("添加运行前填写的参数，在步骤中使用 ${变量名} 引用。")); }
         for (index, row) in editor.data.inputs.iter().enumerate() {
-            inputs = inputs.child(column().gap_2()
-                .child(div().flex().items_center().min_w_0().gap_3()
-                    .child(div().w(px(96.0)).flex_none().child(self.document_input(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Key }, window, cx)))
-                    .child(badge("字符串"))
-                    .child(div().flex_1().min_w_0().child(self.document_input(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Default }, window, cx)))
-                    .when(!row.description.is_empty() && wide, |line| line.child(hint(row.description.clone()).w(px(190.0)).flex_none()))
-                    .child(icon_button(format!("workflow-v2-input-remove-{index}"), "删除输入", IconName::Trash, true)
-                        .on_click(cx.listener(move |this, _, _, cx| { this.workflow_editor_remove_input_row(index); cx.notify(); }))))
+            inputs = inputs.child(column().gap_3().pt_3()
+                .when(index > 0, |group| group.border_t_1().border_color(rgb(ui_theme::BORDER_MUTED)))
+                .child(div().flex().flex_wrap().items_start().min_w_0().gap_3()
+                    .child(column().flex_1().min_w(px(160.0)).gap_1().child(hint("变量名"))
+                        .child(self.document_input(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Key }, window, cx)))
+                    .child(column().w(px(140.0)).flex_none().gap_1().child(hint("输入类型"))
+                        .child(self.render_workflow_editor_input_type(index)))
+                    .child(div().flex().items_center().gap_2().h(px(36.0)).mt(px(24.0)).flex_none()
+                        .child(self.toggle_switch(format!("workflow-v2-input-required-{index}"), row.required, false,
+                            move |this, next, _, _| { if let Some(row) = this.workflow_editor.as_mut().and_then(|editor| editor.data.inputs.get_mut(index)) { row.required = next; } }, cx))
+                        .child(hint("必填")))
+                    .child(div().mt(px(28.0)).flex_none().child(icon_button(format!("workflow-v2-input-remove-{index}"), "删除输入", IconName::Trash, true)
+                        .icon(icon(IconName::Trash, ui_theme::DESTRUCTIVE))
+                        .on_click(cx.listener(move |this, _, _, cx| { this.workflow_editor_remove_input_row(index); cx.notify(); })))))
+                .child(column().gap_1().child(hint("默认值（可选）"))
+                    .child(self.document_input(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Default }, window, cx))
+                    .when(row.kind == WorkflowInputKind::Select, |field| field.child(hint("填写选项的实际值；留空时运行前保持未选择。")))
+                    .when(row.kind == WorkflowInputKind::Date, |field| field.child(hint("使用 YYYY-MM-DD，也可使用 ${date:%Y-%m-%d}。"))))
+                .child(self.render_workflow_editor_options(index, window, cx))
+                .when(!editor.document_details_open && !row.description.is_empty(), |group| group.child(hint(row.description.clone())))
                 .when(editor.document_details_open, |group| group
                     .child(self.document_field(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Label }, "运行时显示名称", window, cx))
-                    .child(self.document_field(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Description }, "说明", window, cx))
-                    .child(div().flex().items_center().gap_2().child(self.toggle_switch(format!("workflow-v2-input-required-{index}"), row.required, false,
-                        move |this, next, _, _| { if let Some(row) = this.workflow_editor.as_mut().and_then(|editor| editor.data.inputs.get_mut(index)) { row.required = next; } }, cx)).child(hint("必填")))));
+                    .child(self.document_field(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Description }, "说明", window, cx))));
         }
         document = document.child(inputs)
             .child(self.document_command("workflow-v2-input-details", if editor.document_details_open { "收起变量设置" } else { "输入说明与自定义变量" }, false, true, cx)
@@ -251,19 +261,19 @@ impl RepositoryView {
                 .on_click(cx.listener(|this, _, _, cx| { this.workflow_editor_open_step_picker(); cx.notify(); })));
         }
         document = document.child(div().flex().items_center().gap_2().child(icon(IconName::Info, ui_theme::WORKFLOW_META))
-            .child(hint("运行前预览并确认本次工具权限")));
+            .child(hint("运行前校验输入和工具范围；自定义 MCP 需确认本次授权")));
         if editor.document_preview_open {
             if let Ok(definition) = build_workflow_definition(&editor.data) {
                 document = document.child(card().child(text("模板检查通过"))
                     .child(hint("以下是保存内容；实际执行预览在保存后的运行页生成。"))
-                    .child(text(serde_json::to_string_pretty(&definition).unwrap_or_default())));
+                    .child(text(serde_json::to_string_pretty(&definition).unwrap_or_default())
+                        .font_family("Consolas").text_size(px(13.0)).line_height(px(20.0))));
             }
         }
         let mut columns = div().flex().min_w_0().gap_4().child(document);
         if wide { columns = columns.child(self.render_document_variables(cx).w(px(250.0)).flex_none()); }
         let document_bounds = editor.document_bounds.clone();
         floating_panel().id("workflow-v2-editor").relative().flex().flex_col().flex_1().min_w_0().min_h(px(0.0))
-            .focus_trap("dialog-overlay-trap", &self.dialog_focus)
             .child(gpui::canvas(|_, _, _| (), move |bounds, _, _, _| document_bounds.set(Some(bounds)))
                 .absolute().top_0().left_0().right_0().bottom_0())
             .child(column().flex_none().p_4().gap_2()
@@ -273,10 +283,11 @@ impl RepositoryView {
                         .child(text(if editor.name_field.value.trim().is_empty() { "新建工作流".to_string() } else { editor.name_field.value.clone() })
                             .text_size(px(if wide { 26.0 } else { ui_theme::TYPE_PAGE_TITLE })).font_weight(gpui::FontWeight::BOLD).truncate()).child(badge("V2")))
                     .child(div().flex().items_center().gap_1().p_1().rounded(px(ui_theme::RADIUS_SM)).bg(rgb(ui_theme::WORKFLOW_SURFACE))
-                        .child(self.document_command("workflow-v2-edit-mode", "编辑", false, true, cx).icon(icon(IconName::Pencil, ui_theme::PRIMARY))
-                            .text_color(rgb(ui_theme::PRIMARY)).tooltip("当前正在编辑工作流"))
-                        .child(self.document_command("workflow-v2-run-mode", "运行", false, !editor.ai_loading, cx).ghost().icon(icon(IconName::Play, ui_theme::WORKFLOW_META))
-                            .tooltip("保存草稿并前往运行页，执行前仍需预览和确认权限")
+                        .child(settings_command_button("workflow-v2-edit-mode", "编辑", SettingsButtonTone::SelectedTab, true, cx)
+                            .min_w(px(0.0)).icon(icon(IconName::Pencil, ui_theme::PRIMARY)).tooltip("当前正在编辑工作流"))
+                        .child(settings_command_button("workflow-v2-run-mode", "运行", SettingsButtonTone::Quiet, !editor.ai_loading, cx)
+                            .min_w(px(0.0)).icon(icon(IconName::Play, ui_theme::CONTENT_SECONDARY))
+                            .tooltip("保存草稿并前往运行页；自定义 MCP 在执行前确认授权")
                             .on_click(cx.listener(|this, _, _, cx| this.save_workflow_editor(cx)))))
                     .child(self.document_command("workflow-v2-save", "保存工作流", true, !editor.ai_loading, cx).icon(icon(IconName::Save, ui_theme::PRIMARY_FOREGROUND))
                         .on_click(cx.listener(|this, _, _, cx| this.save_workflow_editor(cx))))
@@ -289,10 +300,12 @@ impl RepositoryView {
                     .child(icon_button("workflow-v2-close", "关闭编辑器", IconName::X, true).on_click(cx.listener(|this, _, _, cx| { this.close_workflow_editor(); cx.notify(); }))))
                 .child(div().flex().items_center().gap_2().child(icon(IconName::GitBranch, ui_theme::PRIMARY))
                     .child(hint("当前分支：")).child(text(branch))))
-            .when_some(editor.data.error.clone(), |panel, error| panel.child(text(error).text_color(rgb(ui_theme::DESTRUCTIVE)).px_4().pb_2()))
+            .when_some(editor.data.error.clone(), |panel, error| panel.child(div().mx_4().mb_3().p_3()
+                .rounded(px(ui_theme::RADIUS_SM)).bg(rgb(ui_theme::FEEDBACK_ERROR_BG))
+                .child(text(error).text_color(rgb(ui_theme::FEEDBACK_ERROR_TEXT)))))
             .child(scrollable_frame_when("workflow-v2-document", ScrollbarMode::Vertical,
                 div().id("workflow-v2-document").flex().flex_col().flex_1().min_h(px(0.0)).p_4()
-                    .overflow_y_scroll().track_scroll(&scroll_handle).child(columns)
+                    .bg(rgb(ui_theme::WORKFLOW_SURFACE)).overflow_y_scroll().track_scroll(&scroll_handle).child(columns)
                     .when(!wide, |content| content.child(self.render_document_variables(cx).mt_3())).into_any_element(),
                 scroll_handle, true, cx))
             .when(editor.step_picker_open, |panel| {
@@ -357,7 +370,7 @@ impl RepositoryView {
         }
         header = header.child(icon_button(format!("workflow-v2-chevron-{index}"), if expanded { "收起步骤" } else { "展开步骤" }, if expanded { IconName::ChevronUp } else { IconName::ChevronDown }, true)
             .on_click(cx.listener(move |this, _, _, cx| { if let Some(editor) = this.workflow_editor.as_mut() { editor.data.selected_step = if expanded { usize::MAX } else { index }; } cx.notify(); })));
-        let mut panel = card().p_0().gap_0().border_color(rgb(if expanded { ui_theme::WORKFLOW_OUTLINE_ACTIVE } else { ui_theme::WORKFLOW_OUTLINE })).child(header);
+        let mut panel = card().p_0().gap_0().border_color(rgb(if expanded { ui_theme::INPUT_BORDER_FOCUSED } else { ui_theme::BORDER_MUTED })).child(header);
         if !expanded {
             let summary = if step.kind == WorkflowStepKind::Invoke {
                 let value = match step.invoke.value(WorkflowStepSlot::Uses) { "skill.run" => step.invoke.value(WorkflowStepSlot::Task), "mcp.call" => step.invoke.value(WorkflowStepSlot::Tool), _ => step.invoke.value(WorkflowStepSlot::Uses) };

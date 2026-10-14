@@ -1,0 +1,126 @@
+{
+  "version": 2,
+  "name": "创建 release 分支并自动提交公开表单",
+  "defaults": {
+    "requireCleanWorktree": true
+  },
+  "inputs": {
+    "base": {
+      "label": "创建分支的起点",
+      "default": "${git.initialBranch}",
+      "required": true
+    },
+    "target": {
+      "label": "release 分支名称",
+      "default": "release/demo-${date:%Y%m%d-%H%M%S}",
+      "required": true
+    },
+    "summary": {
+      "type": "textarea",
+      "label": "变更说明",
+      "description": "按实际变更填写，可包含多行。",
+      "required": true
+    },
+    "environment": {
+      "type": "select",
+      "label": "演示选项",
+      "description": "演示映射为公开网页的 One / Two / Three。",
+      "options": [
+        {
+          "label": "选项一（One）",
+          "value": "1"
+        },
+        {
+          "label": "选项二（Two）",
+          "value": "2"
+        },
+        {
+          "label": "选项三（Three）",
+          "value": "3"
+        }
+      ],
+      "required": true
+    },
+    "completionDate": {
+      "type": "date",
+      "label": "希望完成日期",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "op": "invoke",
+      "id": "create",
+      "uses": "git.createBranch",
+      "with": {
+        "name": "${target}",
+        "from": "${base}",
+        "checkout": true
+      }
+    },
+    {
+      "op": "invoke",
+      "id": "check",
+      "uses": "git.assertBranch",
+      "with": {
+        "branch": "${target}"
+      }
+    },
+    {
+      "op": "invoke",
+      "id": "format",
+      "uses": "js.run",
+      "saveAs": "form",
+      "with": {
+        "input": {
+          "branch": "${target}",
+          "summary": "${summary}",
+          "category": "${environment}",
+          "date": "${completionDate}"
+        },
+        "script": "const parts = input.date.split('-');\nreturn {\n  branch: input.branch,\n  category: input.category,\n  date: parts[1] + '/' + parts[2] + '/' + parts[0],\n  summary: '分支：' + input.branch + '\\n变更说明：\\n' + input.summary.replace(/\\r\\n?/g, '\\n') + '\\n选项：' + input.category + '\\n完成日期：' + input.date\n};"
+      }
+    },
+    {
+      "op": "invoke",
+      "id": "fill-submit",
+      "uses": "js.run",
+      "saveAs": "formResult",
+      "with": {
+        "input": {
+          "branch": "${form.branch}",
+          "summary": "${form.summary}",
+          "category": "${form.category}",
+          "date": "${form.date}"
+        },
+        "tools": [
+          {
+            "server": "browser.edge",
+            "tool": "browser_navigate"
+          },
+          {
+            "server": "browser.edge",
+            "tool": "browser_evaluate"
+          },
+          {
+            "server": "browser.edge",
+            "tool": "browser_type"
+          },
+          {
+            "server": "browser.edge",
+            "tool": "browser_select_option"
+          },
+          {
+            "server": "browser.edge",
+            "tool": "browser_take_screenshot"
+          },
+          {
+            "server": "browser.edge",
+            "tool": "browser_click"
+          }
+        ],
+        "script": "const server = 'browser.edge';\nconst url = 'https://www.selenium.dev/selenium/web/web-form.html';\nfunction result(response) {\n  if (!Array.isArray(response)) return response;\n  const text = response.filter(part => part.type === 'text').map(part => part.text).join('\\n');\n  const match = text.match(/### Result\\s*\\n(?:```(?:json)?\\s*\\n)?([\\s\\S]*?)(?:\\n```|\\n###|$)/);\n  if (!match) throw Error('浏览器未返回可复核的结构化结果');\n  return JSON.parse(match[1].trim());\n}\nmcp.call(server, 'browser_navigate', {url});\nconst before = result(mcp.call(server, 'browser_evaluate', {function:\"() => ({url:location.href,title:document.querySelector('h1')?.textContent})\"}));\nif (before.url !== url || before.title !== 'Web form') throw Error('页面不匹配，停止填写');\nmcp.call(server, 'browser_type', {target:'input[name=\"my-text\"]',text:input.branch,submit:false});\nmcp.call(server, 'browser_type', {target:'textarea[name=\"my-textarea\"]',text:input.summary,submit:false});\nmcp.call(server, 'browser_select_option', {target:'select[name=\"my-select\"]',values:[input.category]});\nmcp.call(server, 'browser_type', {target:'input[name=\"my-date\"]',text:input.date,submit:false});\nconst actual = result(mcp.call(server, 'browser_evaluate', {function:\"() => ({url:location.href,branch:document.querySelector('[name=my-text]').value,summary:document.querySelector('[name=my-textarea]').value,category:document.querySelector('[name=my-select]').value,date:document.querySelector('[name=my-date]').value})\"}));\nif (actual.url !== url || actual.branch !== input.branch || actual.summary !== input.summary || actual.category !== input.category || actual.date !== input.date) throw Error('字段复核失败，停止提交');\nmcp.call(server, 'browser_take_screenshot', {type:'png',scale:'css'});\nmcp.call(server, 'browser_click', {target:'button[type=\"submit\"]'});\nconst completed = result(mcp.call(server, 'browser_evaluate', {function:\"() => ({url:location.href,title:document.querySelector('h1')?.textContent,message:document.querySelector('#message')?.textContent})\"}));\nif (!completed.url.startsWith('https://www.selenium.dev/selenium/web/submitted-form.html?') || completed.title !== 'Form submitted' || completed.message !== 'Received!') throw Error('提交结果不明确，请检查网页；不要自动重试');\nreturn {submitted:true,page:'https://www.selenium.dev/selenium/web/submitted-form.html'};"
+      }
+    }
+  ]
+}

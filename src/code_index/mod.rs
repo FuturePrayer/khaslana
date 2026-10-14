@@ -25,6 +25,7 @@ mod discover;
 mod extract;
 mod graph;
 mod jobs;
+mod java;
 mod lang_spec;
 mod metadata;
 pub mod mcp;

@@ -388,7 +388,7 @@ impl McpServer {
             .iter().all(|key| Self::arg_str(args, key).is_none())) {
             return Err(Self::missing_arg_error("query 或 name_pattern / qn_pattern / file_pattern / label"));
         }
-        let limit = Self::arg_usize(args, "limit").unwrap_or(20).clamp(1, 200);
+        let limit = Self::arg_usize(args, "limit").unwrap_or(10).clamp(1, 200);
         let offset = Self::arg_usize(args, "offset").unwrap_or(0);
         let options = SearchOptions {
             query, label: Self::arg_str(args, "label"),
@@ -403,6 +403,11 @@ impl McpServer {
         let has_more = next_offset < total;
         let mut result = json!({ "repo": ctx.repo_key, "total": total, "results": all,
             "offset": offset, "returned": count, "has_more": has_more });
+        if Self::arg_str(args, "detail") != Some("full") {
+            for hit in result["results"].as_array_mut().unwrap() {
+                hit.as_object_mut().unwrap().remove("docstring");
+            }
+        }
         if has_more { result["next_offset"] = json!(next_offset); }
         if count == 0 {
             result["hint"] = if total > 0 {
@@ -418,7 +423,7 @@ impl McpServer {
         let Some(name) = Self::arg_str(args, "qualified_name") else {
             return Err(Self::missing_arg_error("qualified_name"));
         };
-        let mut result = self.tool_symbol_detail(ctx, &json!({ "name": name }))?;
+        let mut result = self.tool_definition(ctx, &json!({ "name": name }), false)?;
         if let Some(object) = result.as_object_mut() {
             object.remove("callers");
             object.remove("callees");
@@ -434,10 +439,14 @@ impl McpServer {
         ctx: &RepoContext,
         args: &Value,
     ) -> std::result::Result<Value, Value> {
+        self.tool_definition(ctx, args, true)
+    }
+
+    fn tool_definition(&self, ctx: &RepoContext, args: &Value, relations: bool) -> std::result::Result<Value, Value> {
         let Some(name) = Self::arg_str(args, "name") else {
             return Err(Self::missing_arg_error("name"));
         };
-        let outcome = queries::symbol_detail(&ctx.db_path, ctx.repo_root.as_deref(), name)
+        let outcome = super::sql_queries::definition_detail(&ctx.db_path, ctx.repo_root.as_deref(), name, relations)
             .map_err(|e| json!({ "error": e.to_string() }))?;
         match outcome {
             DetailOutcome::Found(detail) => Ok(serde_json::to_value(&*detail)
@@ -490,7 +499,21 @@ impl McpServer {
                 let mut value = serde_json::to_value(&result)
                     .map_err(|e| json!({ "error": format!("序列化结果失败：{e}") }))?;
                 if result.has_more { value["next_offset"] = json!(offset.saturating_add(limit)); }
-                value["coverage_note"] = json!("total 统计指定深度内去重的节点，不是调用次数；hop=1 的 call_sites 给出直接边的调用次数和最多 100 个行号。启发式调用图仍可能缺少动态调用或类型信息。");
+                if Self::arg_str(args, "detail") == Some("full") {
+                    value["coverage_note"] = json!("total 统计指定深度内去重的节点，不是调用次数；hop=1 的 call_sites 给出直接边的调用次数和最多 100 个行号。启发式调用图仍可能缺少动态调用或类型信息。");
+                } else {
+                    for key in ["callers", "callees"] {
+                        if let Some(hops) = value[key].as_array_mut() {
+                            for hop in hops {
+                                // 缺省调用文件为该行的 file_path；跨文件的出向边仍保留真实调用位置。
+                                if hop["call_sites"].is_object() && hop["call_sites"]["file_path"] == hop["file_path"] {
+                                    hop["call_sites"].as_object_mut().unwrap().remove("file_path");
+                                }
+                                if hop["risk"] == "" { hop.as_object_mut().unwrap().remove("risk"); }
+                            }
+                        }
+                    }
+                }
                 Ok(value)
             }
             TraceOutcome::Ambiguous(candidates) => Ok(json!({
@@ -858,7 +881,7 @@ fn build_tool_definitions() -> Vec<Value> {
         json!({
             "name": "search_symbols",
             "title": "符号搜索",
-            "description": "Keyword search over definition names, paths, signatures and docs. Exact names rank first; relax all-words matching only if empty. Filters AND together. Returns locations, signatures, doc excerpts and total/has_more/next_offset; use qualified_name for snippet/trace. No match is not proof of absence.",
+            "description": "Search definition names/paths/signatures/docs. Exact names rank first; relax all-words only if empty. Filters AND. Returns locations, signatures and pages; full adds docs. Use qualified_name for snippet/trace. No match is not proof of absence.",
             "inputSchema": with_repo(json!({
                 "type": "object",
                 "properties": {
@@ -868,7 +891,8 @@ fn build_tool_definitions() -> Vec<Value> {
                     "name_pattern": { "type": "string", "description": "Name regex, e.g. ^(push|pull).*" },
                     "qn_pattern": { "type": "string", "description": "Qualified-name regex for module/type scope." },
                     "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Use next_offset with unchanged filters and generation." },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 20 }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 10 },
+                    "detail": { "type": "string", "enum": ["compact", "full"], "default": "compact" }
                 },
                 "required": ["query"]
             })),
@@ -890,7 +914,7 @@ fn build_tool_definitions() -> Vec<Value> {
         json!({
             "name": "trace_path",
             "title": "调用链追踪",
-            "description": "Traverse CALLS with risk labels. Totals count distinct reachable nodes within depth, not calls; directions page independently. hop=1 call_sites has count/file_path/lines (max 100, truncated). Heuristic links may miss calls.",
+            "description": "Traverse CALLS with risk labels. Totals count distinct nodes within depth, not calls; directions page independently. hop=1 call_sites has count/lines (max 100, truncated); missing call_sites.file_path uses row file_path. Heuristic links may miss calls. full restores all fields and notes.",
             "inputSchema": with_repo(json!({
                 "type": "object",
                 "properties": {
@@ -899,7 +923,8 @@ fn build_tool_definitions() -> Vec<Value> {
                     "depth": { "type": "integer", "minimum": 1, "maximum": 8, "default": 3, "description": "BFS depth." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 100, "description": "Nodes per direction." },
                     "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Skip per direction; use next_offset with unchanged args and generation." },
-                    "risk_labels": { "type": "boolean", "default": true }
+                    "risk_labels": { "type": "boolean", "default": true },
+                    "detail": { "type": "string", "enum": ["compact", "full"], "default": "compact" }
                 },
                 "required": ["function_name"]
             })),
@@ -948,7 +973,7 @@ fn build_tool_definitions() -> Vec<Value> {
     let mut search_graph = definitions[1].clone();
     search_graph["name"] = json!("search_graph");
     search_graph["title"] = json!("结构与关键词搜索");
-    search_graph["description"] = json!("Find definitions by keywords and/or structural filters (AND). Without query, supply any regex/glob/label filter. Returns locations, signatures, doc excerpts, filtered total/has_more/next_offset. Use qualified_name for snippet/trace. No match is not proof of absence.");
+    search_graph["description"] = json!("Find definitions by keywords and/or filters (AND). Without query, supply a regex/glob/label. Returns locations, signatures and total/has_more/next_offset; full adds docs. Use qualified_name for snippet/trace. No match is not proof of absence.");
     search_graph["inputSchema"].as_object_mut().unwrap().remove("required");
     search_graph["inputSchema"]["anyOf"] = json!([
         { "required": ["query"] }, { "required": ["name_pattern"] },

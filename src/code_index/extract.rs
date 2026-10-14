@@ -23,6 +23,7 @@ pub struct FileExtractResult {
     pub type_refs: Vec<TypeRef>,
     pub error_ranges: Vec<super::coverage::ErrorRange>,
     pub error_ranges_truncated: bool,
+    pub java_package: Option<String>,
 }
 
 /// 一个定义符号。`scope` 是外层类/命名空间链（不含自身名）。
@@ -35,6 +36,7 @@ pub struct SymbolDef {
     pub end_line: u32,
     pub signature: String,
     pub docstring: String,
+    pub java_parameters: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -52,6 +54,7 @@ pub struct CallSite {
     pub name: String,
     pub line: u32,
     pub owner: Option<OwnerFunction>,
+    pub java: Option<super::java::JavaCall>,
 }
 
 /// 归属函数：class/impl 上下文链（不含函数名）+ 函数名。
@@ -59,6 +62,7 @@ pub struct CallSite {
 pub struct OwnerFunction {
     pub class_chain: Vec<String>,
     pub fn_name: String,
+    pub definition_index: usize,
 }
 
 /// 类型关系引用（INHERITS / IMPLEMENTS 边的来源）。
@@ -97,7 +101,15 @@ impl Extractor {
             result: FileExtractResult::default(),
             class_stack: Vec::new(),
             fn_stack: Vec::new(),
+            java: (lang == LangId::Java).then(super::java::Context::default),
         };
+        if lang == LangId::Java {
+            let root = tree.root_node();
+            let mut cursor = root.walk();
+            ctx.result.java_package = root.named_children(&mut cursor).find(|child| child.kind() == "package_declaration")
+                .and_then(|package| package.utf8_text(bytes).ok())
+                .map(|package| package.trim().trim_start_matches("package ").trim_end_matches(';').trim().to_string());
+        }
         walk(tree.root_node(), 0, &mut ctx);
         if tree.root_node().has_error() {
             let mut pending = vec![tree.root_node()];
@@ -141,13 +153,20 @@ struct WalkContext<'a> {
     result: FileExtractResult,
     class_stack: Vec<String>,
     /// 当前所在的函数/方法链（内层优先），调用点归属用。
-    fn_stack: Vec<String>,
+    fn_stack: Vec<(String, usize)>,
+    java: Option<super::java::Context>,
 }
 
 fn walk(node: Node, depth: usize, ctx: &mut WalkContext) {
     if depth > MAX_WALK_DEPTH {
         return;
     }
+    let frame = ctx.java.as_mut().is_some_and(|java| java.enter(node, ctx.source));
+    walk_inner(node, depth, ctx);
+    if frame { ctx.java.as_mut().unwrap().leave(); }
+}
+
+fn walk_inner(node: Node, depth: usize, ctx: &mut WalkContext) {
     let kind = node.kind();
     // 透明包装（export / @decorator / template 等）：下穿到内部声明。
     if ctx.spec.transparent_types.contains(&kind) {
@@ -159,9 +178,11 @@ fn walk(node: Node, depth: usize, ctx: &mut WalkContext) {
     if let Some((_, strategy)) = ctx.spec.call_types.iter().find(|(t, _)| *t == kind)
         && let Some(mut site) = extract_call_site(node, *strategy, ctx.source)
     {
-        site.owner = ctx.fn_stack.last().map(|fn_name| OwnerFunction {
+        site.java = ctx.java.as_ref().map(|java| java.call(node, ctx.source));
+        site.owner = ctx.fn_stack.last().map(|(fn_name, definition_index)| OwnerFunction {
             class_chain: ctx.class_stack.clone(),
             fn_name: fn_name.clone(),
+            definition_index: *definition_index,
         });
         ctx.result.calls.push(site);
     }
@@ -197,6 +218,7 @@ fn walk(node: Node, depth: usize, ctx: &mut WalkContext) {
             end_line: node.end_position().row as u32 + 1,
             signature,
             docstring,
+            java_parameters: None,
         });
     }
     // 初始化器里的调用点由下方通用递归覆盖，此处不 return。
@@ -211,6 +233,8 @@ fn walk(node: Node, depth: usize, ctx: &mut WalkContext) {
         && let Some(mut def) = extract_def(node, node_kind, def_kind, ctx)
     {
         (def.signature, def.docstring) = super::metadata::symbol_metadata(node, ctx.source);
+        if ctx.java.is_some() { def.java_parameters = super::java::parameters(node, ctx.source); }
+        let definition_index = ctx.result.defs.len();
         ctx.result.defs.push(def.clone());
         let container = is_container_def(def_kind, kind, ctx.spec);
         let is_fn_def = matches!(def.label, NodeLabel::Function | NodeLabel::Method);
@@ -219,7 +243,7 @@ fn walk(node: Node, depth: usize, ctx: &mut WalkContext) {
             ctx.class_stack.push(def.name.clone());
         }
         if is_fn_def {
-            ctx.fn_stack.push(def.name.clone());
+            ctx.fn_stack.push((def.name.clone(), definition_index));
         }
         recurse_children(node, depth, ctx);
         if is_fn_def {
@@ -250,8 +274,8 @@ fn walk(node: Node, depth: usize, ctx: &mut WalkContext) {
         let name = format!("callback@{}:{}", node.start_position().row + 1, node.start_position().column + 1);
         let (signature, docstring) = super::metadata::symbol_metadata(node, ctx.source);
         ctx.result.defs.push(SymbolDef { label: NodeLabel::Function, name: name.clone(), scope: ctx.class_stack.clone(),
-            start_line: node.start_position().row as u32 + 1, end_line: node.end_position().row as u32 + 1, signature, docstring });
-        ctx.fn_stack.push(name);
+            start_line: node.start_position().row as u32 + 1, end_line: node.end_position().row as u32 + 1, signature, docstring, java_parameters: None });
+        ctx.fn_stack.push((name, ctx.result.defs.len() - 1));
         recurse_children(node, depth, ctx);
         ctx.fn_stack.pop();
         return;
@@ -333,6 +357,7 @@ fn extract_def(
             end_line: node.end_position().row as u32 + 1,
             signature: String::new(),
             docstring: String::new(),
+            java_parameters: None,
         });
     }
 
@@ -352,6 +377,7 @@ fn extract_def(
             end_line: node.end_position().row as u32 + 1,
             signature: String::new(),
             docstring: String::new(),
+            java_parameters: None,
         });
     }
 
@@ -403,6 +429,7 @@ fn extract_def(
         end_line: node.end_position().row as u32 + 1,
         signature: String::new(),
         docstring: String::new(),
+        java_parameters: None,
     })
 }
 
@@ -533,6 +560,7 @@ fn extract_call_site(node: Node, strategy: CallNameStrategy, source: &[u8]) -> O
         name,
         line: node.start_position().row as u32 + 1,
         owner: None,
+        java: None,
     })
 }
 
