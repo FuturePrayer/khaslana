@@ -1974,12 +1974,37 @@ impl RepositoryView {
         layers
     }
 
+    /// 背景分隔条不能绕过任何模态层；不能只检查普通 active_dialog。
+    pub(crate) fn background_pointer_blocked(&self) -> bool {
+        self.overlay_focus_layers().iter().any(|layer| layer.0.is_modal())
+    }
+
+    pub(crate) fn pointer_overlay_key(&self) -> Option<OverlayFocusKey> {
+        self.overlay_focus_layers().last().cloned()
+    }
+
     /// 渲染前只记录进入/退出关系；新树完成后再验证目标是否仍挂载。
     /// 同帧替换继承原触发器，关闭父子多层时恢复最外层的返回目标。
     pub(crate) fn maintain_overlay_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.context_menu_keyboard.borrow_mut().actions.clear();
         let restore_pending = std::mem::take(&mut self.overlay_focus_return.restore_pending);
         let layers = self.overlay_focus_layers();
+        // 遮罩可能吞掉 mouse-up；进入模态时主动结束旧拖拽，不能等鼠标再次移动。
+        if self.background_pointer_blocked() {
+            for target in [ResizeTarget::Sidebar, ResizeTarget::Changes,
+                ResizeTarget::WorkflowTemplates, ResizeTarget::HistoryFiles,
+                ResizeTarget::HistoryInspectorFiles, ResizeTarget::HistoryDetails,
+                ResizeTarget::HistoryInspectorHeight, ResizeTarget::BrowseFiles,
+                ResizeTarget::HistoryGraph] {
+                if self.resize_state(target).is_some() {
+                    self.finish_resize_column(target);
+                }
+            }
+        }
+        if self.scrollbar_drag.as_ref().is_some_and(|drag|
+            crate::ui_helpers::pointer_drag_should_end(&drag.overlay_key, &self.pointer_overlay_key(), true)) {
+            self.scrollbar_drag = None;
+        }
         let current = window.focused(cx).map(|handle| handle.downgrade());
         let change = self.overlay_focus_return.stack.reconcile(&layers, current.clone())
             .or_else(|| restore_pending.then_some(OverlayFocusChange {

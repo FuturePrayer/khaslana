@@ -59,6 +59,7 @@ impl ScrollbarMode {
 #[derive(Clone, Debug)]
 pub(crate) struct ScrollbarDragState {
     pub(crate) scroll_id: SharedString,
+    pub(crate) overlay_key: Option<crate::OverlayFocusKey>,
     pub(crate) axis: ScrollbarAxis,
     pub(crate) start_position: Point<Pixels>,
     pub(crate) start_offset: Point<Pixels>,
@@ -74,6 +75,40 @@ struct ScrollbarGeometry {
     track_len: f32,
     thumb_len: f32,
     max_offset: f32,
+}
+
+/// 内层只消费能够改变纵向偏移的事件；到方向边界后才交给祖先。
+/// 事件不可改写，跨边界的本次余量舍弃，下次事件再链到外层，避免双重滚动。
+fn nested_vertical_offset(offset: Pixels, max: Pixels, delta: Pixels) -> Option<Pixels> {
+    if max <= px(0.0) || delta == px(0.0) {
+        return None;
+    }
+    let current = offset.clamp(-max, px(0.0));
+    let next = (current + delta).clamp(-max, px(0.0));
+    (next != current).then_some(next)
+}
+
+pub(crate) fn nested_vertical_scroll(content: impl IntoElement, handle: ScrollHandle) -> Div {
+    div().relative().size_full().child(content).child(
+        canvas(
+            |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+            move |_, hitbox, window, _| {
+                // 子画布后注册，在 Bubble 中先于内容 div 的默认滚动监听执行。
+                let line_height = window.line_height();
+                window.on_mouse_event(move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
+                    if phase != gpui::DispatchPhase::Bubble || !hitbox.should_handle_scroll(window) {
+                        return;
+                    }
+                    let delta = event.delta.pixel_delta(line_height);
+                    if let Some(y) = nested_vertical_offset(handle.offset().y, handle.max_offset().y, delta.y) {
+                        handle.set_offset(point(handle.offset().x, y));
+                        cx.stop_propagation();
+                        window.refresh();
+                    }
+                });
+            },
+        ).absolute().inset_0(),
+    )
 }
 
 pub(crate) fn scrollable_frame_when(
@@ -139,8 +174,8 @@ fn scrollable_frame_base(
         .child(content)
         .child(
             canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _cx| {
+                |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+                move |bounds, hitbox, window, _cx| {
                     if !content_present {
                         handle.set_offset(Point::default());
                         let should_clear_drag = entity
@@ -170,6 +205,7 @@ fn scrollable_frame_base(
                         scroll_id.clone(),
                         axis_handles_for_mode(mode, &handle),
                         bounds,
+                        hitbox,
                         window,
                     );
                     register_scrollbar_mouse_move(
@@ -221,8 +257,8 @@ pub(crate) fn table_scrollbar_overlay(
         (ScrollbarAxis::Horizontal, horizontal),
     ]);
     canvas(
-        |_, _, _| (),
-        move |bounds, _, window, cx| {
+        |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+        move |bounds, hitbox, window, cx| {
             if !content_present {
                 return;
             }
@@ -242,6 +278,7 @@ pub(crate) fn table_scrollbar_overlay(
                 scroll_id.clone(),
                 axis_handles.clone(),
                 bounds,
+                hitbox,
                 window,
             );
             register_scrollbar_mouse_move(entity.clone(), scroll_id.clone(), axis_handles.clone(), window);
@@ -294,15 +331,30 @@ fn paint_scrollbar_axis(
     window.paint_quad(fill(geometry.thumb, rgba(thumb_color)).corner_radii(px(4.0)));
 }
 
+pub(crate) fn pointer_drag_should_end(
+    started_in: &Option<crate::OverlayFocusKey>,
+    current: &Option<crate::OverlayFocusKey>,
+    dragging: bool,
+) -> bool {
+    !dragging || started_in != current
+}
+
+pub(crate) fn pointer_drag_can_start(
+    phase: gpui::DispatchPhase, hovered: bool, button: MouseButton,
+) -> bool {
+    phase == gpui::DispatchPhase::Bubble && hovered && button == MouseButton::Left
+}
+
 fn register_scrollbar_mouse_down(
     entity: gpui::Entity<RepositoryView>,
     scroll_id: SharedString,
     axis_handles: AxisHandles,
     bounds: Bounds<Pixels>,
+    hitbox: gpui::Hitbox,
     window: &mut Window,
 ) {
-    window.on_mouse_event(move |event: &MouseDownEvent, _, _, cx| {
-        if event.button != MouseButton::Left {
+    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+        if !pointer_drag_can_start(phase, hitbox.is_hovered(window), event.button) {
             return;
         }
 
@@ -326,6 +378,7 @@ fn register_scrollbar_mouse_down(
                 this.close_popups();
                 this.scrollbar_drag = Some(ScrollbarDragState {
                     scroll_id: scroll_id.clone(),
+                    overlay_key: this.pointer_overlay_key(),
                     axis,
                     start_position,
                     start_offset,
@@ -351,16 +404,23 @@ fn register_scrollbar_mouse_move(
     axis_handles: AxisHandles,
     window: &mut Window,
 ) {
-    window.on_mouse_event(move |event: &MouseMoveEvent, _, _, cx| {
-        if !event.dragging() {
+    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+        // Capture 保证移出轨道仍能收尾；只允许当前浮层拥有的已开始拖拽更新。
+        if phase != gpui::DispatchPhase::Capture {
             return;
         }
-
         let drag = entity.read(cx).scrollbar_drag.clone();
         let Some(drag) = drag else {
             return;
         };
         if drag.scroll_id != scroll_id {
+            return;
+        }
+        if pointer_drag_should_end(&drag.overlay_key, &entity.read(cx).pointer_overlay_key(), event.dragging()) {
+            entity.update(cx, |this, cx| {
+                this.scrollbar_drag = None;
+                cx.notify();
+            });
             return;
         }
 

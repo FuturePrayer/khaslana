@@ -1290,7 +1290,7 @@ impl RepositoryView {
         let active = self.resize_state(ResizeTarget::HistoryGraph).is_some();
         // 弹窗或弹层菜单打开时不显示拖拽光标、不响应，与列分割线行为一致
         let interactive = column_splitter_accepts_mouse_events(
-            self.active_dialog.is_some(),
+            self.background_pointer_blocked(),
             self.any_popup_menu_open(),
         );
         div()
@@ -1305,7 +1305,7 @@ impl RepositoryView {
                     // 阻止冒泡到提交行的 on_click，避免拖拽分割条时误选中提交。
                     cx.stop_propagation();
                     if !column_splitter_accepts_mouse_events(
-                        this.active_dialog.is_some(),
+                        this.background_pointer_blocked(),
                         this.any_popup_menu_open(),
                     ) {
                         this.finish_resize_column(ResizeTarget::HistoryGraph);
@@ -1343,17 +1343,18 @@ impl RepositoryView {
             move |_, _, window, _cx| {
                 window.on_mouse_event({
                     let entity = entity.clone();
-                    move |event: &MouseMoveEvent, _, _, cx| {
+                    move |event: &MouseMoveEvent, phase, _, cx| {
+                        if phase != gpui::DispatchPhase::Capture { return; }
                         let (resizing, active_dialog, popup_open) = {
                             let view = entity.read(cx);
                             (
                                 view.resize_state(ResizeTarget::HistoryGraph).is_some(),
-                                view.active_dialog.is_some(),
+                                view.background_pointer_blocked(),
                                 view.any_popup_menu_open(),
                             )
                         };
                         if column_splitter_should_clear_resize(
-                            active_dialog || popup_open,
+                            active_dialog || popup_open || !event.dragging(),
                             resizing,
                         ) {
                             entity.update(cx, |this, cx| {
@@ -1379,7 +1380,7 @@ impl RepositoryView {
                         let view = entity.read(cx);
                         (
                             view.resize_state(ResizeTarget::HistoryGraph).is_some(),
-                            view.active_dialog.is_some(),
+                            view.background_pointer_blocked(),
                             view.any_popup_menu_open(),
                         )
                     };
