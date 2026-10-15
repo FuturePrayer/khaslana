@@ -18,6 +18,45 @@ use crate::git::test_support::git_test_support as git_support;
 use crate::types::SubmoduleRemoteSyncStatus;
 
 #[cfg(windows)]
+#[test]
+fn ssh_hostkey_preferences_support_modern_algorithms_on_windows() {
+    libssh2_sys::init();
+    // 每次只传一种算法，复现 known_hosts 仅保存该类主机密钥时的偏好设置。
+    // 直接调用实际链接的 libssh2，避免仅检查依赖特性却遗漏构建中的算法裁剪。
+    let algorithms = [
+        c"ssh-ed25519",
+        c"ecdsa-sha2-nistp256",
+        c"ecdsa-sha2-nistp384",
+        c"ecdsa-sha2-nistp521",
+        c"rsa-sha2-256",
+        c"rsa-sha2-512",
+    ];
+    // 会话不发起网络连接；在断言前释放，失败时也不泄漏会话。
+    let results = unsafe {
+        let session = libssh2_sys::libssh2_session_init_ex(
+            None,
+            None,
+            None,
+            std::ptr::null_mut(),
+        );
+        assert!(!session.is_null(), "创建 SSH 会话失败");
+        let results = algorithms.map(|algorithm| {
+            let result = libssh2_sys::libssh2_session_method_pref(
+                session,
+                libssh2_sys::LIBSSH2_METHOD_HOSTKEY,
+                algorithm.as_ptr(),
+            );
+            (algorithm, result)
+        });
+        libssh2_sys::libssh2_session_free(session);
+        results
+    };
+    for (algorithm, result) in results {
+        assert_eq!(result, 0, "主机密钥算法 {algorithm:?} 不受支持");
+    }
+}
+
+#[cfg(windows)]
 fn lock_directory_without_delete_share(path: &Path) -> HANDLE {
     let wide_path = path
         .as_os_str()

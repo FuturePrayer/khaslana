@@ -906,12 +906,15 @@ pub fn test_credential_connection(
     let mut callbacks = git2::RemoteCallbacks::new();
     let callback_credential = credential.clone();
     let mut credential_attempted = false;
-    callbacks.credentials(move |_url, _username_from_url, _allowed_types| {
-        if credential_attempted {
-            return Err(git2::Error::from_str("SSH/HTTPS 凭据已尝试，远端拒绝认证"));
-        }
-        credential_attempted = true;
-        to_git_credential(&request, callback_credential.clone())
+    callbacks.credentials(move |_url, username_from_url, allowed_types| {
+        let mut callback_request = request.clone();
+        callback_request.allowed_types = allowed_types;
+        callback_request.username_from_url = username_from_url.map(str::to_string);
+        credential_for_connection_test(
+            &callback_request,
+            callback_credential.clone(),
+            &mut credential_attempted,
+        )
     });
     let result = remote
         .connect_auth(git2::Direction::Fetch, Some(callbacks), None)
@@ -922,12 +925,9 @@ pub fn test_credential_connection(
         Ok(()) => Ok(()),
         Err(libgit2_error) if record.kind == StoredCredentialKind::SshKey => {
             // Windows 上 libssh2 对部分 OpenSSH 私钥格式兼容性有限，使用系统 Git 复核同一凭据。
-            test_ssh_credential_with_system_git(&record.remote_url, &credential).map_err(
-                |system_error| {
-                    GitError::Credential(format!(
-                        "libgit2 测试失败：{libgit2_error}；系统 Git/OpenSSH 复核失败：{system_error}"
-                    ))
-                },
+            ssh_credential_test_result(
+                libgit2_error,
+                test_ssh_credential_with_system_git(&record.remote_url, &credential),
             )
         }
         Err(error) => Err(error),
@@ -946,6 +946,33 @@ fn ssh_username_from_remote_url(url: &str) -> Option<String> {
     }
     let (username, host_and_path) = trimmed.split_once('@')?;
     (host_and_path.contains(':') && !username.is_empty()).then(|| username.to_string())
+}
+
+fn credential_for_connection_test(
+    request: &CredentialRequest,
+    credential: GitCredential,
+    credential_attempted: &mut bool,
+) -> std::result::Result<Cred, git2::Error> {
+    // 用户名协商不消耗认证尝试；密钥/密码拒绝后仍只允许一次实际尝试。
+    if request.allowed_types != CredentialType::USERNAME {
+        if *credential_attempted {
+            return Err(git2::Error::from_str("SSH/HTTPS 凭据已尝试，远端拒绝认证"));
+        }
+        *credential_attempted = true;
+    }
+    to_git_credential(request, credential)
+}
+
+fn ssh_credential_test_result(libgit2_error: GitError, system_result: Result<()>) -> Result<()> {
+    // 实际推拉仍走 libgit2；系统 Git 的成功只能用于诊断，不能掩盖内置后端失败。
+    Err(GitError::Credential(match system_result {
+        Ok(()) => format!(
+            "内置 Git 测试失败：{libgit2_error}；系统 Git/OpenSSH 复核成功，但应用内推送和拉取仍无法使用此连接"
+        ),
+        Err(system_error) => format!(
+            "libgit2 测试失败：{libgit2_error}；系统 Git/OpenSSH 复核失败：{system_error}"
+        ),
+    }))
 }
 
 fn test_ssh_credential_with_system_git(url: &str, credential: &GitCredential) -> Result<()> {
@@ -992,6 +1019,16 @@ pub(crate) fn to_git_credential(
     request: &CredentialRequest,
     credential: GitCredential,
 ) -> std::result::Result<Cred, git2::Error> {
+    // SSH URL 未指定用户名时，libgit2 先单独索要用户名，下一轮才索要私钥。
+    // 此时返回 SSH_KEY 会被判为不允许的凭据类型，即使保存的私钥完全有效。
+    if request.allowed_types == CredentialType::USERNAME {
+        let username = request
+            .username_from_url
+            .as_deref()
+            .filter(|username| !username.is_empty())
+            .unwrap_or_else(|| credential.username());
+        return Cred::username(username);
+    }
     match credential {
         GitCredential::UserPass {
             username, secret, ..
@@ -1075,7 +1112,9 @@ fn requested_kind(
     protocol_family: ProtocolFamily,
 ) -> Option<StoredCredentialKind> {
     if protocol_family == ProtocolFamily::Ssh
-        && request.allowed_types.contains(CredentialType::SSH_KEY)
+        && request
+            .allowed_types
+            .intersects(CredentialType::SSH_KEY | CredentialType::USERNAME)
     {
         return Some(StoredCredentialKind::SshKey);
     }

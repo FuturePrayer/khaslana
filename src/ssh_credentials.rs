@@ -10,6 +10,7 @@ use directories::UserDirs;
 use gpui::{Context, IntoElement, div, prelude::*, px};
 
 use crate::ui::theme::rgb;
+use crate::ui::components::{settings_command_button, SettingsButtonTone};
 use crate::{RepositoryView, ui::theme as ui_theme};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -288,6 +289,7 @@ impl RepositoryView {
                 let count = result.agent_identities.len();
                 panel = panel.child(
                     div()
+                        .id("ssh-discovery-agent")
                         .flex()
                         .items_center()
                         .gap_2()
@@ -303,17 +305,23 @@ impl RepositoryView {
                                 .text_color(rgb(ui_theme::CONTENT_PRIMARY))
                                 .child(format!("SSH Agent · 已加载 {count} 个身份")),
                         )
-                        .child(self.button(
-                            "一键使用 Agent",
+                        .child(settings_command_button(
+                            "ssh-discovery-use-agent",
+                            if self.credential_use_ssh_agent { "已选择 Agent" } else { "一键使用 Agent" },
+                            if self.credential_use_ssh_agent { SettingsButtonTone::SelectedTab } else { SettingsButtonTone::Secondary },
                             !self.busy,
-                            |this, _, _| this.use_discovered_ssh_agent(),
                             cx,
-                        )),
+                        ).on_click(cx.listener(|this, _, _, cx| {
+                            this.use_discovered_ssh_agent();
+                            cx.notify();
+                        }))),
                 );
             }
 
             for key in result.keys.iter().take(8) {
                 let path = key.path.clone();
+                let selected = !self.credential_use_ssh_agent
+                    && Path::new(self.credential_key_path.value.trim()) == path;
                 let source = if key.from_ssh_config {
                     "SSH config"
                 } else {
@@ -321,6 +329,8 @@ impl RepositoryView {
                 };
                 panel = panel.child(
                     div()
+                        // 相同文案的按钮必须由私钥身份隔离，否则多行会共用交互状态。
+                        .id(format!("ssh-discovery-key-{}", path.display()))
                         .flex()
                         .items_center()
                         .gap_2()
@@ -328,7 +338,7 @@ impl RepositoryView {
                         .py_2()
                         .rounded_sm()
                         .border_1()
-                        .border_color(rgb(ui_theme::BORDER_MUTED))
+                        .border_color(rgb(if selected { ui_theme::PRIMARY } else { ui_theme::BORDER_MUTED }))
                         .child(
                             div()
                                 .flex_1()
@@ -349,12 +359,16 @@ impl RepositoryView {
                                         .child(path.display().to_string()),
                                 ),
                         )
-                        .child(self.button(
-                            "一键使用",
+                        .child(settings_command_button(
+                            format!("ssh-discovery-use-key-{}", path.display()),
+                            if selected { "已选择" } else { "一键使用" },
+                            if selected { SettingsButtonTone::SelectedTab } else { SettingsButtonTone::Secondary },
                             !self.busy,
-                            move |this, _, _| this.use_discovered_ssh_key(path.clone()),
                             cx,
-                        )),
+                        ).on_click(cx.listener(move |this, _, _, cx| {
+                            this.use_discovered_ssh_key(path.clone());
+                            cx.notify();
+                        }))),
                 );
             }
 
@@ -366,6 +380,15 @@ impl RepositoryView {
                         .child("未发现可用身份，可使用下方“选择私钥文件”手动指定。"),
                 );
             }
+        }
+
+        if self.credential_use_ssh_agent || !self.credential_key_path.value.trim().is_empty() {
+            panel = panel.child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(rgb(ui_theme::CONTENT_SECONDARY))
+                    .child("已填入下方表单；请确认适用远端和用户名，点击“保存”后生效。"),
+            );
         }
 
         panel

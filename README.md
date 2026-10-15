@@ -78,6 +78,14 @@ Khaslana 是一个面向日常开发工作流的桌面 Git 客户端。它使用
 - Windows 10 / 11 推荐；其他平台需确认 `gpui-pre`、系统 Keyring 和 libgit2 后端可用性。
 - 可访问目标 Git 远端所需的网络和凭据环境。
 
+Windows x64 MSVC 首次构建前准备预编译 OpenSSL：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/prepare-openssl.ps1
+```
+
+脚本从 [TaurusTLS OpenSSL Distribution](https://github.com/TaurusTLS-Developers/OpenSSL-Distribution/releases/tag/v3.5.9) 下载固定的 OpenSSL 3.5.9，校验 SHA-256 后解压到 `target/deps/`，不安装到系统。`.cargo/config.toml` 指向包内的静态库，供内置 libssh2 支持 Ed25519、ECDSA 和 RSA-SHA2；不从源码编译 OpenSSL。发布程序无需额外安装 OpenSSL 或携带其 DLL，分发时保留 `OPENSSL-LICENSE.txt`。需要自备库时，可用目标前缀环境变量覆盖目录，库必须与 x64 MSVC、静态 CRT 匹配。
+
 本地运行：
 
 ```powershell

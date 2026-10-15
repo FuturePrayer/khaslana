@@ -443,6 +443,66 @@ fn ssh_username_prefers_remote_url_identity() {
 }
 
 #[test]
+fn saved_ssh_credential_handles_username_then_key_requests() {
+    let store = MemoryCredentialStore::new();
+    let url = "ssh://example.com/team/repo.git";
+    let key_request = request(url, CredentialType::SSH_KEY);
+    let credential = ssh_credential(CredentialScope::RemoteUrl, "C:/keys/id_rsa");
+    store.save(&key_request, &credential).unwrap();
+
+    let mut username_request = request(url, CredentialType::USERNAME);
+    username_request.username_from_url = None;
+    let saved = store.get(&username_request).unwrap().expect("用户名阶段也应匹配 SSH 凭据");
+    let username = to_git_credential(&username_request, saved).unwrap();
+    assert_eq!(username.credtype(), CredentialType::USERNAME.bits() as i32);
+
+    let saved = store.get(&key_request).unwrap().expect("下一轮仍应匹配同一私钥");
+    let key = to_git_credential(&key_request, saved).unwrap();
+    assert_eq!(key.credtype(), CredentialType::SSH_KEY.bits() as i32);
+}
+
+#[test]
+fn system_git_success_does_not_mask_builtin_ssh_failure() {
+    let error = ssh_credential_test_result(
+        GitError::Message("failed to set hostkey preference".into()),
+        Ok(()),
+    ).unwrap_err().to_string();
+    assert!(error.contains("failed to set hostkey preference"));
+    assert!(error.contains("系统 Git/OpenSSH 复核成功"));
+    assert!(error.contains("应用内推送和拉取仍无法使用"));
+}
+
+#[test]
+fn ssh_connection_test_allows_username_exchange_but_not_key_retry() {
+    let mut attempted = false;
+    let credential = ssh_credential(CredentialScope::Host, "C:/keys/id_rsa");
+    let username_request = request("ssh://example.com/repo.git", CredentialType::USERNAME);
+    let username = credential_for_connection_test(
+        &username_request, credential.clone(), &mut attempted,
+    ).unwrap();
+    assert_eq!(username.credtype(), CredentialType::USERNAME.bits() as i32);
+    assert!(!attempted);
+
+    let key_request = request("ssh://example.com/repo.git", CredentialType::SSH_KEY);
+    let key = credential_for_connection_test(
+        &key_request, credential.clone(), &mut attempted,
+    ).unwrap();
+    assert_eq!(key.credtype(), CredentialType::SSH_KEY.bits() as i32);
+    assert!(attempted);
+    assert!(credential_for_connection_test(&key_request, credential, &mut attempted).is_err());
+}
+
+#[test]
+fn ssh_test_retains_both_backend_failures() {
+    let error = ssh_credential_test_result(
+        GitError::Message("内置连接失败".into()),
+        Err(GitError::Message("系统认证失败".into())),
+    ).unwrap_err().to_string();
+    assert!(error.contains("内置连接失败"));
+    assert!(error.contains("系统认证失败"));
+}
+
+#[test]
 fn gitee_refresh_payload_json_roundtrip() {
     let payload = GiteeRefreshPayload {
         refresh_token: "rt-abc".to_string(),

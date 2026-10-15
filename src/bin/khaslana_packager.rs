@@ -51,6 +51,7 @@ fn run() -> Result<(), String> {
     for name in ["khaslana.exe", "khaslana_updater.exe"] {
         copy_file(&perf.join(name), &payload.join(name))?;
     }
+    copy_file(&root.join("OPENSSL-LICENSE.txt"), &payload.join("OPENSSL-LICENSE.txt"))?;
     for name in ["LICENSE", "README.md"] {
         let src = root.join(name);
         if src.exists() {

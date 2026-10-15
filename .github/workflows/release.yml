@@ -20,6 +20,16 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: 缓存预编译 OpenSSL
+        uses: actions/cache@v4
+        with:
+          path: target/deps/downloads/openssl-*-Windows-x64.zip
+          key: openssl-windows-x64-${{ hashFiles('scripts/prepare-openssl.ps1') }}
+
+      - name: 准备预编译 OpenSSL 静态库
+        shell: pwsh
+        run: ./scripts/prepare-openssl.ps1
+
       - name: Test
         run: cargo test
 
@@ -58,6 +68,7 @@ jobs:
           cp target/release-perf/khaslana.exe dist/package/
           cp target/release-perf/khaslana_updater.exe dist/package/
           cp LICENSE dist/package/ || true
+          cp OPENSSL-LICENSE.txt dist/package/
           cp README.md dist/package/ || true
           cd dist/package
           7z a "../${ZIP}.zip" .
