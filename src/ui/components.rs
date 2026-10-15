@@ -231,6 +231,20 @@ pub(crate) fn settings_command_button(
     cx: &App,
 ) -> KitButton {
     let label = label.into();
+    settings_content_button(id, label.clone(), tone, enabled, cx)
+        .child(div().text_size(px(theme::TYPE_BODY)).line_height(px(16.0))
+            .font_weight(gpui::FontWeight::MEDIUM).child(label))
+}
+
+/// 复用设置按钮的表面与键盘语义，允许整行入口自排图标和双行说明。
+pub(crate) fn settings_content_button(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    tone: SettingsButtonTone,
+    enabled: bool,
+    cx: &App,
+) -> KitButton {
+    let label = label.into();
     let borderless = matches!(tone, SettingsButtonTone::Quiet | SettingsButtonTone::SelectedTab);
     let mut palette = app_button_palette(if matches!(tone, SettingsButtonTone::Primary) {
         ButtonTone::Primary
@@ -250,8 +264,6 @@ pub(crate) fn settings_command_button(
         .border_1().border_color(rgb(palette.border))
         .when(borderless, |this| this.border_0())
         .bg(rgb(palette.bg)).text_color(rgb(palette.fg))
-        .child(div().text_size(px(theme::TYPE_BODY)).line_height(px(16.0))
-            .font_weight(gpui::FontWeight::MEDIUM).child(label))
 }
 
 /// 工作台命令沿用应用按钮色板与 Kit 焦点行为，统一尺寸，避免默认小按钮混入。

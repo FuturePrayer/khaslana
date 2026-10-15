@@ -30,6 +30,7 @@ mod repository_credentials;
 mod repository_events;
 mod repository_operations;
 mod repository_ui;
+mod settings_about;
 mod settings_center;
 mod shortcuts_view;
 mod sidebar_view;

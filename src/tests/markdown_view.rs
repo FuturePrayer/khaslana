@@ -195,3 +195,33 @@ fn task_list_marker_keeps_checkbox_text() {
     // 勾选框字符保留在列表前缀之后，不被吞掉。
     assert_eq!(text, "• [x] 已完成项\n• [ ] 待办项\n");
 }
+
+// 发版格式护栏：RELEASE_NOTES.md 必须带 Markdown 标记——小节标题退化成
+// 裸文本行时，关于页/更新弹窗/更新卡片的渲染会悄悄退化成纯段落。
+#[test]
+fn release_notes_file_parses_with_headings_and_lists() {
+    let blocks = parse_markdown_blocks(include_str!("../../RELEASE_NOTES.md"));
+
+    // 首块为版本标题的一级标题。
+    match blocks.first() {
+        Some(MdBlock::Heading { level: 1, .. }) => {}
+        _ => panic!("首块应为版本标题的一级标题"),
+    }
+    // 小节标题使用 ## 标记。
+    assert!(
+        blocks
+            .iter()
+            .any(|block| matches!(block, MdBlock::Heading { level: 2, .. })),
+        "应存在 ## 小节标题"
+    );
+    // 条目以「• 」前缀扁平化为段落行（真正被识别为列表）。
+    let has_list_items = blocks.iter().any(|block| match block {
+        MdBlock::Paragraph(lines) => lines.iter().any(|line| {
+            line.spans
+                .first()
+                .is_some_and(|span| span.muted && span.text.starts_with("• "))
+        }),
+        _ => false,
+    });
+    assert!(has_list_items, "应存在列表条目");
+}
