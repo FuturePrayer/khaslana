@@ -422,6 +422,8 @@ pub enum GitError {
     InvalidBranchName(String),
     #[error("提交信息不能为空")]
     EmptyCommitMessage,
+    #[error("没有暂存的变更，不能创建空提交")]
+    EmptyCommit,
     #[error("尚未打开仓库")]
     NoRepository,
     #[error("操作产生冲突：{0:?}")]

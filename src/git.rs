@@ -1507,9 +1507,16 @@ impl GitService {
             return Err(GitError::Conflicts(self.conflicts(repo)?));
         }
         let tree_id = index.write_tree()?;
+        let parent_commits = parents(repo)?;
+        // 空提交守卫：git_commit_create 不拒绝与父提交内容相同的树，必须
+        // 自行比较索引树与 HEAD 树；未出生分支上空索引同样只会产出空根提交。
+        if parent_commits.first().map(|commit| commit.tree_id()) == Some(tree_id)
+            || (parent_commits.is_empty() && index.is_empty())
+        {
+            return Err(GitError::EmptyCommit);
+        }
         let tree = repo.find_tree(tree_id)?;
         let signature = signature(repo)?;
-        let parent_commits = parents(repo)?;
         let parent_refs = parent_commits.iter().collect::<Vec<_>>();
 
         repo.commit(

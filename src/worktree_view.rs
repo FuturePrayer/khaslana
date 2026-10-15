@@ -101,8 +101,10 @@ pub(crate) fn unstaged_empty_text(loading: bool, peer_has_content: bool) -> &'st
 ///
 /// 计划 §5：禁用条件以真实业务守卫为准，**不能**把「暂存区非空」套进这里——
 /// amend 修补允许空暂存（只改信息）。普通提交从不因「没有暂存文件」被禁用，
-/// 否则只想更新提交信息时会失去入口。合并中改用 `merge_can_finish` 的结论
-/// （它自己检查 busy/冲突/信息，这里直接透传其布尔结果）。
+/// 否则只想更新提交信息时会失去入口。空暂存的普通提交由点击时守卫拦截：
+/// `RepositoryView::commit`/`commit_and_push` 同步预检 + `GitService::commit`
+/// 的空提交守卫（比较索引树与 HEAD 树）两层兜底。合并中改用 `merge_can_finish`
+/// 的结论（它自己检查 busy/冲突/信息，这里直接透传其布尔结果）。
 pub(crate) const fn commit_action_enabled(
     repo_open: bool,
     busy: bool,
