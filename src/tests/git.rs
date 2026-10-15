@@ -1087,6 +1087,91 @@ fn stage_unstage_and_commit() {
 }
 
 #[test]
+fn commit_with_nothing_staged_returns_empty_commit_error() {
+    let (dir, mut repo, service) = git_support::init_repo();
+    git_support::write_file(dir.path(), "file.txt", "initial\n");
+    git_support::commit_all(&repo, "initial");
+    let head_before = repo.head().unwrap().peel_to_commit().unwrap().id();
+
+    let err = service
+        .commit(&mut repo, &CommitMessage::new("nothing staged"))
+        .unwrap_err();
+    assert!(matches!(err, GitError::EmptyCommit));
+
+    // 拦截后 HEAD 不得移动，也不得创建空提交。
+    assert_eq!(
+        repo.head().unwrap().peel_to_commit().unwrap().id(),
+        head_before
+    );
+    let mut revwalk = repo.revwalk().unwrap();
+    revwalk.push_head().unwrap();
+    assert_eq!(revwalk.count(), 1);
+}
+
+#[test]
+fn commit_on_unborn_branch_with_empty_index_is_rejected() {
+    let (_dir, mut repo, service) = git_support::init_repo();
+
+    let err = service
+        .commit(&mut repo, &CommitMessage::new("empty root"))
+        .unwrap_err();
+    assert!(matches!(err, GitError::EmptyCommit));
+    // HEAD 保持未出生，不得创建空根提交。
+    assert!(repo.head().is_err());
+}
+
+#[test]
+fn commit_on_unborn_branch_with_staged_file_creates_initial_commit() {
+    let (dir, mut repo, service) = git_support::init_repo();
+    git_support::write_file(dir.path(), "file.txt", "initial\n");
+    service
+        .stage_path(&mut repo, Path::new("file.txt"))
+        .unwrap();
+
+    service
+        .commit(&mut repo, &CommitMessage::new("initial"))
+        .unwrap();
+    assert_eq!(
+        repo.head().unwrap().peel_to_commit().unwrap().summary().unwrap(),
+        Some("initial")
+    );
+    assert!(service.status(&repo).unwrap().is_empty());
+}
+
+#[test]
+fn commit_and_push_with_nothing_staged_fails_without_pushing() {
+    let remote_dir = TempDir::new().unwrap();
+    let mut bare_opts = RepositoryInitOptions::new();
+    bare_opts.bare(true).initial_head("main");
+    Repository::init_opts(remote_dir.path(), &bare_opts).unwrap();
+
+    let (seed_dir, mut seed_repo, service) = git_support::init_repo();
+    git_support::write_file(seed_dir.path(), "README.md", "seed\n");
+    git_support::commit_all(&seed_repo, "seed");
+    seed_repo
+        .remote("origin", &git_support::path_url(remote_dir.path()))
+        .unwrap();
+    let head_before = seed_repo.head().unwrap().peel_to_commit().unwrap().id();
+
+    let err = service
+        .commit_and_push(
+            &mut seed_repo,
+            &CommitMessage::new("nothing staged"),
+            &RemoteName::new("origin"),
+        )
+        .unwrap_err();
+    assert!(matches!(err, GitError::EmptyCommit));
+
+    // 本地 HEAD 未移动，远端 bare 仓库也没有收到任何引用。
+    assert_eq!(
+        seed_repo.head().unwrap().peel_to_commit().unwrap().id(),
+        head_before
+    );
+    let bare = Repository::open(remote_dir.path()).unwrap();
+    assert_eq!(bare.references().unwrap().count(), 0);
+}
+
+#[test]
 fn batch_stage_and_unstage_paths() {
     let (dir, mut repo, service) = git_support::init_repo();
     git_support::write_file(dir.path(), "one.txt", "one\n");

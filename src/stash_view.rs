@@ -674,6 +674,15 @@ impl RepositoryView {
                 move |this| this.open_pop_stash_confirm_dialog(index),
                 cx,
             ))
+            .child(crate::context_menu_item_with_context(
+                self,
+                "stash-menu",
+                "copy-stash-ref",
+                "复制贮藏引用名",
+                !self.busy,
+                move |this, cx| this.copy_stash_ref(index, cx),
+                cx,
+            ))
             .child(menu_separator())
             .child(crate::context_menu_item(
                 self,

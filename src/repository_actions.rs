@@ -1890,6 +1890,13 @@ impl RepositoryView {
             self.last_error = Some("需要填写提交信息".into());
             return;
         }
+        // 同步预检在清空输入框之前拦截，保住用户已输入的提交信息；
+        // 豁免修补模式：Ctrl+Enter 提交链在修补模式下也走本函数，
+        // 修补允许空暂存（只改信息），真正的权威拦截在 GitService::commit。
+        if !self.amend_mode && self.change_paths(DiffScope::Staged).is_empty() {
+            self.last_error = Some("暂存区没有变更，无法提交".into());
+            return;
+        }
         self.commit_message.clear();
         self.scroll_handle("commit-message-input-scroll")
             .set_offset(point(px(0.0), px(0.0)));
@@ -2072,6 +2079,12 @@ impl RepositoryView {
         let message = self.commit_message.value.trim().to_string();
         if message.is_empty() {
             self.last_error = Some("需要填写提交信息".into());
+            return;
+        }
+        // 与 commit() 一致：空暂存在清空输入框之前同步拦截；本入口
+        // （主按钮「提交并推送」）不存在修补模式，无需豁免。
+        if self.change_paths(DiffScope::Staged).is_empty() {
+            self.last_error = Some("暂存区没有变更，无法提交".into());
             return;
         }
         let Some(remote) = self.current_remote() else {

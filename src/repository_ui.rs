@@ -708,6 +708,18 @@ impl RepositoryView {
                 },
                 cx,
             ))
+            .child(context_menu_item_with_context(
+                self,
+                "tag-menu",
+                "copy-name",
+                "复制标签名",
+                !self.busy,
+                {
+                    let tag = menu.tag.clone();
+                    move |this, cx| this.copy_tag_name(tag.clone(), cx)
+                },
+                cx,
+            ))
             .child(menu_separator())
             .child(context_menu_item(
                 self,

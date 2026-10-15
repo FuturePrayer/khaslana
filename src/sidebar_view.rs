@@ -23,16 +23,18 @@ use crate::{
 };
 
 /// 与可见条目使用同一套高度，避免短菜单按最长菜单偏移或误判外部点击。
+/// 本地/远端分支的 copy 组（复制分支名，远端另加复制 checkout 命令）
+/// 计入行数；workflows 行与其分隔线不计入，由右键时 +37.0 补上。
 pub(crate) fn branch_context_menu_height(kind: &BranchKind, is_head: bool, has_upstream: bool) -> f32 {
     let rows = if *kind == BranchKind::Local {
-        3 + usize::from(has_upstream) + if is_head { 0 } else { 5 }
+        4 + usize::from(has_upstream) + if is_head { 0 } else { 5 }
     } else if is_head {
         5
     } else {
         8
     };
     let separators = if *kind == BranchKind::Local {
-        if is_head { usize::from(has_upstream) } else { 2 }
+        if is_head { 1 + usize::from(has_upstream) } else { 3 }
     } else if is_head {
         1
     } else {
@@ -958,6 +960,18 @@ impl RepositoryView {
                 },
                 cx,
             ))
+            .child(context_menu_item_with_context(
+                self,
+                "remote-menu",
+                "copy-name",
+                "复制远端名",
+                !self.busy,
+                {
+                    let remote = menu.remote.clone();
+                    move |this, cx| this.copy_remote_name(remote.clone(), cx)
+                },
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -1264,21 +1278,21 @@ impl RepositoryView {
                 cx,
             ))
             .child(menu_separator())
+            .child(context_menu_item_with_context(
+                self,
+                "branch-menu",
+                "copy-name",
+                "复制分支名",
+                !self.busy,
+                {
+                    let branch = menu.branch.clone();
+                    move |this, cx| this.copy_branch_name(branch.clone(), cx)
+                },
+                cx,
+            ))
             .when(!is_local, |this| {
                 let branch = menu.branch.clone();
                 this.child(context_menu_item_with_context(
-                    self,
-                    "branch-menu",
-                    "copy-name",
-                    "复制名称",
-                    !self.busy,
-                    {
-                        let branch = branch.clone();
-                        move |this, cx| this.copy_branch_name(branch.clone(), cx)
-                    },
-                    cx,
-                ))
-                .child(context_menu_item_with_context(
                     self,
                     "branch-menu",
                     "copy-checkout-command",
@@ -1290,8 +1304,8 @@ impl RepositoryView {
                     },
                     cx,
                 ))
-                .child(menu_separator())
             })
+            .child(menu_separator())
             .when(is_local && !menu.is_head, |this| this.child(context_menu_item(
                 self,
                 "branch-menu",

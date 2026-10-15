@@ -30,6 +30,7 @@ mod repository_credentials;
 mod repository_events;
 mod repository_operations;
 mod repository_ui;
+mod settings_about;
 mod settings_center;
 mod shortcuts_view;
 mod sidebar_view;
@@ -428,7 +429,8 @@ const MAX_HISTORY_GRAPH_WIDTH: f32 = 480.0;
 const HISTORY_PAGE_SIZE: usize = 50;
 pub(crate) const BRANCH_MENU_WIDTH: f32 = 190.0;
 pub(crate) const REMOTE_MENU_WIDTH: f32 = 170.0;
-pub(crate) const REMOTE_MENU_HEIGHT: f32 = 80.0;
+// 「刷新」+「复制远端名」两项。
+pub(crate) const REMOTE_MENU_HEIGHT: f32 = 108.0;
 const CHANGE_MENU_WIDTH: f32 = 210.0;
 // 两个菜单分支均新增「查看文件历史」「追溯此文件」两项（约 +34px/项），
 // 未暂存分支还多一条分隔线。
@@ -440,9 +442,11 @@ const FILE_PATH_MENU_HEIGHT: f32 = 140.0;
 const CREDENTIAL_MENU_WIDTH: f32 = 180.0;
 const CREDENTIAL_MENU_HEIGHT: f32 = 150.0;
 pub(crate) const TAG_MENU_WIDTH: f32 = 170.0;
-pub(crate) const TAG_MENU_HEIGHT: f32 = 200.0;
+// 含「复制标签名」一项。
+pub(crate) const TAG_MENU_HEIGHT: f32 = 228.0;
 pub(crate) const STASH_MENU_WIDTH: f32 = 170.0;
-pub(crate) const STASH_MENU_HEIGHT: f32 = 170.0;
+// 含「复制贮藏引用名」一项。
+pub(crate) const STASH_MENU_HEIGHT: f32 = 198.0;
 pub(crate) const WORKFLOW_TEMPLATE_MENU_WIDTH: f32 = 150.0;
 pub(crate) const WORKFLOW_TEMPLATE_MENU_HEIGHT: f32 = 132.0;
 const COMMIT_MENU_WIDTH: f32 = 230.0;

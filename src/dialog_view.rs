@@ -1230,14 +1230,9 @@ impl RepositoryView {
                                     .text_size(px(12.0))
                                     .line_height(px(18.0))
                                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                                    // GPUI 无 pre-wrap：按行拆分渲染，空行用空格占位保持行高。
-                                    .children(update_notes.lines().map(|line| {
-                                        div().child(if line.is_empty() {
-                                            " ".to_string()
-                                        } else {
-                                            line.to_string()
-                                        })
-                                    })),
+                                    .child(crate::markdown_view::render_markdown(
+                                        &update_notes,
+                                    )),
                             )
                             .child(
                                 div()
@@ -1351,103 +1346,6 @@ impl RepositoryView {
         vec![update_group, channel_group]
     }
 
-    /// 「关于」页的分组（Kit `SettingGroup` 列表）。
-    ///
-    /// 纯展示条目：版本号 + 渠道徽标 + 版本说明，没有可写字段，因此不声明
-    /// `on_reset` / `default_value`——页头「重置」按钮对本页不适用
-    /// （`resettable` 由页面构建方控制，展示项也不会被判定为脏）。
-    /// 版本说明由发版流水线经 KHASLANA_RELEASE_NOTES 编译期嵌入；本地
-    /// 开发构建或未配置时显示占位文案。
-    ///
-    /// 主线把本函数接入 `settings_pane_groups` 前暂无调用方。
-    #[allow(dead_code)]
-    pub(crate) fn settings_about_groups(&self, cx: &mut Context<Self>) -> Vec<SettingGroup> {
-        let version = env!("CARGO_PKG_VERSION");
-        let channel = update::current_channel();
-        let notes = update::current_release_notes();
-        let notes_display = if notes.trim().is_empty() {
-            "（此版本未附版本说明）".to_string()
-        } else {
-            notes.to_string()
-        };
-        let beta_channel = channel == "测试版";
-
-        vec![SettingGroup::new()
-            .item(crate::settings_center::settings_group_heading(
-                "版本",
-                Some("更新渠道与自动检查可在「更新设置」中配置。".into()),
-            ))
-            .item(crate::settings_center::settings_item_row(
-                "版本号",
-                None,
-                {
-                    let view = cx.entity();
-                    move |_options, _window, cx| {
-                        view.update(cx, |_this, _cx| {
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .text_size(px(ui_theme::TYPE_BODY))
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                                        .child(format!("Khaslana v{version}")),
-                                )
-                                .child(
-                                    // 渠道徽标：按版本号预发布段推断（正式版 / 测试版）。
-                                    div()
-                                        .id("about-channel-badge")
-                                        .flex_none()
-                                        .px(px(6.0))
-                                        .py(px(1.0))
-                                        .rounded(px(ui_theme::RADIUS_PILL))
-                                        .bg(rgb(if beta_channel {
-                                            ui_theme::FEEDBACK_WARNING_BG
-                                        } else {
-                                            ui_theme::PRIMARY_SUBTLE
-                                        }))
-                                        .text_size(px(10.0))
-                                        .text_color(rgb(if beta_channel {
-                                            ui_theme::FEEDBACK_WARNING_TEXT
-                                        } else {
-                                            ui_theme::PRIMARY
-                                        }))
-                                        .child(channel),
-                                )
-                        })
-                    }
-                },
-            ))
-            .item(crate::settings_center::settings_item_row(
-                "版本说明",
-                None,
-                {
-                    let view = cx.entity();
-                    move |_options, _window, cx| {
-                        view.update(cx, |_this, _cx| {
-                            div()
-                                .id("about-release-notes")
-                                .max_h(px(280.0))
-                                .overflow_y_scroll()
-                                .text_size(px(12.0))
-                                .line_height(px(18.0))
-                                .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                // GPUI 无 pre-wrap：按行拆分渲染，空行用空格占位保持行高。
-                                .children(notes_display.lines().map(|line| {
-                                    div().child(if line.is_empty() {
-                                        " ".to_string()
-                                    } else {
-                                        line.to_string()
-                                    })
-                                }))
-                        })
-                    }
-                },
-            ))]
-    }
-
     fn render_new_version_dialog(
         &self,
         version: &str,
@@ -1467,7 +1365,7 @@ impl RepositoryView {
                     .child(format!("发布于 {published_at}")),
             )
             .child(
-                // 版本说明：多行可滚动（内容多时可翻看，不再 120px 硬截断）。
+                // 版本说明：Markdown 渲染，多行可滚动（内容多时可翻看）。
                 div()
                     .id("new-version-notes")
                     .max_h(px(180.0))
@@ -1475,14 +1373,7 @@ impl RepositoryView {
                     .text_size(px(12.0))
                     .line_height(px(18.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    // GPUI 无 pre-wrap：按行拆分渲染，空行用空格占位保持行高。
-                    .children(notes.lines().map(|line| {
-                        div().child(if line.is_empty() {
-                            " ".to_string()
-                        } else {
-                            line.to_string()
-                        })
-                    })),
+                    .child(crate::markdown_view::render_markdown(notes)),
             )
             .child(
                 div()
