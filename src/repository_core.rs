@@ -62,7 +62,7 @@ impl RepositoryView {
             global_busy_tab: None,
             next_tab_id: 1,
             fallback_tab: {
-                let mut tab = RepoTabState::new(RepoTabId(0), None);
+                let mut tab = RepoTabState::new(RepoTabId(0), None, TextFieldState::new(cx, "提交信息"));
                 if let Some(status) = storage_status {
                     tab.status = status;
                     tab.last_error = storage_error;
@@ -196,9 +196,6 @@ impl RepositoryView {
             create_branch_checkout: true,
             create_branch_base: None,
             branch_rename: TextFieldState::new(cx, "重命名为"),
-            commit_message: TextFieldState::new(cx, "提交信息"),
-            amend_mode: false,
-            amend_prefill: None,
             stash_message: TextFieldState::new(cx, "贮藏说明（可选）"),
             tag_name: TextFieldState::new(cx, "标签名称，如 v1.0.0"),
             tag_message: TextFieldState::new(cx, "标签附注信息（可选）"),
@@ -557,7 +554,8 @@ impl RepositoryView {
 
         let id = RepoTabId(self.next_tab_id);
         self.next_tab_id = self.next_tab_id.wrapping_add(1).max(1);
-        self.tabs.push(RepoTabState::new(id, Some(path)));
+        let commit_message = self.fallback_tab.commit_message.empty_sibling();
+        self.tabs.push(RepoTabState::new(id, Some(path), commit_message));
         self.active_tab = Some(id);
         self.inherit_main_mode(previous_mode);
         self.save_session();

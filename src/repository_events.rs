@@ -1344,6 +1344,10 @@ impl RepositoryView {
                 let mut sync_request = None;
                 self.with_tab_context(tab_id, |this| {
                     let current_definition = identity.definition_is_current(&this.workflow_state);
+                    let updated = this.active_tab_state_mut().sync_workflow_merge_message(&identity, Some(&snapshot));
+                    if updated && !snapshot.merge_in_progress {
+                        this.scroll_handle("commit-message-input-scroll").set_offset(gpui::point(px(0.0), px(0.0)));
+                    }
                     this.workflow_state.active_run = None;
                     this.busy = false;
                     this.operation_blocker = OperationBlocker::None;
@@ -1395,6 +1399,10 @@ impl RepositoryView {
                 let mut sync_request = None;
                 self.with_tab_context(tab_id, |this| {
                     let current_definition = identity.definition_is_current(&this.workflow_state);
+                    let updated = this.active_tab_state_mut().sync_workflow_merge_message(&identity, snapshot.as_ref());
+                    if updated && snapshot.as_ref().is_some_and(|snapshot| !snapshot.merge_in_progress) {
+                        this.scroll_handle("commit-message-input-scroll").set_offset(gpui::point(px(0.0), px(0.0)));
+                    }
                     this.workflow_state.active_run = None;
                     this.busy = false;
                     this.operation_blocker = OperationBlocker::None;
@@ -1480,7 +1488,7 @@ impl RepositoryView {
                     self.notify_warning("AI 生成已结束，原编辑会话已关闭或更换，未覆盖当前模板", cx);
                 }
             }
-            UiEvent::AiCommitMessageGenerated { task_id, message } => {
+            UiEvent::AiCommitMessageGenerated { task_id, tab_id, field_uid, message } => {
                 if self.ai_thinking_task.as_ref().map(|task| task.id) != Some(task_id) {
                     return;
                 }
@@ -1495,9 +1503,12 @@ impl RepositoryView {
                 } else {
                     // 流式期间已逐段填入输入框，这里用最终结果做一次干净覆盖，
                     // 确保最终的 trim 和换行规范化。
-                    self.commit_message.set_value(message);
-                    self.status = "AI 已生成提交信息".into();
-                    self.last_error = None;
+                    let Some(tab) = self.tab_mut(tab_id).filter(|tab| tab.commit_message.uid == field_uid) else {
+                        return;
+                    };
+                    tab.commit_message.set_value(message);
+                    tab.status = "AI 已生成提交信息".into();
+                    tab.last_error = None;
                 }
             }
             UiEvent::AiReviewGenerated {

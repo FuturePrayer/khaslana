@@ -396,10 +396,11 @@ impl RepositoryView {
 
         let service = self.service_for_tab(tab_id);
         let staged_paths = staged_paths;
+        let field_uid = self.commit_message.uid;
         self.start_ai_thinking_task(
             "正在生成提交信息",
             crate::AiThinkingTaskKind::CommitMessage,
-            |task_id, message| crate::UiEvent::AiCommitMessageGenerated { task_id, message },
+            move |task_id, message| crate::UiEvent::AiCommitMessageGenerated { task_id, tab_id, field_uid, message },
             move |client, _proxy_url, _tx, on_delta| {
                 let repo = git2::Repository::open(&repo_path)?;
                 // 收集所有 staged 文件的 diff 文本。体积预算对齐评审 agent

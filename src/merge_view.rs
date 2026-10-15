@@ -5,7 +5,7 @@ use khaslana::CommitMessage;
 
 use crate::ui::components::dialog_actions;
 use crate::ui::theme::rgb;
-use crate::{DialogState, RepositoryView, ui::theme as ui_theme};
+use crate::{DialogState, RepoTabState, RepositoryView, ui::theme as ui_theme};
 
 pub(crate) fn merge_banner_message(conflict_count: usize) -> Option<String> {
     (conflict_count > 0).then(|| format!("合并进行中 · {conflict_count} 个冲突待解决"))
@@ -46,6 +46,38 @@ fn merge_message_update(
     }
 }
 
+impl RepoTabState {
+    pub(crate) fn sync_workflow_merge_message(
+        &mut self,
+        identity: &crate::WorkflowRunIdentity,
+        snapshot: Option<&khaslana::RepositorySnapshot>,
+    ) -> bool {
+        if !identity.matches_tab(self) {
+            return false;
+        }
+        let Some(snapshot) = snapshot else { return false };
+        self.apply_merge_message_transition(
+            self.snapshot.as_ref().is_some_and(|snapshot| snapshot.merge_in_progress),
+            snapshot.merge_in_progress,
+            snapshot.merge_message.as_deref(),
+        )
+    }
+
+    /// 手动操作与工作流快照共用转换规则，重复刷新不得覆盖用户编辑。
+    pub(crate) fn apply_merge_message_transition(
+        &mut self,
+        was_in_progress: bool,
+        merge_in_progress: bool,
+        merge_message: Option<&str>,
+    ) -> bool {
+        let Some(message) = merge_message_update(was_in_progress, merge_in_progress, merge_message) else {
+            return false;
+        };
+        self.commit_message.set_value(message);
+        true
+    }
+}
+
 impl RepositoryView {
     pub(crate) fn merge_in_progress(&self) -> bool {
         self.snapshot
@@ -70,16 +102,12 @@ impl RepositoryView {
         merge_in_progress: bool,
         merge_message: Option<String>,
     ) {
-        if let Some(message) =
-            merge_message_update(was_in_progress, merge_in_progress, merge_message.as_deref())
-        {
-            if merge_in_progress {
-                self.commit_message.set_value(message);
-            } else {
-                self.commit_message.clear();
-                self.scroll_handle("commit-message-input-scroll")
-                    .set_offset(gpui::point(px(0.0), px(0.0)));
-            }
+        let updated = self.active_tab_state_mut().apply_merge_message_transition(
+            was_in_progress, merge_in_progress, merge_message.as_deref(),
+        );
+        if updated && !merge_in_progress {
+            self.scroll_handle("commit-message-input-scroll")
+                .set_offset(gpui::point(px(0.0), px(0.0)));
         }
     }
 
