@@ -1542,6 +1542,34 @@ impl RepositoryView {
         self.last_error = None;
         self.notify_success(self.status.clone(), cx);
     }
+
+    pub(crate) fn copy_remote_name(&mut self, remote: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(remote));
+        self.remote_context_menu = None;
+        self.status = "已复制远端名称".into();
+        self.last_error = None;
+        self.notify_success(self.status.clone(), cx);
+    }
+
+    pub(crate) fn copy_tag_name(&mut self, tag: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(tag));
+        self.tag_context_menu = None;
+        self.status = "已复制标签名称".into();
+        self.last_error = None;
+        self.notify_success(self.status.clone(), cx);
+    }
+
+    /// 复制贮藏的引用名 `stash@{index}`——git 命令行操作贮藏用的标识，
+    /// 侧边栏行内并不展示它（行内只显示消息）。
+    pub(crate) fn copy_stash_ref(&mut self, index: usize, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(format!(
+            "stash@{{{index}}}"
+        )));
+        self.stash_context_menu = None;
+        self.status = "已复制贮藏引用名".into();
+        self.last_error = None;
+        self.notify_success(self.status.clone(), cx);
+    }
 }
 
 /// 切换目标对应的完成消息：`operation_requires_repository_refresh` 等
