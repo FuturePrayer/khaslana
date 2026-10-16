@@ -17,6 +17,9 @@ use std::sync::Arc;
 
 use super::graph::{GraphBuffer, NodeId, NodeLabel};
 
+#[path = "java_resolve.rs"]
+mod java_resolve;
+
 /// 可被解析为调用目标的符号候选。
 #[derive(Clone, Debug)]
 struct SymbolCandidate {
@@ -32,6 +35,7 @@ struct SymbolCandidate {
     static_member: bool,
     file_path: Arc<str>,
     java_parameters: Option<Vec<String>>,
+    java_definition: super::java::Definition,
 }
 
 #[derive(Clone, Debug)]
@@ -54,12 +58,17 @@ struct NameBucket {
 pub struct Registry {
     name_index: HashMap<String, NameBucket>,
     import_files: HashMap<String, Vec<(Arc<str>, usize)>>,
+    java_packages: HashMap<Arc<str>, String>,
+    java_imports: HashMap<Arc<str>, ImportContext>,
+    java_fields: HashMap<String, Vec<java_resolve::Field>>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct ImportContext {
     files: HashSet<Arc<str>>,
     static_members: HashMap<Arc<str>, HashSet<String>>,
+    java_explicit: HashMap<String, Vec<String>>,
+    java_wildcards: Vec<String>,
 }
 
 fn unique<'a>(mut candidates: impl Iterator<Item = &'a SymbolCandidate>) -> Option<&'a SymbolCandidate> {
@@ -73,7 +82,7 @@ impl Registry {
         let mut registry = Self::default();
         let mut files = HashSet::new();
         for node in &graph.nodes {
-            if !node.label.is_symbol() || node.label == NodeLabel::Field { continue; }
+            if !node.label.is_symbol() || node.label == NodeLabel::Field && super::graph::lang_of_rel_path(&node.file_path) != Some(super::LangId::Java) { continue; }
             let properties: serde_json::Value = serde_json::from_str(&node.properties).unwrap_or_default();
             let scope: Vec<String> = properties["scope"].as_array().cloned()
                 .unwrap_or_default().iter().filter_map(|part| part.as_str().map(str::to_string)).collect();
@@ -81,6 +90,10 @@ impl Registry {
             let (private, static_member) = signature.split(|ch: char| !ch.is_alphanumeric() && ch != '_')
                 .fold((false, false), |(private, static_member), word| (private || word == "private", static_member || word == "static"));
             let scope_name = scope.join(".");
+            if let Some(package) = properties["java_package"].as_str() {
+                registry.java_packages.entry(Arc::clone(&node.file_path)).or_insert_with(|| package.into());
+            }
+            let java_definition: super::java::Definition = serde_json::from_value(properties["java_definition"].clone()).unwrap_or_default();
             let stem = node.file_path.rsplit_once('.').map_or(node.file_path.as_ref(), |(stem, _)| stem)
                 .replace(['/', '\\'], ".");
             let stem = stem.strip_suffix(".mod").unwrap_or(&stem);
@@ -89,12 +102,21 @@ impl Registry {
                     Some(package) => format!("{package}.{scope_name}"), None => scope_name.clone(),
                 }
             } else if scope.is_empty() { stem.to_string() } else { format!("{stem}.{scope_name}") };
+            if node.label == NodeLabel::Field {
+                if let Some(kind) = java_definition.value_type {
+                    registry.java_fields.entry(node.name.clone()).or_default().push(java_resolve::Field {
+                        owner: logical_container, file: Arc::clone(&node.file_path), kind, getter: java_definition.getter,
+                    });
+                }
+                continue;
+            }
             let candidate = SymbolCandidate { id: node.id,
                 qualified_name: Arc::clone(&node.qualified_name), scope, scope_name, logical_container,
                 language: super::graph::lang_of_rel_path(&node.file_path),
                 private, static_member,
                 file_path: Arc::clone(&node.file_path),
                 java_parameters: serde_json::from_value(properties["java_parameters"].clone()).ok(),
+                java_definition,
                 callable: matches!(node.label, NodeLabel::Function | NodeLabel::Method),
                 container: matches!(node.label, NodeLabel::Class | NodeLabel::Struct | NodeLabel::Interface | NodeLabel::Trait | NodeLabel::Enum) };
             if files.insert(Arc::clone(&node.file_path)) {
@@ -119,6 +141,15 @@ impl Registry {
             }
             bucket.candidates.push(candidate);
         }
+        let mut file_imports = HashMap::<Arc<str>, Vec<String>>::new();
+        for edge in &graph.edges {
+            if edge.etype == super::graph::EdgeType::Imports && super::graph::lang_of_rel_path(&graph.get(edge.source).file_path) == Some(super::LangId::Java) {
+                file_imports.entry(Arc::clone(&graph.get(edge.source).file_path)).or_default().push(graph.get(edge.target).name.clone());
+            }
+        }
+        for (file, imports) in file_imports {
+            registry.java_imports.insert(file, registry.imported_files(&imports));
+        }
         registry
     }
 
@@ -126,10 +157,18 @@ impl Registry {
     pub(super) fn imported_files(&self, imports: &[String]) -> ImportContext {
         let mut context = ImportContext::default();
         for import in imports {
+            if !import.starts_with("static:") {
+                if let Some(package) = import.strip_suffix(".*") {
+                    context.java_wildcards.push(package.into());
+                } else if let Some(name) = import.rsplit('.').next() {
+                    context.java_explicit.entry(name.into()).or_default().push(import.clone());
+                }
+            }
             let (module, member) = match import.strip_prefix("static:") {
                 Some(value) => match value.rsplit_once('.') { Some((module, member)) => (module, Some(member)), None => continue },
                 None => (import.as_str(), None),
             };
+            let module = module.trim_end_matches(".*");
             let parts: Vec<_> = module.split('.').filter(|part| !part.is_empty()).map(str::to_ascii_lowercase).collect();
             let start = parts.iter().take_while(|part| RUST_PATH_ROOTS.contains(&part.as_str())).count();
             let parts = &parts[start..];
@@ -174,6 +213,14 @@ impl Registry {
         &'a self, name: &str, calling_file: &str, imports: &ImportContext, qualifier: Option<&str>, scope: &[String],
         call: Option<&super::java::JavaCall>,
     ) -> Option<ResolvedTarget> {
+        let typed = call.map(|call| self.java_call(call, calling_file, imports, scope, 0));
+        self.resolve_typed_inner(name, calling_file, imports, qualifier, scope, typed.as_ref())
+    }
+
+    fn resolve_typed_inner<'a>(
+        &'a self, name: &str, calling_file: &str, imports: &ImportContext, qualifier: Option<&str>, scope: &[String],
+        call: Option<&super::java::JavaCall>,
+    ) -> Option<ResolvedTarget> {
         let bucket = self.name_index.get(name)?;
         let language = super::graph::lang_of_rel_path(calling_file);
         let java = language == Some(super::LangId::Java);
@@ -183,7 +230,17 @@ impl Registry {
             // 重载筛选只能在同一声明容器内进行，不能用实参类型消除不同类的歧义。
             if java && candidates.first().is_some_and(|first| candidates.iter().any(|candidate|
                 candidate.file_path != first.file_path || candidate.scope != first.scope)) { return None; }
-            if java { super::java::select(candidates, |candidate| candidate.java_parameters.as_ref(), call) }
+            if java {
+                let normalized: Vec<_> = candidates.into_iter().map(|candidate| {
+                    let empty = ImportContext::default();
+                    let imports = self.java_imports.get(&candidate.file_path).unwrap_or(&empty);
+                    let parameters = candidate.java_parameters.as_ref().map(|parameters| parameters.iter()
+                        .map(|parameter| if candidate.java_definition.type_parameters.contains(parameter) { "?".into() }
+                            else { self.java_type(parameter, &candidate.file_path, imports).unwrap_or_else(|| "?".into()) }).collect());
+                    (candidate, parameters)
+                }).collect();
+                super::java::select(normalized.iter().collect(), |candidate| candidate.1.as_ref(), call).map(|candidate| candidate.0)
+            }
             else { unique(candidates.into_iter()) }
         };
         let explicit_members = matches!(language,
@@ -204,11 +261,10 @@ impl Registry {
             let normalized = qualifier.replace("::", ".");
             let qualifier = normalized.trim_start_matches("crate.");
             let ids = bucket.qualified.get(qualifier.rsplit('.').next()?)?;
+            let java_qualifier = java.then(|| self.java_type(qualifier, calling_file, imports)).flatten();
             let qualified = |candidate: &&SymbolCandidate| same_language(language, candidate.language)
-                && qualifier_matches(candidate, qualifier)
+                && if java { java_qualifier.as_deref() == Some(candidate.logical_container.as_str()) } else { qualifier_matches(candidate, qualifier) }
                 && (!java || candidate.static_member || call.is_some_and(|call| call.instance))
-                && (!java || candidate.file_path.as_ref() == calling_file || imports.files.contains(&candidate.file_path)
-                    || std::path::Path::new(candidate.file_path.as_ref()).parent() == std::path::Path::new(calling_file).parent())
                 && (!java || !candidate.private || candidate.file_path.as_ref() == calling_file && candidate.scope == scope);
             let candidates: Vec<_> = local.iter().map(|id| &bucket.candidates[*id]).filter(qualified).collect();
             if !candidates.is_empty() {

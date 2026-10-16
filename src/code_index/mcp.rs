@@ -503,7 +503,7 @@ impl McpServer {
                     value["coverage_note"] = json!("total 统计指定深度内去重的节点，不是调用次数；hop=1 的 call_sites 给出直接边的调用次数和最多 100 个行号。启发式调用图仍可能缺少动态调用或类型信息。");
                 } else {
                     for key in ["callers", "callees"] {
-                        if let Some(hops) = value[key].as_array_mut() {
+                        if let Some(hops) = value.get_mut(key).and_then(Value::as_array_mut) {
                             for hop in hops {
                                 // 缺省调用文件为该行的 file_path；跨文件的出向边仍保留真实调用位置。
                                 if hop["call_sites"].is_object() && hop["call_sites"]["file_path"] == hop["file_path"] {

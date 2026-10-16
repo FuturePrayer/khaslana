@@ -70,6 +70,10 @@ fn query_tokens(query: &str) -> Vec<String> {
     tokens
 }
 
+fn identifier_query(query: &str) -> bool {
+    !query.is_empty() && query.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':'))
+}
+
 /// unicode61 不会切分连续汉字；按字建立位置索引，查询仍作为完整短语匹配。
 fn index_text(input: &str) -> String {
     let mut text = String::new();
@@ -95,7 +99,8 @@ impl CodeIndexStore {
         let tx = self.conn.unchecked_transaction().map_err(|e| err(format!("开启搜索快照失败：{e}")))?;
         let result = self.search_page(options, false)?;
         // 先保持多词查询的精度；完全无命中时再放宽，避免自然描述中的附加词吞掉结果。
-        let result = if result.1 == 0 && query_tokens(options.query.unwrap_or("")).len() > 1 {
+        let query = options.query.unwrap_or("").trim();
+        let result = if result.1 == 0 && !identifier_query(query) && query_tokens(query).len() > 1 {
             self.search_page(options, true)
         } else {
             Ok(result)
@@ -116,10 +121,13 @@ impl CodeIndexStore {
         if options.query.is_some() && tokens.is_empty() {
             return Ok((Vec::new(), 0));
         }
-        let terms: Vec<String> = tokens
+        // 标识符的驼峰词必须在同一字段连续出现，不能拼接无关路径、签名和文档词。
+        let terms: Vec<String> = if identifier_query(query) && tokens.len() > 1 {
+            vec![format!("\"{}\"*", index_text(query))]
+        } else { tokens
             .iter()
             .map(|token| format!("\"{}\"*", index_text(token)))
-            .collect();
+            .collect() };
         let match_expr =
             (!terms.is_empty()).then(|| terms.join(if partial { " OR " } else { " AND " }));
         let all_expr = (!terms.is_empty()).then(|| terms.join(" AND "));

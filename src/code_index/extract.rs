@@ -37,6 +37,7 @@ pub struct SymbolDef {
     pub signature: String,
     pub docstring: String,
     pub java_parameters: Option<Vec<String>>,
+    pub java_definition: Option<super::java::Definition>,
 }
 
 #[derive(Clone, Debug)]
@@ -199,6 +200,8 @@ fn walk_inner(node: Node, depth: usize, ctx: &mut WalkContext) {
         if kind == "import_declaration" && text.trim_start().starts_with("import static ") {
             let wildcard = text.trim().trim_end_matches(';').ends_with(".*");
             module = format!("static:{module}{}", if wildcard { ".*" } else { "" });
+        } else if kind == "import_declaration" && text.trim().trim_end_matches(';').ends_with(".*") {
+            module.push_str(".*");
         }
         if !module.is_empty() {
             ctx.result.imports.push(ImportRef { module });
@@ -206,20 +209,25 @@ fn walk_inner(node: Node, depth: usize, ctx: &mut WalkContext) {
     }
 
     // 字段定义。
-    if ctx.spec.field_types.contains(&kind)
-        && let Some(name) = child_name_text(node, ctx.source)
-    {
+    if ctx.spec.field_types.contains(&kind) {
+        let names: Vec<_> = if ctx.java.is_some() && kind == "field_declaration" {
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor).filter(|child| child.kind() == "variable_declarator")
+                .filter_map(|variable| variable.child_by_field_name("name"))
+                .filter_map(|name| name.utf8_text(ctx.source).ok().map(str::to_string)).collect()
+        } else { child_name_text(node, ctx.source).into_iter().collect() };
         let (signature, docstring) = super::metadata::symbol_metadata(node, ctx.source);
-        ctx.result.defs.push(SymbolDef {
+        for name in names { ctx.result.defs.push(SymbolDef {
             label: NodeLabel::Field,
             name,
             scope: ctx.class_stack.clone(),
             start_line: node.start_position().row as u32 + 1,
             end_line: node.end_position().row as u32 + 1,
-            signature,
-            docstring,
+            signature: signature.clone(),
+            docstring: docstring.clone(),
             java_parameters: None,
-        });
+            java_definition: ctx.java.as_ref().map(|_| super::java::definition(node, ctx.source)),
+        }); }
     }
     // 初始化器里的调用点由下方通用递归覆盖，此处不 return。
 
@@ -233,7 +241,10 @@ fn walk_inner(node: Node, depth: usize, ctx: &mut WalkContext) {
         && let Some(mut def) = extract_def(node, node_kind, def_kind, ctx)
     {
         (def.signature, def.docstring) = super::metadata::symbol_metadata(node, ctx.source);
-        if ctx.java.is_some() { def.java_parameters = super::java::parameters(node, ctx.source); }
+        if ctx.java.is_some() {
+            def.java_parameters = super::java::parameters(node, ctx.source);
+            def.java_definition = Some(super::java::definition(node, ctx.source));
+        }
         let definition_index = ctx.result.defs.len();
         ctx.result.defs.push(def.clone());
         let container = is_container_def(def_kind, kind, ctx.spec);
@@ -274,7 +285,7 @@ fn walk_inner(node: Node, depth: usize, ctx: &mut WalkContext) {
         let name = format!("callback@{}:{}", node.start_position().row + 1, node.start_position().column + 1);
         let (signature, docstring) = super::metadata::symbol_metadata(node, ctx.source);
         ctx.result.defs.push(SymbolDef { label: NodeLabel::Function, name: name.clone(), scope: ctx.class_stack.clone(),
-            start_line: node.start_position().row as u32 + 1, end_line: node.end_position().row as u32 + 1, signature, docstring, java_parameters: None });
+            start_line: node.start_position().row as u32 + 1, end_line: node.end_position().row as u32 + 1, signature, docstring, java_parameters: None, java_definition: None });
         ctx.fn_stack.push((name, ctx.result.defs.len() - 1));
         recurse_children(node, depth, ctx);
         ctx.fn_stack.pop();
@@ -358,6 +369,7 @@ fn extract_def(
             signature: String::new(),
             docstring: String::new(),
             java_parameters: None,
+            java_definition: None,
         });
     }
 
@@ -378,6 +390,7 @@ fn extract_def(
             signature: String::new(),
             docstring: String::new(),
             java_parameters: None,
+            java_definition: None,
         });
     }
 
@@ -430,6 +443,7 @@ fn extract_def(
         signature: String::new(),
         docstring: String::new(),
         java_parameters: None,
+        java_definition: None,
     })
 }
 

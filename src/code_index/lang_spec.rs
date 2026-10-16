@@ -257,14 +257,17 @@ pub static LANG_SPECS: &[(LangId, LangSpec)] = &[
             def_types: &[
                 ("class_declaration", DefKind::Class),
                 ("interface_declaration", DefKind::Interface),
+                ("annotation_type_declaration", DefKind::Interface),
                 ("enum_declaration", DefKind::Enum),
                 ("record_declaration", DefKind::Class),
                 ("method_declaration", DefKind::Function),
+                ("annotation_type_element_declaration", DefKind::Function),
                 ("constructor_declaration", DefKind::Function),
             ],
             class_context_types: &[
                 "class_declaration",
                 "interface_declaration",
+                "annotation_type_declaration",
                 "enum_declaration",
                 "record_declaration",
             ],

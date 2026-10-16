@@ -19,8 +19,8 @@ use crate::types::Result;
 /// v4 增加独立调用记录表；旧库保持可查询，下一次刷新补建调用暂存。
 pub const CODE_INDEX_SCHEMA_VERSION: u32 = 4;
 
-// 内容版本独立于 schema；v6 修正调用接收者、语言隔离、文件名和调用点证据。
-const INDEX_CONTENT_VERSION: &str = "7";
+// 内容版本独立于 schema；v8 补齐 Java 返回类型、导入身份、字段/注解与递归调用证据。
+const INDEX_CONTENT_VERSION: &str = "8";
 
 /// 建库路径：`<数据目录>/code-index/<repo哈希8>/index.db`。
 /// 目录不存在时创建。
@@ -810,11 +810,14 @@ fn write_calls(conn: &Connection, graph: &GraphBuffer, paths: Option<&std::colle
         if paths.is_some_and(|paths| !paths.contains(path.as_ref())) { continue; }
         stmt.execute(params![path.as_ref(), records.encode()?]).map_err(|error| err(format!("写入调用记录失败：{error}")))?;
         conn.execute("DELETE FROM call_names WHERE file_path=?1", params![path.as_ref()]).map_err(|error| err(format!("清理调用名字失败：{error}")))?;
-        let names: std::collections::HashSet<_> = records.calls.iter().map(|call| call.name.as_ref()).collect();
+        let mut names: std::collections::HashSet<_> = records.calls.iter().map(|call| call.name.to_string()).collect();
+        for call in &records.calls {
+            if let Ok(java) = serde_json::from_str::<super::java::JavaCall>(&call.java) { java.field_dependencies(&mut names); }
+        }
         let names: Vec<_> = names.into_iter().collect();
         for batch in names.chunks(256) {
             let sql = format!("INSERT INTO call_names(name,file_path) VALUES {}", vec!["(?,?)"; batch.len()].join(","));
-            let args: Vec<_> = batch.iter().flat_map(|name| [*name, path.as_ref()]).collect();
+            let args: Vec<_> = batch.iter().flat_map(|name| [name.as_str(), path.as_ref()]).collect();
             conn.prepare_cached(&sql).and_then(|mut stmt| stmt.execute(rusqlite::params_from_iter(args)))
                 .map_err(|error| err(format!("写入调用名字失败：{error}")))?;
         }

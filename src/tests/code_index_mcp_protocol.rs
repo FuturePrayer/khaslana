@@ -107,6 +107,7 @@ fn compact_queries_keep_identity_pagination_and_direct_call_evidence() {
     assert!(inbound["callers"][0]["call_sites"]["file_path"].is_null());
     assert_eq!(inbound["callers"][0]["file_path"], original["callers"][0]["call_sites"]["file_path"]);
     assert!(inbound["coverage_note"].is_null());
+    assert!(inbound.get("callees").is_none(), "紧凑结果不应为缺省方向补 null 字段");
     assert!(inbound.to_string().len() < original.to_string().len());
     let outbound = call("trace_path", json!({"function_name":"cross","direction":"outbound","depth":1}));
     assert_eq!(outbound["callees"][0]["file_path"], "lib.rs");

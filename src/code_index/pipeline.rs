@@ -347,6 +347,10 @@ fn run_incremental_inner(
 
     let mut changed_names: HashSet<String> = graph.nodes.iter().filter(|node| node.label.is_symbol() && purge_set.contains(node.file_path.as_ref()))
         .map(|node| node.name.clone()).collect();
+    for node in graph.nodes.iter().filter(|node| node.label == NodeLabel::Field && purge_set.contains(node.file_path.as_ref())
+        && lang_of_rel_path(&node.file_path) == Some(super::LangId::Java)) {
+        changed_names.extend(java_getter_names(&node.name));
+    }
 
     // 3. 按文件清除（级联删边 + 幸存节点 id 重排）。
     graph.purge_files(&purge_set);
@@ -357,6 +361,15 @@ fn run_incremental_inner(
     run_extraction_pass(&changed, options, |parsed| {
         changed_names.extend(parsed.iter().filter_map(|output| output.result.as_ref())
             .flat_map(|result| result.defs.iter().map(|def| def.name.clone())));
+        for output in &parsed {
+            if lang_of_rel_path(&output.rel_path) == Some(super::LangId::Java) {
+                if let Some(result) = &output.result {
+                    for def in result.defs.iter().filter(|def| def.label == NodeLabel::Field) {
+                        changed_names.extend(java_getter_names(&def.name));
+                    }
+                }
+            }
+        }
         merger.merge_parsed(&mut graph, parsed);
     })?;
     if options.cancelled() { return Ok(InnerOutcome::Cancelled); }
@@ -392,6 +405,12 @@ fn run_incremental_inner(
     let meta = index_meta(repo_root, repo_name, branch, "incremental");
     if !store.update_files_cancellable(&graph, &hashes, &meta, &purge_set, &affected, &options.cancel)? { return Ok(InnerOutcome::Cancelled); }
     Ok(InnerOutcome::Done)
+}
+
+fn java_getter_names(field: &str) -> [String; 2] {
+    let mut chars = field.chars();
+    let suffix = chars.next().map(|first| first.to_uppercase().chain(chars).collect::<String>()).unwrap_or_default();
+    [format!("get{suffix}"), format!("is{suffix}")]
 }
 
 // ---------------------------------------------------------------------------
@@ -686,7 +705,8 @@ impl GraphMerger {
                     def.start_line,
                     def.end_line,
                     serde_json::json!({ "signature": def.signature, "docstring": def.docstring, "scope": def.scope,
-                        "java_parameters": def.java_parameters, "java_package": result.java_package }).to_string(),
+                        "java_parameters": def.java_parameters, "java_package": result.java_package,
+                        "java_definition": def.java_definition }).to_string(),
                 );
                 definition_ids.push(node_id);
                 self.def_index
@@ -792,11 +812,9 @@ impl GraphMerger {
                     };
                     if let Some(target) = resolved {
                         if let Some(source) = graph.find_by_qn(&call.source_qn) {
-                            if source != target.id {
-                                let edge = edges.entry((source, target.id)).or_insert_with(|| (target, Arc::clone(&call.callee_display), 0, Vec::new()));
-                                edge.2 += 1;
-                                if edge.3.len() < 100 && call.line > 0 { edge.3.push(call.line); }
-                            }
+                            let edge = edges.entry((source, target.id)).or_insert_with(|| (target, Arc::clone(&call.callee_display), 0, Vec::new()));
+                            edge.2 += 1;
+                            if edge.3.len() < 100 && call.line > 0 { edge.3.push(call.line); }
                         }
                     } else {
                         unresolved += 1;

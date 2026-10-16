@@ -255,7 +255,7 @@ impl GraphBuffer {
         etype: EdgeType,
         properties: String,
     ) -> bool {
-        if source == target {
+        if source == target && etype != EdgeType::Calls {
             return false;
         }
         if !self.edge_keys.insert((source, target, etype)) {

@@ -77,9 +77,11 @@ fn bfs(conn: &Connection, starts: &[i64], inbound: bool, depth: u32, max_nodes: 
                 FROM edges e JOIN nodes n ON n.id=e.{target} WHERE e.type='CALLS' AND e.{source} IN ({}) ORDER BY n.id", placeholders(batch.len()));
             let args: Vec<_> = batch.iter().copied().map(Value::Integer).collect();
             for node in nodes(conn, &sql, &args)? {
-                if !visited.insert(node.id) { continue; }
+                // 自调用作为一跳证据返回一次，但不再次展开，避免递归或环无限遍历。
+                let recursion = hop == 1 && starts.len() == 1 && node.id == starts[0];
+                if !visited.insert(node.id) && !recursion { continue; }
                 let candidate = node.candidate;
-                next.push(node.id);
+                if !recursion { next.push(node.id); }
                 let call_sites = (hop == 1 && starts.len() == 1).then(|| {
                     serde_json::from_str::<serde_json::Value>(&node.properties).ok()
                         .and_then(|properties| serde_json::from_value(properties["call_sites"].clone()).ok())
