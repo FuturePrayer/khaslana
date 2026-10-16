@@ -62,7 +62,7 @@ impl RepositoryView {
             global_busy_tab: None,
             next_tab_id: 1,
             fallback_tab: {
-                let mut tab = RepoTabState::new(RepoTabId(0), None);
+                let mut tab = RepoTabState::new(RepoTabId(0), None, TextFieldState::new(cx, "提交信息"));
                 if let Some(status) = storage_status {
                     tab.status = status;
                     tab.last_error = storage_error;
@@ -196,9 +196,6 @@ impl RepositoryView {
             create_branch_checkout: true,
             create_branch_base: None,
             branch_rename: TextFieldState::new(cx, "重命名为"),
-            commit_message: TextFieldState::new(cx, "提交信息"),
-            amend_mode: false,
-            amend_prefill: None,
             stash_message: TextFieldState::new(cx, "贮藏说明（可选）"),
             tag_name: TextFieldState::new(cx, "标签名称，如 v1.0.0"),
             tag_message: TextFieldState::new(cx, "标签附注信息（可选）"),
@@ -557,7 +554,8 @@ impl RepositoryView {
 
         let id = RepoTabId(self.next_tab_id);
         self.next_tab_id = self.next_tab_id.wrapping_add(1).max(1);
-        self.tabs.push(RepoTabState::new(id, Some(path)));
+        let commit_message = self.fallback_tab.commit_message.empty_sibling();
+        self.tabs.push(RepoTabState::new(id, Some(path), commit_message));
         self.active_tab = Some(id);
         self.inherit_main_mode(previous_mode);
         self.save_session();
@@ -1976,12 +1974,37 @@ impl RepositoryView {
         layers
     }
 
+    /// 背景分隔条不能绕过任何模态层；不能只检查普通 active_dialog。
+    pub(crate) fn background_pointer_blocked(&self) -> bool {
+        self.overlay_focus_layers().iter().any(|layer| layer.0.is_modal())
+    }
+
+    pub(crate) fn pointer_overlay_key(&self) -> Option<OverlayFocusKey> {
+        self.overlay_focus_layers().last().cloned()
+    }
+
     /// 渲染前只记录进入/退出关系；新树完成后再验证目标是否仍挂载。
     /// 同帧替换继承原触发器，关闭父子多层时恢复最外层的返回目标。
     pub(crate) fn maintain_overlay_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.context_menu_keyboard.borrow_mut().actions.clear();
         let restore_pending = std::mem::take(&mut self.overlay_focus_return.restore_pending);
         let layers = self.overlay_focus_layers();
+        // 遮罩可能吞掉 mouse-up；进入模态时主动结束旧拖拽，不能等鼠标再次移动。
+        if self.background_pointer_blocked() {
+            for target in [ResizeTarget::Sidebar, ResizeTarget::Changes,
+                ResizeTarget::WorkflowTemplates, ResizeTarget::HistoryFiles,
+                ResizeTarget::HistoryInspectorFiles, ResizeTarget::HistoryDetails,
+                ResizeTarget::HistoryInspectorHeight, ResizeTarget::BrowseFiles,
+                ResizeTarget::HistoryGraph] {
+                if self.resize_state(target).is_some() {
+                    self.finish_resize_column(target);
+                }
+            }
+        }
+        if self.scrollbar_drag.as_ref().is_some_and(|drag|
+            crate::ui_helpers::pointer_drag_should_end(&drag.overlay_key, &self.pointer_overlay_key(), true)) {
+            self.scrollbar_drag = None;
+        }
         let current = window.focused(cx).map(|handle| handle.downgrade());
         let change = self.overlay_focus_return.stack.reconcile(&layers, current.clone())
             .or_else(|| restore_pending.then_some(OverlayFocusChange {

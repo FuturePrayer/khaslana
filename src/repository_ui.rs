@@ -1607,7 +1607,7 @@ impl RepositoryView {
         // 弹窗或弹层菜单打开期间分割线不响应：不显示拖拽光标、不高亮、不响应鼠标，
         // 避免弹层边缘容差区内的悬停/点击被分割线抢走。
         let interactive = column_splitter_accepts_mouse_events(
-            self.active_dialog.is_some(),
+            self.background_pointer_blocked(),
             self.any_popup_menu_open(),
         );
         // 侧栏和变更列表的拖拽区只保留透明命中范围，悬停和拖动均不画线。
@@ -1706,17 +1706,20 @@ impl RepositoryView {
             })
             .child(
                 canvas(
-                    |_, _, _| (),
-                    move |bounds, _, window, _| {
+                    |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+                    move |bounds, hitbox, window, _| {
                         window.on_mouse_event({
                             let entity = entity.clone();
-                            move |event: &MouseDownEvent, _, _, cx| {
-                                if !bounds.contains(&event.position) {
+                            move |event: &MouseDownEvent, phase, window, cx| {
+                                // Capture 按后向前派发，不能在那里绕过遮罩命中检查。
+                                if !crate::ui_helpers::pointer_drag_can_start(
+                                    phase, hitbox.is_hovered(window), event.button,
+                                ) || !bounds.contains(&event.position) {
                                     return;
                                 }
                                 entity.update(cx, |this, cx| {
                                     if !column_splitter_accepts_mouse_events(
-                                        this.active_dialog.is_some(),
+                                        this.background_pointer_blocked(),
                                         this.any_popup_menu_open(),
                                     ) {
                                         this.finish_resize_column(target);
@@ -1734,17 +1737,18 @@ impl RepositoryView {
                         });
                         window.on_mouse_event({
                             let entity = entity.clone();
-                            move |event: &MouseMoveEvent, _, _, cx| {
+                            move |event: &MouseMoveEvent, phase, _, cx| {
+                                if phase != gpui::DispatchPhase::Capture { return; }
                                 let (resizing, active_dialog, popup_open) = {
                                     let view = entity.read(cx);
                                     (
                                         view.resize_state(target).is_some(),
-                                        view.active_dialog.is_some(),
+                                        view.background_pointer_blocked(),
                                         view.any_popup_menu_open(),
                                     )
                                 };
                                 if column_splitter_should_clear_resize(
-                                    active_dialog || popup_open,
+                                    active_dialog || popup_open || !event.dragging(),
                                     resizing,
                                 ) {
                                     entity.update(cx, |this, cx| {
@@ -1773,7 +1777,7 @@ impl RepositoryView {
                                 let view = entity.read(cx);
                                 (
                                     view.resize_state(target).is_some(),
-                                    view.active_dialog.is_some(),
+                                    view.background_pointer_blocked(),
                                     view.any_popup_menu_open(),
                                 )
                             };

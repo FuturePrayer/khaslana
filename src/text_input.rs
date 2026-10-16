@@ -13,9 +13,7 @@
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gpui::{Context, FocusHandle, SharedString};
-
-use crate::RepositoryView;
+use gpui::{App, FocusHandle, SharedString};
 
 /// 进程内自增的文本框身份。同一位置（`FieldId` 下标/槽位）的业务真值被
 /// 整体更换后——工作流模板加载、编辑器重建、AI 回填、步骤交换——即使文本
@@ -74,12 +72,22 @@ pub(crate) struct TextFieldState {
 
 impl TextFieldState {
     pub(crate) fn new(
-        cx: &mut Context<RepositoryView>,
+        cx: &mut App,
         placeholder: impl Into<SharedString>,
     ) -> Self {
         Self {
             focus: cx.focus_handle().tab_stop(true),
             placeholder: placeholder.into(),
+            uid: NEXT_TEXT_FIELD_UID.fetch_add(1, Ordering::Relaxed),
+            edit: TextEditState::new(),
+        }
+    }
+
+    /// 新仓库的独立真值；首次显示时 Kit 根据新身份重绑自己的焦点句柄。
+    pub(crate) fn empty_sibling(&self) -> Self {
+        Self {
+            focus: self.focus.clone(),
+            placeholder: self.placeholder.clone(),
             uid: NEXT_TEXT_FIELD_UID.fetch_add(1, Ordering::Relaxed),
             edit: TextEditState::new(),
         }

@@ -4,7 +4,7 @@ use khaslana::MemoryCredentialStore;
 #[test]
 fn workflow_event_identity_rejects_previous_run_or_repository() {
     let repo_path = PathBuf::from("C:/work/repo");
-    let mut tab = RepoTabState::new(RepoTabId(7), Some(repo_path.clone()));
+    let mut tab = test_repo_tab(RepoTabId(7), Some(repo_path.clone()));
     let control = khaslana::WorkflowRunControl::new();
     let identity = WorkflowRunIdentity {
         tab_id: tab.id,
@@ -361,7 +361,7 @@ fn context_navigator_preferences_are_shared_across_modes() {
 // 高亮分支、开关与详情卡折叠状态必须完整保留（close_commit_graph 不重置）。
 #[test]
 fn commit_graph_state_survives_mode_round_trip() {
-    let mut tab = RepoTabState::new(RepoTabId(0), None);
+    let mut tab = test_repo_tab(RepoTabId(0), None);
     tab.commit_graph.highlight_branch = Some("feature".to_string());
     tab.commit_graph.highlight_ahead_only = true;
     tab.commit_graph.dim_merges = true;
@@ -1028,8 +1028,8 @@ fn clone_target_path_uses_selected_parent_directory() {
 
 #[test]
 fn repo_tab_workflow_state_is_isolated_per_tab() {
-    let mut left = RepoTabState::new(RepoTabId(1), Some(PathBuf::from("C:/repos/left")));
-    let right = RepoTabState::new(RepoTabId(2), Some(PathBuf::from("C:/repos/right")));
+    let mut left = test_repo_tab(RepoTabId(1), Some(PathBuf::from("C:/repos/left")));
+    let right = test_repo_tab(RepoTabId(2), Some(PathBuf::from("C:/repos/right")));
 
     left.workflow_state.file_path =
         Some(PathBuf::from("C:/Users/test/.khaslana/workflows/a.json5"));
@@ -1637,7 +1637,7 @@ fn filter_test_commit(oid: &str) -> CommitInfo {
 #[test]
 fn history_file_filter_survives_clear_history() {
     // 过滤器是用户意图：clear_history（切 scope/刷新共用路径）清列表但保留过滤
-    let mut tab = RepoTabState::new(RepoTabId(1), None);
+    let mut tab = test_repo_tab(RepoTabId(1), None);
     tab.history_file_filter = Some("src/lib.rs".into());
     tab.history_commits = vec![filter_test_commit("a"), filter_test_commit("b")];
     tab.history_has_more = true;
@@ -1654,7 +1654,7 @@ fn history_file_filter_survives_clear_history() {
 #[test]
 fn history_commits_event_guard_requires_matching_path_filter() {
     // scope + path_filter 双比较：切换过滤后，旧一代请求晚到的结果被丢弃
-    let mut tab = RepoTabState::new(RepoTabId(1), None);
+    let mut tab = test_repo_tab(RepoTabId(1), None);
     tab.repository_load_id = 3;
     tab.history_scope = HistoryScope::CurrentBranch;
     tab.history_file_filter = Some("src/lib.rs".into());
@@ -1972,4 +1972,99 @@ fn workflow_ai_completion_releases_task_even_when_target_is_gone() {
         assert!(running.is_none());
         assert!(crate::take_matching_ai_task(&mut running, 5).is_none());
     }
+}
+
+fn test_repo_tab(id: RepoTabId, path: Option<PathBuf>) -> RepoTabState {
+    let cx = gpui::TestAppContext::single();
+    let field = cx.update(|cx| TextFieldState::new(cx, "提交信息"));
+    RepoTabState::new(id, path, field)
+}
+
+#[test]
+fn workflow_merge_snapshots_share_manual_transition_and_preserve_tab_drafts() {
+    let mut a = test_repo_tab(RepoTabId(1), Some(PathBuf::from("C:/work/a")));
+    let mut b = test_repo_tab(RepoTabId(2), Some(PathBuf::from("C:/work/b")));
+    a.commit_message.set_value("A 普通草稿");
+    b.commit_message.set_value("B 正在编辑");
+    b.commit_message.caret = 3;
+    b.commit_message.selection_anchor = Some(0);
+    b.amend_mode = true;
+    b.amend_prefill = Some("B 修补预填".into());
+    assert_ne!(a.commit_message.uid, b.commit_message.uid);
+    let sibling = b.commit_message.empty_sibling();
+    assert_ne!(sibling.uid, b.commit_message.uid);
+    assert!(sibling.value.is_empty());
+    assert_eq!(sibling.caret, 0);
+    assert_eq!(sibling.selection_anchor, None);
+    let control = khaslana::WorkflowRunControl::new();
+    let identity = WorkflowRunIdentity {
+        tab_id: a.id, run_id: control.id(), repo_path: a.repo_path.clone().unwrap(),
+        definition_generation: 4,
+    };
+    a.workflow_state.active_run = Some(WorkflowActiveRun { identity: identity.clone(), control });
+    let merge = RepositorySnapshot {
+        path: identity.repo_path.clone(), merge_in_progress: true,
+        merge_message: Some("Merge branch 'feature'".into()),
+        conflicts: vec!["conflict.txt".into()], ..Default::default()
+    };
+    let mut manual = test_repo_tab(RepoTabId(3), Some(PathBuf::from("C:/work/manual")));
+    manual.apply_merge_message_transition(false, true, merge.merge_message.as_deref());
+
+    // 成功、失败、取消和 panic 的恢复事件都走同一个快照归约入口。
+    assert!(a.sync_workflow_merge_message(&identity, Some(&merge)));
+    assert_eq!(a.commit_message.value, manual.commit_message.value);
+    a.snapshot = Some(merge.clone());
+    a.commit_message.set_value("A 手动调整的合并信息");
+    assert!(!a.sync_workflow_merge_message(&identity, Some(&merge)));
+    assert_eq!(a.commit_message.value, "A 手动调整的合并信息");
+    assert!(!a.sync_workflow_merge_message(&identity, None));
+    assert_eq!(a.commit_message.value, "A 手动调整的合并信息");
+
+    // 切回 A 直接读取它自己的草稿，不依赖前台 B，也不会丢失光标与修补状态。
+    assert_eq!(b.commit_message.value, "B 正在编辑");
+    assert_eq!(b.commit_message.caret, 3);
+    assert_eq!(b.commit_message.selection_anchor, Some(0));
+    assert!(b.amend_mode);
+    assert_eq!(b.amend_prefill.as_deref(), Some("B 修补预填"));
+    let idle = RepositorySnapshot { path: identity.repo_path.clone(), ..Default::default() };
+    assert!(a.sync_workflow_merge_message(&identity, Some(&idle)));
+    a.snapshot = Some(idle);
+    assert!(a.commit_message.value.is_empty());
+    assert_eq!(b.commit_message.value, "B 正在编辑");
+    assert!(a.sync_workflow_merge_message(&identity, Some(&merge)));
+    a.snapshot = Some(merge);
+    assert_eq!(a.commit_message.value, "Merge branch 'feature'");
+}
+
+#[test]
+fn workflow_merge_snapshot_rejects_stale_identity_and_unknown_state() {
+    let mut tab = test_repo_tab(RepoTabId(7), Some(PathBuf::from("C:/work/a")));
+    tab.commit_message.set_value("保留草稿");
+    let control = khaslana::WorkflowRunControl::new();
+    let identity = WorkflowRunIdentity {
+        tab_id: tab.id, run_id: control.id(), repo_path: tab.repo_path.clone().unwrap(),
+        definition_generation: 2,
+    };
+    tab.workflow_state.active_run = Some(WorkflowActiveRun { identity: identity.clone(), control });
+    let merge = RepositorySnapshot { merge_in_progress: true, merge_message: Some("预填".into()), ..Default::default() };
+    for stale in [
+        WorkflowRunIdentity { run_id: identity.run_id + 1, ..identity.clone() },
+        WorkflowRunIdentity { tab_id: RepoTabId(8), ..identity.clone() },
+        WorkflowRunIdentity { repo_path: PathBuf::from("C:/work/b"), ..identity.clone() },
+        WorkflowRunIdentity { definition_generation: 1, ..identity.clone() },
+    ] {
+        assert!(!tab.sync_workflow_merge_message(&stale, Some(&merge)));
+        assert_eq!(tab.commit_message.value, "保留草稿");
+    }
+    assert!(!tab.sync_workflow_merge_message(&identity, None));
+    let no_message = RepositorySnapshot { merge_in_progress: true, ..Default::default() };
+    assert!(!tab.sync_workflow_merge_message(&identity, Some(&no_message)));
+    assert_eq!(tab.commit_message.value, "保留草稿");
+    // 当前模板已换代不应阻止同一有效运行恢复 Git 状态。
+    tab.workflow_state.definition_generation = 9;
+    assert!(tab.sync_workflow_merge_message(&identity, Some(&merge)));
+    tab.workflow_state.active_run = None;
+    tab.commit_message.set_value("运行已结束后的新草稿");
+    assert!(!tab.sync_workflow_merge_message(&identity, Some(&merge)));
+    assert_eq!(tab.commit_message.value, "运行已结束后的新草稿");
 }

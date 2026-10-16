@@ -157,12 +157,14 @@ impl RepositoryView {
                     let notes_body = view.update(cx, |this, cx| {
                         let handle = this.scroll_handle(NOTES_SCROLL_ID);
                         let content = div().id(NOTES_SCROLL_ID).size_full().overflow_y_scroll()
+                            .restrict_scroll_to_axis()
                             .track_scroll(&handle).text_size(px(ui_theme::TYPE_BODY))
                             .line_height(px(18.0)).text_color(rgb(ui_theme::CONTENT_PRIMARY))
                             .child(crate::markdown_view::render_markdown(&notes));
                         v_flex().w_full().h(px(220.0)).min_h(px(0.0)).overflow_hidden()
                             .child(scrollable_frame_when(NOTES_SCROLL_ID, ScrollbarMode::Vertical,
-                                content.into_any_element(), handle, true, cx))
+                                crate::ui_helpers::nested_vertical_scroll(content, handle.clone()).into_any_element(),
+                                handle, true, cx))
                     });
                     settings_compact_list().gap_3().child(header).child(notes_body)
                 })

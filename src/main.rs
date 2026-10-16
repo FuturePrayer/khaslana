@@ -1892,6 +1892,12 @@ struct RepoTabState {
     pub(crate) id: RepoTabId,
     pub(crate) repo_path: Option<PathBuf>,
     pub(crate) snapshot: Option<RepositorySnapshot>,
+    /// 提交草稿及其编辑身份随仓库保存，后台事件不能写入前台仓库。
+    pub(crate) commit_message: TextFieldState,
+    /// 修补提交模式：开启后主提交按钮变“修补提交”，以当前暂存区重写 HEAD。
+    pub(crate) amend_mode: bool,
+    /// 关闭修补开关时仅清除未被用户修改的预填，必须与同仓库草稿一起保存。
+    pub(crate) amend_prefill: Option<String>,
     pub(crate) selected_branch: Option<String>,
     pub(crate) selected_remote: Option<String>,
     pub(crate) change_selection: ChangeSelection,
@@ -1958,11 +1964,14 @@ struct RepoTabState {
 }
 
 impl RepoTabState {
-    fn new(id: RepoTabId, repo_path: Option<PathBuf>) -> Self {
+    fn new(id: RepoTabId, repo_path: Option<PathBuf>, commit_message: TextFieldState) -> Self {
         Self {
             id,
             repo_path,
             snapshot: None,
+            commit_message,
+            amend_mode: false,
+            amend_prefill: None,
             selected_branch: None,
             selected_remote: None,
             change_selection: ChangeSelection::default(),
@@ -2700,6 +2709,8 @@ pub(crate) enum UiEvent {
         /// 任务身份：与 `ai_thinking_task` 匹配才应用；不匹配说明是已收尾
         /// 任务的迟到事件，静默丢弃（审查 R8）。
         task_id: u64,
+        tab_id: RepoTabId,
+        field_uid: u64,
         message: String,
     },
     /// 工作流模板 AI 生成/编辑完成（JSON5 文本，经编辑器解析回填表单）。
@@ -3632,11 +3643,6 @@ pub(crate) struct RepositoryView {
     /// 「新建分支」对话框选中的基础分支；None 表示当前 HEAD（默认）。
     create_branch_base: Option<String>,
     branch_rename: TextFieldState,
-    commit_message: TextFieldState,
-    /// 修补提交模式：开启后主提交按钮变“修补提交”，以当前暂存区重写 HEAD。
-    amend_mode: bool,
-    /// 修补开关预填的提交信息：关闭开关时仅当输入框未被用户修改才清除。
-    amend_prefill: Option<String>,
     stash_message: TextFieldState,
     tag_name: TextFieldState,
     tag_message: TextFieldState,
