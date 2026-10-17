@@ -109,6 +109,28 @@ fn form_row(label: &'static str, value: impl IntoElement, compact: bool) -> Div 
 }
 
 impl RepositoryView {
+    pub(crate) fn ensure_ai_api_type_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::select::{SelectEvent, SelectState};
+        if self.ai_api_type_select.is_none() {
+            let state = cx.new(|cx| SelectState::new(state::API_TYPES.iter()
+                .map(|kind| kind.label().to_string()).collect::<Vec<_>>(), None, window, cx));
+            cx.subscribe_in(&state, window, |this, _, event: &SelectEvent<Vec<String>>, _, cx| {
+                let SelectEvent::Confirm(Some(value)) = event else { return };
+                if let Some(kind) = state::API_TYPES.iter().find(|kind| kind.label() == value) {
+                    this.ai_api_type_form = *kind;
+                    this.ai_extensions.save_error = None;
+                    cx.notify();
+                }
+            }).detach();
+            self.ai_api_type_select = Some(state);
+        }
+        let state = self.ai_api_type_select.as_ref().expect("协议选择器已初始化");
+        let value = self.ai_api_type_form.label().to_string();
+        if state.read(cx).selected_value() != Some(&value) {
+            state.update(cx, |state, cx| state.set_selected_value(&value, window, cx));
+        }
+    }
+
     /// AI 是同一个 Kit Settings 的页面；这里只渲染右侧内容。
     pub(crate) fn render_ai_settings_page(&self, window: &Window,
         cx: &mut Context<Self>) -> impl IntoElement {
@@ -153,7 +175,7 @@ impl RepositoryView {
 
     fn render_ai_save_bar(&self, cx: &mut Context<Self>) -> Div {
         let view = cx.entity();
-        let changed = self.ai_form_settings() != self.ai_settings;
+        let changed = state::form_is_dirty(&self.ai_form_settings(), &self.ai_settings);
         let status = if let Some(error) = &self.ai_extensions.save_error {
             error_text(error.clone())
         } else if changed {
@@ -253,7 +275,9 @@ impl RepositoryView {
         };
         let settings = self.ai_form_settings();
         let test_state = &self.ai_extensions.connection_test;
-        let feedback = match test_state.outcome_for(&settings) {
+        let outcome = settings.as_ref().ok().map(|settings| test_state.outcome_for(settings))
+            .unwrap_or(&state::ConnectionTestOutcome::Idle);
+        let feedback = match outcome {
             state::ConnectionTestOutcome::Idle if test_state.is_running() => caption("正在测试先前填写的配置…"),
             state::ConnectionTestOutcome::Idle => caption("尚未测试当前配置"),
             state::ConnectionTestOutcome::Running => caption("正在测试当前配置…"),
@@ -262,20 +286,46 @@ impl RepositoryView {
             state::ConnectionTestOutcome::Failed(error) => error_text(error.clone()),
         };
         let blocked = self.busy || self.global_busy_tab.is_some();
+        let protocol = self.ai_api_type_select.as_ref().map(|state| {
+            gpui_kit::component::select::Select::new(state)
+                .accessibility_label("接口类型").w_full().h(px(34.0))
+                .text_size(px(ui_theme::TYPE_BODY))
+                .bg(rgb(ui_theme::WB_INPUT_SURFACE)).border_color(rgb(ui_theme::BORDER_MUTED))
+                .rounded(px(ui_theme::RADIUS_SM)).into_any_element()
+        }).unwrap_or_else(|| div().into_any_element());
         let view = cx.entity();
         v_flex().w_full().min_w(px(0.0)).gap_3()
-            .child(form_row("接口类型", caption("Chat Completions · 兼容 OpenAI 接口").pt_2(), compact))
+            .child(form_row("接口类型", protocol, compact))
+            .when(self.ai_api_type_form == khaslana::AiApiType::AnthropicMessages, |this|
+                this.child(caption("部分 Claude 模型仅支持温度 1，请按模型要求调整；思考强度由服务端校验")))
             .child(form_row("接口地址", field(FieldId::AiBaseUrl,
-                caption("Base URL · 填写服务地址，无需添加 /chat/completions"), cx), compact))
+                caption(format!("Base URL · 填写服务地址，无需添加 {}", self.ai_api_type_form.endpoint_path())), cx), compact))
             .child(form_row("API Key（可选）", field(FieldId::AiApiKey,
                 caption("明文保存在本地数据库，请勿在共享环境使用")
                     .text_color(rgb(ui_theme::FEEDBACK_WARNING_TEXT)), cx), compact))
             .child(form_row("模型", field(FieldId::AiModel,
                 caption("填写服务支持的模型名称，例如服务端提供的模型 ID"), cx), compact))
-            .child(div().w_full().rounded(px(ui_theme::RADIUS_XS)).px_3().py_1()
-                .bg(rgb(ui_theme::WB_NAV)).child(caption(format!(
-                    "默认参数：温度 {}  ·  最大输出 {} tokens  ·  超时 {}s",
-                    settings.temperature, settings.max_tokens, settings.request_timeout_secs))))
+            .child(settings_command_button("ai-advanced-settings", "高级设置",
+                SettingsButtonTone::Quiet, true, cx)
+                .toggled(self.ai_advanced_expanded)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    if this.ai_advanced_expanded && [FieldId::AiTemperature,
+                        FieldId::AiMaxTokens, FieldId::AiRequestTimeout, FieldId::AiReasoningEffort]
+                        .iter().any(|id| this.field(*id).focus.is_focused(window)) {
+                        // 隐藏输入前归还焦点，避免 Tab/Enter 仍落到已卸载字段。
+                        let focus = window.use_keyed_state("ai-advanced-settings", cx,
+                            |_, cx| cx.focus_handle()).read(cx).clone();
+                        focus.focus(window, cx);
+                    }
+                    this.ai_advanced_expanded = !this.ai_advanced_expanded;
+                    cx.notify();
+                })))
+            .when(self.ai_advanced_expanded, |this| this.child(v_flex().w_full().gap_3()
+                .child(form_row("温度", field(FieldId::AiTemperature, caption(if self.ai_api_type_form == khaslana::AiApiType::AnthropicMessages { "0–1 之间的有限数值，默认 0.3" } else { "0–2 之间的有限数值，默认 0.3" }), cx), compact))
+                .child(form_row("最大输出", field(FieldId::AiMaxTokens, caption("默认 16384 tokens，所有场景每次请求／每轮共用；大文件合并可提高，过低会截断"), cx), compact))
+                .child(form_row("请求超时", field(FieldId::AiRequestTimeout, caption("大于 0 的整数秒数，默认 60；流式读取空闲超时，非流式整体超时"), cx), compact))
+                .child(form_row("思考强度（可选）", field(FieldId::AiReasoningEffort, caption("自由文本，由服务端校验；留空不发送，不会自动启用思考"), cx), compact))))
+            .when_some(settings.as_ref().err(), |this, error| this.child(error_text(error.clone())))
             .child(card().flex_row().items_center().gap_3().min_h(px(56.0)).py_2()
                 .child(v_flex().flex_1().min_w(px(0.0)).gap_1()
                     .child(feedback)

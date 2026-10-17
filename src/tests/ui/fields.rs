@@ -46,7 +46,8 @@ fn multiline_fields_use_textarea_state() {
         assert!(kit_field_migrated(id), "FieldId {id:?} 应在迁移范围内");
     }
     // 单行字段不应被误判成多行（多行宿主会接受换行、Enter 语义也随之改变）。
-    for id in [FieldId::CloneUrl, FieldId::TagName, FieldId::AiModel] {
+    for id in [FieldId::CloneUrl, FieldId::TagName, FieldId::AiModel,
+        FieldId::AiTemperature, FieldId::AiMaxTokens, FieldId::AiRequestTimeout, FieldId::AiReasoningEffort] {
         assert!(!RepositoryView::is_multiline_field(id));
     }
 }

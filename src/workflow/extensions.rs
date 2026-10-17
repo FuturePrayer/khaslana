@@ -1233,9 +1233,7 @@ impl SkillRunAction {
         let settings = self.ai_settings.as_ref()
             .filter(|settings| settings.is_usable())
             .ok_or_else(|| GitError::Message("AI 供应商尚未启用或配置无效".into()))?;
-        let mut request_settings = settings.clone();
-        request_settings.request_timeout_secs = request_settings.request_timeout_secs.min(30);
-        let client = ChatClient::new(request_settings, self.proxy_url.clone());
+        let client = ChatClient::new(settings.clone(), self.proxy_url.clone());
         let deadline = Instant::now() + SKILL_MAX_DURATION;
         let catalog = self.host.skill_tool_catalog(&tools, control,
             deadline.min(Instant::now() + STEP_TIMEOUT))?;
@@ -1278,18 +1276,13 @@ impl SkillRunAction {
             if !can_call {
                 messages.push(AgentChatMessage::User("工具预算已用尽，请直接给出最终结果，不再调用工具。".into()));
             }
-            let context_bytes = messages.iter().map(|message| match message {
-                AgentChatMessage::System(text) | AgentChatMessage::User(text) => text.len(),
-                AgentChatMessage::Assistant { content, tool_calls } => content.len()
-                    + tool_calls.iter().map(|call| call.arguments.len()).sum::<usize>(),
-                AgentChatMessage::Tool { content, .. } => content.len(),
-            }).sum::<usize>();
+            let context_bytes = messages.iter().map(AgentChatMessage::context_bytes).sum::<usize>();
             if context_bytes > SKILL_CONTEXT_MAX_BYTES {
                 return Err(GitError::Message("AI Skill 上下文超过 256 KiB".into()));
             }
             let schemas = if can_call { std::slice::from_ref(&tool_schema) } else { &[] };
             let turn = client.request_agent_stream_until(&messages, schemas,
-                settings.max_tokens.clamp(512, 4096), &mut |_| {},
+                client.max_output_tokens(), &mut |_| {},
                 &|| control.is_cancelled() || Instant::now() >= deadline)
                 .map_err(|err| {
                     if control.is_cancelled() { GitError::WorkflowCancelled }
@@ -1314,7 +1307,7 @@ impl SkillRunAction {
                 progress(format!("AI 决策：{}", turn.content.chars().take(200).collect::<String>()));
             }
             let pending = turn.tool_calls.clone();
-            messages.push(AgentChatMessage::Assistant { content: turn.content, tool_calls: turn.tool_calls });
+            messages.push(turn.into_message());
             for call in pending {
                 if calls >= SKILL_MAX_CALLS {
                     return Err(GitError::Message("AI Skill 工具调用超过 8 次".into()));

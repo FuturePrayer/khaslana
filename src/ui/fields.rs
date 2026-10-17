@@ -277,6 +277,7 @@ impl RepositoryView {
             self.sync_kit_field(id, window, cx);
         }
         self.reconcile_dynamic_kit_fields(window, cx);
+        self.ensure_ai_api_type_select(window, cx);
     }
 
     /// 动态字段宿主的多退少补：宿主集合精确等于当前活跃的动态字段集合。
@@ -553,7 +554,9 @@ where
                 return;
             }
             field.set_value(value);
-            if matches!(id, FieldId::AiBaseUrl | FieldId::AiApiKey | FieldId::AiModel) {
+            if matches!(id, FieldId::AiBaseUrl | FieldId::AiApiKey | FieldId::AiModel
+                | FieldId::AiTemperature | FieldId::AiMaxTokens
+                | FieldId::AiRequestTimeout | FieldId::AiReasoningEffort) {
                 this.ai_extensions.save_error = None;
             }
             // 与自绘路径（`text_*` handler）保持同一通知点：输入即查、

@@ -38,10 +38,6 @@ pub(crate) const MAX_TOTAL_TOOL_RESULT_CHARS: usize = 400_000;
 pub(crate) const INITIAL_DIFF_BUDGET_CHARS: usize = 30_000;
 /// 预算超限时单个文件 diff 的字符上限。
 pub(crate) const INITIAL_PER_FILE_CHARS: usize = 4_000;
-/// 评审轮次的输出 token 上限（覆盖默认 800，评审正文较长）。reasoning
-/// 模型的思考 token 在多数兼容端点与正文共用该预算，过小会让长思维链
-/// 在中途触及上限（finish_reason=length、无正文无调用），故给到 16384。
-pub(crate) const REVIEW_MAX_TOKENS: u32 = 16_384;
 /// read_lines 单次最大行数窗口。
 const READ_LINES_MAX_LINES: usize = 400;
 /// read_lines 单文件字节上限。
@@ -386,7 +382,7 @@ pub fn run_review_agent(
             match client.request_agent_stream(
                 &messages,
                 effective_tools,
-                REVIEW_MAX_TOKENS,
+                client.max_output_tokens(),
                 &mut |delta| {
                     let (content, reasoning) = match delta {
                         crate::ai::client::StreamDelta::Content(text) => (Some(text), None),
@@ -458,10 +454,7 @@ pub fn run_review_agent(
         }
 
         let calls = turn.tool_calls.clone();
-        messages.push(AgentChatMessage::Assistant {
-            content: turn.content,
-            tool_calls: turn.tool_calls,
-        });
+        messages.push(turn.into_message());
         for call in calls {
             if is_cancelled.load(std::sync::atomic::Ordering::Relaxed) { return Ok(None); }
             // 单轮内额度检查：模型一轮批量发起多个调用时不能整体放行

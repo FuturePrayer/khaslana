@@ -1,4 +1,4 @@
-// OpenAI Chat Completions 兼容 HTTP 客户端。
+// 多协议同步 HTTP 客户端；协议适配在 client/protocols 中。
 //
 // 支持一次性请求（`request`，连接测试用）和流式 SSE 请求（`request_stream`，
 // commit/review 用，避免长输出超时）。流式时逐 chunk 通过回调增量推送，
@@ -9,7 +9,11 @@
 
 use std::io::{BufRead, BufReader};
 
-use serde::{Deserialize, Serialize};
+mod protocols;
+
+use serde::Serialize;
+#[cfg(test)]
+use serde::Deserialize;
 
 use crate::ai::config::AiProviderSettings;
 use crate::ai::prompt::ChatMessage;
@@ -36,11 +40,9 @@ pub struct ChatResult {
 
 // ── Agentic 工具调用协议 ─────────────────────────────────────────────────
 //
-// 仅用于评审 agent 的非流式多轮循环：请求携带 tools 定义，响应解析
-// message.tool_calls；assistant（带 tool_calls）与 tool（带 tool_call_id）
-// 两种消息形态回填进对话。不引入 SDK：主流 Rust OpenAI SDK 均为
-// async/tokio + reqwest 栈，与本项目「同步 ureq + 应用内代理」架构冲突
-// 且体积增长明显；非流式工具报文只是少量 serde 结构。
+// agent 多轮请求共享三协议的工具定义与结果；完整 assistant 回合通过
+// into_message 保留供应商签名与加密历史。不引入 SDK 网络栈，继续使用
+// 同步 ureq、应用内代理与既有调度隔离。
 
 /// 工具定义（OpenAI function calling）。
 #[derive(Clone, Debug)]
@@ -69,10 +71,36 @@ pub enum AgentChatMessage {
         content: String,
         tool_calls: Vec<AgentToolCall>,
     },
+    /// 完整协议历史仅用于同一接口回填，禁止将签名块重建为文本。
+    AssistantOpaque {
+        content: String,
+        tool_calls: Vec<AgentToolCall>,
+        history: AgentProtocolHistory,
+    },
     Tool {
         tool_call_id: String,
         content: String,
     },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AgentProtocolHistory {
+    Responses(Vec<serde_json::Value>),
+    AnthropicMessages(Vec<serde_json::Value>),
+}
+
+impl AgentChatMessage {
+    pub fn context_bytes(&self) -> usize {
+        match self {
+            Self::System(s) | Self::User(s) => s.len(),
+            Self::Tool { tool_call_id, content } => tool_call_id.len() + content.len(),
+            Self::Assistant { content, tool_calls } => content.len() + tool_calls.iter().map(|c| c.id.len()+c.name.len()+c.arguments.len()).sum::<usize>(),
+            Self::AssistantOpaque { content, tool_calls, history } => {
+                let items = match history { AgentProtocolHistory::Responses(v) | AgentProtocolHistory::AnthropicMessages(v) => v };
+                content.len() + tool_calls.iter().map(|c| c.id.len()+c.name.len()+c.arguments.len()).sum::<usize>() + serde_json::to_vec(items).map_or(0, |v| v.len())
+            }
+        }
+    }
 }
 
 /// 一轮 agent 请求的结果：正文 + 可选思考链 + 模型发起的工具调用。
@@ -81,6 +109,16 @@ pub struct AgentTurn {
     pub content: String,
     pub reasoning: Option<String>,
     pub tool_calls: Vec<AgentToolCall>,
+    pub protocol_history: Option<AgentProtocolHistory>,
+}
+
+impl AgentTurn {
+    pub fn into_message(self) -> AgentChatMessage {
+        match self.protocol_history {
+            Some(history) => AgentChatMessage::AssistantOpaque { content: self.content, tool_calls: self.tool_calls, history },
+            None => AgentChatMessage::Assistant { content: self.content, tool_calls: self.tool_calls },
+        }
+    }
 }
 
 /// agent 流式单次请求的错误：`retryable` 标记瞬态故障（网络中断、5xx、
@@ -210,23 +248,20 @@ pub fn split_reasoning(content: &str) -> (String, Option<String>) {
 
 /// OpenAI Chat Completions 请求体。消息类型泛型化以同时承载普通请求
 /// （RequestMessage）与 agent 请求（AgentRequestMessage）。
+#[cfg(test)]
 #[derive(Serialize)]
 struct ChatCompletionsRequest<'a, M: Serialize> {
     model: &'a str,
     messages: Vec<M>,
     temperature: f32,
     max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'a str>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ToolDefinition<'a>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<&'a str>,
-}
-
-#[derive(Serialize)]
-struct RequestMessage<'a> {
-    role: &'a str,
-    content: &'a str,
 }
 
 /// agent 循环消息的请求序列化形态。
@@ -255,6 +290,7 @@ struct AgentRequestFunction<'a> {
     arguments: &'a str,
 }
 
+#[cfg(test)]
 #[derive(Serialize)]
 struct ToolDefinition<'a> {
     #[serde(rename = "type")]
@@ -262,30 +298,12 @@ struct ToolDefinition<'a> {
     function: ToolFunction<'a>,
 }
 
+#[cfg(test)]
 #[derive(Serialize)]
 struct ToolFunction<'a> {
     name: &'a str,
     description: &'a str,
     parameters: &'a serde_json::Value,
-}
-
-/// OpenAI Chat Completions 响应（只解析需要的字段）。
-#[derive(Deserialize)]
-struct ChatCompletionsResponse {
-    choices: Vec<Choice>,
-}
-
-#[derive(Deserialize)]
-struct Choice {
-    message: ResponseMessage,
-}
-
-#[derive(Deserialize)]
-struct ResponseMessage {
-    content: Option<String>,
-    /// 部分兼容 API（如 DeepSeek reasoner）单独返回思考链字段。
-    #[serde(default)]
-    reasoning_content: Option<String>,
 }
 
 pub struct ChatClient {
@@ -294,6 +312,8 @@ pub struct ChatClient {
 }
 
 impl ChatClient {
+    pub fn max_output_tokens(&self) -> u32 { self.settings.max_tokens }
+
     pub fn new(settings: AiProviderSettings, proxy_url: Option<String>) -> Self {
         Self {
             settings,
@@ -336,366 +356,16 @@ impl ChatClient {
         on_delta: &mut impl FnMut(StreamDelta),
         should_stop: &impl Fn() -> bool,
     ) -> Result<AgentTurn, AgentStreamError> {
-        if should_stop() {
-            return Err(AgentStreamError::fatal("AI 请求已中止".into()));
-        }
-        let url = format!(
-            "{}{}",
-            self.settings.normalized_base_url(),
-            self.settings.api_type.endpoint_path()
-        );
-
-        let req_messages: Vec<AgentRequestMessage<'_>> =
-            messages.iter().map(agent_message_to_request).collect();
-        let tool_definitions: Vec<ToolDefinition<'_>> = tools
-            .iter()
-            .map(|tool| ToolDefinition {
-                kind: "function",
-                function: ToolFunction {
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: &tool.parameters,
-                },
-            })
-            .collect();
-        let has_tools = !tool_definitions.is_empty();
-
-        let body = ChatCompletionsRequest {
-            model: &self.settings.model,
-            messages: req_messages,
-            temperature: self.settings.temperature,
-            max_tokens,
-            stream: true,
-            tools: has_tools.then_some(tool_definitions),
-            tool_choice: has_tools.then_some("auto"),
-        };
-
-        let agent = self
-            .build_streaming_agent()
-            .map_err(|err| AgentStreamError::fatal(err.to_string()))?;
-        let response = agent
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.settings.api_key))
-            .header("Content-Type", "application/json")
-            .header("User-Agent", AI_USER_AGENT)
-            .send_json(&body)
-            .map_err(classify_agent_http_error)?;
-
-        // 逐行读取 SSE 流：正文/思考链增量累积并回调；tool_calls 分片
-        // 经累加器按 index 聚合（id/name 首片、arguments 逐片追加）。
-        let mut response_body = response.into_body();
-        let reader = BufReader::new(response_body.as_reader());
-        let mut full_content = String::new();
-        let mut full_reasoning = String::new();
-        let mut tool_calls = StreamingToolCallAccumulator::default();
-        let mut valid_chunks = 0usize;
-        let mut malformed_data_lines = 0usize;
-        // 截断诊断信号：是否收到 [DONE]、最后的 finish_reason、供应商在
-        // 流中发的 error 事件（部分网关在上游故障时以 data: {"error":…} 结束）。
-        let mut saw_done = false;
-        let mut finish_reason: Option<String> = None;
-        let mut stream_error: Option<String> = None;
-        for line in reader.lines() {
-            if should_stop() {
-                return Err(AgentStreamError::fatal("AI 请求已中止".into()));
-            }
-            let line =
-                line.map_err(|err| AgentStreamError::transient(format!("AI 流读取失败：{err}")))?;
-            if should_stop() {
-                return Err(AgentStreamError::fatal("AI 请求已中止".into()));
-            }
-            match parse_sse_line(&line) {
-                Some(SseLineResult::Chunk(chunk)) => {
-                    valid_chunks += 1;
-                    if let Some(error) = chunk.error
-                        && stream_error.is_none()
-                    {
-                        stream_error = Some(error.message.unwrap_or_else(|| "未知错误".into()));
-                    }
-                    for choice in chunk.choices {
-                        if let Some(reason) = choice.finish_reason
-                            && !reason.is_empty()
-                        {
-                            finish_reason = Some(reason);
-                        }
-                        if let Some(text) = choice.delta.content
-                            && !text.is_empty()
-                        {
-                            full_content.push_str(&text);
-                            on_delta(StreamDelta::Content(text));
-                        }
-                        if let Some(text) = choice.delta.reasoning_content
-                            && !text.is_empty()
-                        {
-                            full_reasoning.push_str(&text);
-                            on_delta(StreamDelta::Reasoning(text));
-                        }
-                        for delta in choice.delta.tool_calls {
-                            tool_calls.push(delta);
-                        }
-                    }
-                }
-                Some(SseLineResult::Done) => {
-                    saw_done = true;
-                    break;
-                }
-                None => {
-                    if line.trim_start().starts_with("data:") {
-                        malformed_data_lines += 1;
-                    }
-                }
-            }
-        }
-        if malformed_data_lines > 0 {
-            tracing::warn!(
-                target: "khaslana::ai",
-                "AI 响应流中有 {malformed_data_lines} 行 data 数据解析失败"
-            );
-        }
-
-        // 结束后统一剥离 `<think>`，与普通流式请求一致。
-        let (content, extra_reasoning) = split_reasoning(&full_content);
-        let reasoning = merge_reasoning(
-            (!full_reasoning.trim().is_empty()).then(|| full_reasoning.trim().to_string()),
-            extra_reasoning,
-        );
-        let reasoning = reasoning.filter(|reasoning| !reasoning.trim().is_empty());
-        let content = content.trim().to_string();
-        let tool_calls = tool_calls.finish();
-        if let Some(message) = stream_error {
-            return Err(AgentStreamError::transient(format!(
-                "AI 流式响应返回错误：{message}"
-            )));
-        }
-        // 截断检测：`finish_reason=length`（token 预算耗尽）与未收到
-        // `[DONE]`（连接中途断开）都意味着内容不完整——即使已产出部分
-        // 正文或工具调用也不能放行，否则最终结论会「看起来完成了」实际
-        // 是半句话且无任何报错。两者都按可重试瞬态失败处理。
-        if let Some(err) =
-            agent_stream_truncation_message(saw_done, finish_reason.as_deref(), max_tokens)
-        {
-            return Err(err);
-        }
-        // 对 agent 回合而言「无正文且无工具调用」是无效回合（最终回答必须
-        // 有正文，中间轮必须有调用），连同半截思考链一起按截断失败处理。
-        if content.is_empty() && tool_calls.is_empty() {
-            return Err(AgentStreamError::transient(
-                agent_turn_empty_failure_message(valid_chunks, reasoning.is_some()).to_string(),
-            ));
-        }
-
-        Ok(AgentTurn {
-            content,
-            reasoning,
-            tool_calls,
-        })
+        let turn = self.request_protocol(messages, tools, max_tokens, true, on_delta, should_stop)?;
+        protocols::validate_agent_turn(turn)
     }
 
-    /// 发送一次聊天请求，返回正文和可选思考链。
     pub fn request(&self, messages: &[ChatMessage]) -> KhaslanaResult<ChatResult> {
-        match self.settings.api_type {
-            crate::ai::config::AiApiType::ChatCompletions => {
-                self.request_chat_completions(messages)
-            }
-        }
+        self.request_protocol_plain(messages, false, &mut |_| {})
     }
 
-    /// 流式发送聊天请求；每个增量 chunk 通过 `on_delta` 回调推送，
-    /// 全部读完后返回剥离思考链后的最终结果。
-    pub fn request_stream(
-        &self,
-        messages: &[ChatMessage],
-        on_delta: &mut impl FnMut(StreamDelta),
-    ) -> KhaslanaResult<ChatResult> {
-        match self.settings.api_type {
-            crate::ai::config::AiApiType::ChatCompletions => {
-                self.request_chat_completions_stream(messages, on_delta)
-            }
-        }
-    }
-
-    fn request_chat_completions(&self, messages: &[ChatMessage]) -> KhaslanaResult<ChatResult> {
-        let url = format!(
-            "{}{}",
-            self.settings.normalized_base_url(),
-            self.settings.api_type.endpoint_path()
-        );
-
-        let req_messages: Vec<RequestMessage<'_>> = messages
-            .iter()
-            .map(|msg| RequestMessage {
-                role: msg.role.as_str(),
-                content: &msg.content,
-            })
-            .collect();
-
-        let body = ChatCompletionsRequest {
-            model: &self.settings.model,
-            messages: req_messages,
-            temperature: self.settings.temperature,
-            max_tokens: self.settings.max_tokens,
-            stream: false,
-            tools: None,
-            tool_choice: None,
-        };
-
-        let agent = self.build_agent()?;
-        let mut response = agent
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.settings.api_key))
-            .header("Content-Type", "application/json")
-            .header("User-Agent", AI_USER_AGENT)
-            .send_json(&body)
-            .map_err(|err| GitError::Message(format!("AI 请求失败：{err}")))?;
-
-        let parsed: ChatCompletionsResponse = response
-            .body_mut()
-            .read_json()
-            .map_err(|err| GitError::Message(format!("AI 响应解析失败：{err}")))?;
-
-        let choice = parsed
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| GitError::Message("AI 响应中没有 choices".into()))?;
-
-        let (content, reasoning) =
-            split_response_message_parts(choice.message.content, choice.message.reasoning_content);
-
-        let content = content.trim().to_string();
-        // 纯空白的思考链视同没有。
-        let reasoning = reasoning.filter(|reasoning| !reasoning.trim().is_empty());
-        if content.is_empty() && reasoning.is_none() {
-            return Err(GitError::Message("AI 返回了空内容".into()));
-        }
-
-        Ok(ChatResult { content, reasoning })
-    }
-
-    fn request_chat_completions_stream(
-        &self,
-        messages: &[ChatMessage],
-        on_delta: &mut impl FnMut(StreamDelta),
-    ) -> KhaslanaResult<ChatResult> {
-        let url = format!(
-            "{}{}",
-            self.settings.normalized_base_url(),
-            self.settings.api_type.endpoint_path()
-        );
-
-        let req_messages: Vec<RequestMessage<'_>> = messages
-            .iter()
-            .map(|msg| RequestMessage {
-                role: msg.role.as_str(),
-                content: &msg.content,
-            })
-            .collect();
-
-        let body = ChatCompletionsRequest {
-            model: &self.settings.model,
-            messages: req_messages,
-            temperature: self.settings.temperature,
-            max_tokens: self.settings.max_tokens,
-            stream: true,
-            tools: None,
-            tool_choice: None,
-        };
-
-        let agent = self.build_streaming_agent()?;
-        let response = agent
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.settings.api_key))
-            .header("Content-Type", "application/json")
-            .header("User-Agent", AI_USER_AGENT)
-            .send_json(&body)
-            .map_err(|err| GitError::Message(format!("AI 请求失败：{err}")))?;
-
-        // 逐行读取 SSE 流，累积完整 content 与 reasoning_content。
-        let mut body = response.into_body();
-        let reader = BufReader::new(body.as_reader());
-        let mut full_content = String::new();
-        let mut full_reasoning = String::new();
-        // 诊断计数：有效数据块数 / 以 data: 开头却解析失败的行数（用于区分
-        // “供应商响应格式异常”与“有响应但没有内容”）。
-        let mut valid_chunks = 0usize;
-        let mut malformed_data_lines = 0usize;
-        // 截断诊断信号（与 agent 路径同一套语义）：是否收到 [DONE]、最后
-        // 的 finish_reason。缺失即按失败处理——网关优雅断流时半截结果不能
-        // 当成功返回（冲突合并建议最坏会把截断段拼进草稿被用户应用）。
-        let mut saw_done = false;
-        let mut finish_reason: Option<String> = None;
-        for line in reader.lines() {
-            let line = line.map_err(|err| GitError::Message(format!("AI 流读取失败：{err}")))?;
-            match parse_sse_line(&line) {
-                Some(SseLineResult::Chunk(chunk)) => {
-                    valid_chunks += 1;
-                    for choice in chunk.choices {
-                        if let Some(text) = choice.delta.content {
-                            if !text.is_empty() {
-                                full_content.push_str(&text);
-                                on_delta(StreamDelta::Content(text));
-                            }
-                        }
-                        if let Some(text) = choice.delta.reasoning_content {
-                            if !text.is_empty() {
-                                full_reasoning.push_str(&text);
-                                on_delta(StreamDelta::Reasoning(text));
-                            }
-                        }
-                        if let Some(reason) = choice.finish_reason
-                            && !reason.is_empty()
-                        {
-                            finish_reason = Some(reason);
-                        }
-                    }
-                }
-                Some(SseLineResult::Done) => {
-                    saw_done = true;
-                    break;
-                }
-                None => {
-                    if line.trim_start().starts_with("data:") {
-                        malformed_data_lines += 1;
-                    }
-                }
-            }
-        }
-        if malformed_data_lines > 0 {
-            tracing::warn!(
-                target: "khaslana::ai",
-                "AI 响应流中有 {malformed_data_lines} 行 data 数据解析失败"
-            );
-        }
-        if let Some(message) = plain_stream_truncation_message(
-            saw_done,
-            finish_reason.as_deref(),
-            self.settings.max_tokens,
-        ) {
-            return Err(GitError::Message(message));
-        }
-
-        // 结束后统一剥离 `<think>`，与非流式逻辑一致。
-        let (content, extra_reasoning) = split_reasoning(&full_content);
-        let reasoning = merge_reasoning(
-            (!full_reasoning.trim().is_empty()).then(|| full_reasoning.trim().to_string()),
-            extra_reasoning,
-        );
-        // 纯空白的思考链视同没有。
-        let reasoning = reasoning.filter(|reasoning| !reasoning.trim().is_empty());
-
-        let content = content.trim().to_string();
-        if content.is_empty() && reasoning.is_none() {
-            return Err(GitError::Message(
-                if valid_chunks == 0 {
-                    "AI 响应流中没有有效数据块（供应商响应格式异常或响应被截断）"
-                } else {
-                    "AI 返回了空内容"
-                }
-                .into(),
-            ));
-        }
-
-        Ok(ChatResult { content, reasoning })
+    pub fn request_stream(&self, messages: &[ChatMessage], on_delta: &mut impl FnMut(StreamDelta)) -> KhaslanaResult<ChatResult> {
+        self.request_protocol_plain(messages, true, on_delta)
     }
 
     fn build_streaming_agent(&self) -> KhaslanaResult<ureq::Agent> {
@@ -772,6 +442,7 @@ pub fn validate_generated_content(
 }
 
 /// 单行 SSE 解析结果。
+#[cfg(test)]
 #[derive(Debug)]
 enum SseLineResult {
     /// 一个包含 choices 的数据事件。
@@ -780,6 +451,7 @@ enum SseLineResult {
     Done,
 }
 
+#[cfg(test)]
 #[derive(Deserialize, Debug)]
 struct StreamChunk {
     #[serde(default)]
@@ -789,12 +461,14 @@ struct StreamChunk {
     error: Option<StreamErrorEvent>,
 }
 
+#[cfg(test)]
 #[derive(Deserialize, Debug)]
 struct StreamErrorEvent {
     #[serde(default)]
     message: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Deserialize, Debug)]
 struct StreamChoice {
     #[serde(default)]
@@ -804,6 +478,7 @@ struct StreamChoice {
     finish_reason: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Deserialize, Default, Debug)]
 struct StreamDeltaJson {
     #[serde(default)]
@@ -820,6 +495,7 @@ struct StreamDeltaJson {
 /// OpenAI 流式协议里一次工具调用按 `index` 分多片到达：id 与函数名通常
 /// 在首片，`arguments` 逐片追加，由 `StreamingToolCallAccumulator` 聚合；
 /// 个别兼容端点不回 index（serde 默认 0，单调用场景不受影响）。
+#[cfg(test)]
 #[derive(Deserialize, Default, Debug)]
 struct StreamToolCallDelta {
     #[serde(default)]
@@ -830,6 +506,7 @@ struct StreamToolCallDelta {
     function: StreamToolCallFunctionDelta,
 }
 
+#[cfg(test)]
 #[derive(Deserialize, Default, Debug)]
 struct StreamToolCallFunctionDelta {
     #[serde(default)]
@@ -843,11 +520,13 @@ struct StreamToolCallFunctionDelta {
 /// 按 index 聚合一次 agent 轮次的全部工具调用分片；`finish` 时按 index
 /// 排序产出，无 name 的残片丢弃、id 缺失按 index 合成、空 arguments
 /// 兜底 `{}`（与协议约定一致）。
+#[cfg(test)]
 #[derive(Default)]
 struct StreamingToolCallAccumulator {
     calls: std::collections::BTreeMap<usize, PartialStreamToolCall>,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct PartialStreamToolCall {
     id: Option<String>,
@@ -855,6 +534,7 @@ struct PartialStreamToolCall {
     arguments: String,
 }
 
+#[cfg(test)]
 impl StreamingToolCallAccumulator {
     fn push(&mut self, delta: StreamToolCallDelta) {
         let entry = self.calls.entry(delta.index).or_default();
@@ -897,6 +577,7 @@ impl StreamingToolCallAccumulator {
 /// 其余（空行、非 data 前缀、JSON 解析失败）返回 None 容错跳过。
 /// 无空格形式必须支持：整行跳过会丢 tool_calls 的 arguments 分片，
 /// 聚合出的参数 JSON 随之损坏。
+#[cfg(test)]
 fn parse_sse_line(line: &str) -> Option<SseLineResult> {
     let trimmed = line.trim();
     let payload = trimmed.strip_prefix("data:")?.trim_start();
@@ -956,10 +637,8 @@ fn agent_message_to_request(message: &AgentChatMessage) -> AgentRequestMessage<'
             tool_calls: None,
             tool_call_id: None,
         },
-        AgentChatMessage::Assistant {
-            content,
-            tool_calls,
-        } => AgentRequestMessage {
+        AgentChatMessage::Assistant { content, tool_calls }
+        | AgentChatMessage::AssistantOpaque { content, tool_calls, .. } => AgentRequestMessage {
             role: "assistant",
             // 带 tool_calls 的 assistant 回复 content 序列化为 null（OpenAI 规范）
             content: (!content.is_empty()).then_some(content.as_str()),

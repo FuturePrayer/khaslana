@@ -1,4 +1,34 @@
-use khaslana::AiProviderSettings;
+use khaslana::{AiApiType, AiProviderSettings};
+
+pub(crate) const API_TYPES: [AiApiType; 3] = [
+    AiApiType::ChatCompletions, AiApiType::Responses, AiApiType::AnthropicMessages,
+];
+
+/// 文本先严格解析再验证；无效输入绝不偷偷回退到已保存值。
+pub(crate) fn parse_form_settings(
+    mut settings: AiProviderSettings,
+    temperature: &str,
+    max_tokens: &str,
+    timeout: &str,
+    reasoning_effort: &str,
+) -> Result<AiProviderSettings, String> {
+    settings.temperature = temperature.trim().parse()
+        .map_err(|_| "温度必须是有限数值".to_string())?;
+    settings.max_tokens = max_tokens.trim().parse()
+        .map_err(|_| "最大输出必须是大于 0 的整数（不超过 4294967295）".to_string())?;
+    settings.request_timeout_secs = timeout.trim().parse()
+        .map_err(|_| "请求超时必须是大于 0 的整数秒数".to_string())?;
+    let effort = reasoning_effort.trim();
+    settings.reasoning_effort = (!effort.is_empty()).then(|| effort.to_string());
+    settings.validate_advanced().map_err(|error| error.to_string())?;
+    Ok(settings)
+}
+
+pub(crate) fn form_is_dirty(
+    form: &Result<AiProviderSettings, String>, saved: &AiProviderSettings,
+) -> bool {
+    form.as_ref().map_or(true, |settings| settings != saved)
+}
 
 #[derive(Default)]
 pub(crate) enum ConnectionTestOutcome {

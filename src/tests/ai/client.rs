@@ -222,6 +222,7 @@ fn agent_request_omits_tools_when_none() {
         messages,
         temperature: 0.2,
         max_tokens: 4000,
+        reasoning_effort: None,
         stream: false,
         tools: None,
         tool_choice: None,
@@ -243,6 +244,7 @@ fn agent_request_omits_tools_when_none() {
         messages: vec![agent_message_to_request(&user_message)],
         temperature: 0.2,
         max_tokens: 4000,
+        reasoning_effort: None,
         stream: false,
         tools: Some(vec![ToolDefinition {
             kind: "function",

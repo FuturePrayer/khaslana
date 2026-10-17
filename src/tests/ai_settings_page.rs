@@ -76,3 +76,40 @@ fn global_reset_invalidates_in_flight_completion() {
     assert!(state.is_running());
     assert!(state.finish(next, Ok("通过".into())));
 }
+
+#[test]
+fn form_parser_trims_effort_and_keeps_custom_values() {
+    use super::state::{parse_form_settings, form_is_dirty};
+    let saved = settings();
+    let unchanged = parse_form_settings(saved.clone(), " 0.3 ", &saved.max_tokens.to_string(), "60", "  ");
+    assert!(!form_is_dirty(&unchanged, &saved));
+    let parsed = parse_form_settings(saved.clone(), "1", "800", "120", " vendor-value ").unwrap();
+    assert_eq!(parsed.reasoning_effort.as_deref(), Some("vendor-value"));
+    assert!(form_is_dirty(&Ok(parsed), &saved));
+    for (temp, tokens, timeout) in [("", "4000", "60"), ("NaN", "4000", "60"),
+        ("inf", "4000", "60"), ("-0.1", "4000", "60"), ("2.1", "4000", "60"),
+        ("0.3", "0", "60"), ("0.3", "1.5", "60"), ("0.3", "4294967296", "60"),
+        ("0.3", "4000", "0"), ("0.3", "4000", "-1"),
+        ("0.3", "4000", "18446744073709551616")] {
+        let invalid = parse_form_settings(saved.clone(), temp, tokens, timeout, "");
+        assert!(invalid.is_err(), "{temp}/{tokens}/{timeout}");
+        assert!(form_is_dirty(&invalid, &saved));
+    }
+}
+
+#[test]
+fn connection_snapshot_includes_protocol_and_every_advanced_parameter() {
+    let mut state = AiConnectionTestState::default();
+    let saved = settings();
+    let request = state.begin(saved.clone());
+    assert!(state.finish(request, Ok("通过".into())));
+    let mut variants = vec![saved.clone(); 5];
+    variants[0].api_type = khaslana::AiApiType::Responses;
+    variants[1].temperature = 1.0;
+    variants[2].max_tokens = 800;
+    variants[3].request_timeout_secs = 120;
+    variants[4].reasoning_effort = Some("high".into());
+    for edited in variants {
+        assert!(matches!(state.outcome_for(&edited), ConnectionTestOutcome::Idle));
+    }
+}

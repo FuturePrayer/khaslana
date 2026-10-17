@@ -148,12 +148,7 @@ fn ai_provider_settings_round_trip() {
     assert_eq!(loaded.base_url, settings.base_url);
     assert_eq!(loaded.api_key, settings.api_key);
     assert_eq!(loaded.model, settings.model);
-    // 未暴露 UI 的三个旋钮不认存档值：即使存了非默认值，加载也回退到
-    // 代码默认（改代码默认对老用户即刻生效，不被存档遮住）。
-    let defaults = AiProviderSettings::default();
-    assert_eq!(loaded.temperature, defaults.temperature);
-    assert_eq!(loaded.max_tokens, defaults.max_tokens);
-    assert_eq!(loaded.request_timeout_secs, defaults.request_timeout_secs);
+    assert_eq!(loaded, settings);
 }
 
 #[test]
@@ -774,4 +769,32 @@ fn perform_exe_relocation_files_works_without_data_dir() {
     let target_exe = perform_exe_relocation_files(&exe, Some(&home.join("data")), &target).unwrap();
     assert_eq!(fs::read(&target_exe).unwrap(), b"exe-bytes");
     assert!(!target.join("data").exists());
+}
+
+#[test]
+fn ai_protocols_and_reasoning_survive_storage() {
+    let (_temp, storage) = temp_storage();
+    for api_type in [crate::AiApiType::ChatCompletions, crate::AiApiType::Responses, crate::AiApiType::AnthropicMessages] {
+        let settings = AiProviderSettings {
+            api_type, temperature: 1.0, max_tokens: 800, request_timeout_secs: 123,
+            reasoning_effort: Some("custom-effort".into()), ..Default::default()
+        };
+        storage.save_ai_provider_settings(&settings).unwrap();
+        assert_eq!(storage.load_ai_provider_settings().unwrap(), settings);
+    }
+}
+
+#[test]
+fn legacy_ai_payload_without_effort_keeps_saved_advanced_values() {
+    let (_temp, storage) = temp_storage();
+    let mut json = serde_json::to_value(AiProviderSettings::default()).unwrap();
+    json.as_object_mut().unwrap().remove("reasoning_effort");
+    json["max_tokens"] = 800.into();
+    let conn = storage.lock_conn().unwrap();
+    conn.execute("INSERT INTO ai_provider_settings (id, enabled, payload, updated_at) VALUES (1, 0, ?1, 0)",
+        [json.to_string()]).unwrap();
+    drop(conn);
+    let loaded = storage.load_ai_provider_settings().unwrap();
+    assert_eq!(loaded.max_tokens, 800);
+    assert_eq!(loaded.reasoning_effort, None);
 }

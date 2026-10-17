@@ -86,3 +86,47 @@ fn is_usable_requires_enabled_and_valid() {
     settings.enabled = true;
     assert!(settings.is_usable());
 }
+
+#[test]
+fn api_paths_and_legacy_serialization_are_compatible() {
+    for (kind, path) in [(AiApiType::ChatCompletions, "/chat/completions"),
+        (AiApiType::Responses, "/responses"), (AiApiType::AnthropicMessages, "/messages")] {
+        assert_eq!(kind.endpoint_path(), path);
+        let settings = AiProviderSettings { api_type: kind, reasoning_effort: Some("high".into()), ..Default::default() };
+        assert_eq!(serde_json::from_str::<AiProviderSettings>(&serde_json::to_string(&settings).unwrap()).unwrap(), settings);
+    }
+    assert_eq!(serde_json::to_string(&AiApiType::ChatCompletions).unwrap(), "\"ChatCompletions\"");
+    let mut json = serde_json::to_value(AiProviderSettings::default()).unwrap();
+    json.as_object_mut().unwrap().remove("reasoning_effort");
+    assert_eq!(serde_json::from_value::<AiProviderSettings>(json).unwrap().reasoning_effort, None);
+}
+
+#[test]
+fn advanced_defaults_and_validation() {
+    let mut settings = AiProviderSettings::default();
+    assert_eq!((settings.temperature, settings.max_tokens, settings.request_timeout_secs), (0.3, 16_384, 60));
+    for temperature in [f32::NAN, f32::INFINITY, -0.1, 2.1] {
+        settings.temperature = temperature;
+        assert!(settings.validate_advanced().is_err());
+    }
+    settings.temperature = 2.0;
+    assert!(settings.validate_advanced().is_ok());
+    settings.max_tokens = 0;
+    assert!(settings.validate_advanced().is_err());
+    settings.max_tokens = 1;
+    settings.request_timeout_secs = 0;
+    assert!(settings.validate_advanced().is_err());
+}
+
+#[test]
+fn temperature_limits_follow_protocol() {
+    for api_type in [AiApiType::ChatCompletions, AiApiType::Responses, AiApiType::AnthropicMessages] {
+        let mut settings = AiProviderSettings { api_type, temperature: 1.0, ..Default::default() };
+        assert!(settings.validate_advanced().is_ok());
+        settings.temperature = 1.5;
+        assert_eq!(settings.validate_advanced().is_ok(), api_type != AiApiType::AnthropicMessages);
+        if api_type == AiApiType::AnthropicMessages {
+            assert!(settings.validate_advanced().unwrap_err().to_string().contains("0–1"));
+        }
+    }
+}

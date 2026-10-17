@@ -584,11 +584,7 @@ impl RepositoryView {
                             khaslana::MERGE_CONTEXT_BUDGET_CHARS,
                         )
                     };
-                    // 冲突合并输出固定放宽上限至 64000，避免长文件/大冲突块输出被截断
-                    // （每段独立建客户端，代理设置与全局一致）。
-                    let mut request_settings = base_settings.clone();
-                    request_settings.max_tokens = 64_000;
-                    let segment_client = ChatClient::new(request_settings, proxy_url.clone());
+                    let segment_client = ChatClient::new(base_settings.clone(), proxy_url.clone());
                     let result =
                         segment_client.request_stream(&messages, &mut |delta| on_delta(delta))?;
                     let content = khaslana::validate_generated_content(
@@ -638,7 +634,14 @@ impl RepositoryView {
         if self.ai_extensions.connection_test.is_running() {
             return;
         }
-        let settings = self.ai_form_settings();
+        let settings = match self.ai_form_settings() {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.ai_extensions.save_error = Some(error);
+                return;
+            }
+        };
+        self.ai_extensions.save_error = None;
         let request_id = self.ai_extensions.connection_test.begin(settings.clone());
         if self.busy || self.global_busy_tab.is_some() {
             self.ai_extensions.connection_test.finish(request_id, Err("已有操作正在运行".into()));

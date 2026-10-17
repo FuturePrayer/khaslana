@@ -1,6 +1,158 @@
 use super::*;
 
 use crate::types::{BlameCommitInfo, ChangeState};
+use crate::git::test_support::git_test_support as git_support;
+use serde_json::{Value, json};
+
+// fixture 只绑定回环随机端口，记录真实业务入口发出的请求；等待有界，失败不挂住测试。
+fn review_http_fixture(
+    responses: Vec<String>,
+) -> (String, std::thread::JoinHandle<Vec<Value>>) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    listener.set_nonblocking(true).unwrap();
+    let server = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        for response in responses {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "未收到预期的评审 HTTP 请求");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(err) => panic!("评审 fixture 接收失败：{err}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut bytes = Vec::new();
+            let header_end = loop {
+                let mut buffer = [0; 4096];
+                let count = stream.read(&mut buffer).unwrap();
+                assert_ne!(count, 0, "评审请求头提前结束");
+                bytes.extend_from_slice(&buffer[..count]);
+                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    break end + 4;
+                }
+                assert!(bytes.len() < 64 * 1024, "评审请求头过大");
+            };
+            let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
+            let length = headers.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            }).expect("评审请求应发送 Content-Length");
+            assert!(length < 1024 * 1024);
+            while bytes.len() < header_end + length {
+                let mut buffer = [0; 4096];
+                let count = stream.read(&mut buffer).unwrap();
+                assert_ne!(count, 0, "评审请求正文提前结束");
+                bytes.extend_from_slice(&buffer[..count]);
+            }
+            requests.push(serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap());
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+        }
+        requests
+    });
+    (base_url, server)
+}
+
+fn run_fixture_review(settings: crate::ai::config::AiProviderSettings) -> AiReviewResult {
+    let (dir, repo, service) = git_support::init_repo();
+    git_support::write_file(dir.path(), "review.txt", "需要评审的内容\n");
+    let oid = git_support::commit_all(&repo, "评审测试初始提交");
+    let input = ReviewAgentInput {
+        repo_path: dir.path().to_path_buf(),
+        target_display_name: "feature/review-fixture".into(),
+        target_commit_oid: oid.to_string(),
+        compare_files: Vec::new(),
+    };
+    let client = ChatClient::new(settings, None);
+    let mut completed = Vec::new();
+    let result = run_review_agent(
+        &input, &service, &client,
+        &std::sync::atomic::AtomicBool::new(false),
+        &mut |event| {
+            if let AgentEvent::Done(result) = event { completed.push(result.content); }
+        },
+    ).unwrap().expect("评审应完成而非取消");
+    assert_eq!(completed, vec![result.content.clone()]);
+    result
+}
+
+#[test]
+fn review_agent_sends_custom_generation_settings_and_completes() {
+    let response = format!("data: {}\n\ndata: [DONE]\n\n", json!({
+        "choices": [{"index":0,"delta":{"content":"评审完成，无严重问题。"},"finish_reason":"stop"}]
+    }));
+    let (base_url, server) = review_http_fixture(vec![response]);
+    let result = run_fixture_review(crate::ai::config::AiProviderSettings {
+        enabled: true, base_url, model: "review-fixture-model".into(),
+        max_tokens: 12_345, temperature: 0.75,
+        reasoning_effort: Some("high".into()), request_timeout_secs: 5,
+        ..Default::default()
+    });
+    assert_eq!(result.content, "评审完成，无严重问题。");
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request["max_tokens"], 12_345);
+    assert_eq!(request["temperature"], 0.75);
+    assert_eq!(request["reasoning_effort"], "high");
+    assert_eq!(request["model"], "review-fixture-model");
+    assert_eq!(request["stream"], true);
+    assert!(request["tools"].as_array().is_some_and(|tools| !tools.is_empty()));
+    assert!(request["messages"][1]["content"].as_str().unwrap().contains("feature/review-fixture"));
+}
+
+#[test]
+fn review_agent_responses_replays_opaque_history_after_real_repository_tool() {
+    let output = json!([
+        {"type":"reasoning","id":"rs_review","summary":[{"type":"summary_text","text":"先查看目标提交的文件树"}],"encrypted_content":"opaque-review-state"},
+        {"type":"function_call","id":"fc_review","call_id":"call_review_tree","name":"get_file_tree","arguments":"{}","status":"completed"}
+    ]);
+    let completed = |output: Value| format!("event: response.completed\ndata: {}\n\n", json!({
+        "type":"response.completed", "response":{"id":"resp_review","status":"completed","output":output}
+    }));
+    let (base_url, server) = review_http_fixture(vec![
+        completed(output.clone()),
+        completed(json!([{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"已核对文件树，评审完成。"}]}])),
+    ]);
+    let result = run_fixture_review(crate::ai::config::AiProviderSettings {
+        enabled: true, api_type: crate::ai::config::AiApiType::Responses,
+        base_url, model: "responses-review-fixture".into(),
+        max_tokens: 23_456, temperature: 0.5,
+        reasoning_effort: Some("medium".into()), request_timeout_secs: 5,
+        ..Default::default()
+    });
+    assert_eq!(result.content, "已核对文件树，评审完成。");
+    assert!(result.steps.iter().any(|step| matches!(step,
+        AiReviewStep::ToolCall { name, result_excerpt, error: false, .. }
+        if name == "get_file_tree" && result_excerpt.contains("review.txt")
+    )));
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        assert_eq!(request["max_output_tokens"], 23_456);
+        assert_eq!(request["temperature"], 0.5);
+        assert_eq!(request["reasoning"]["effort"], "medium");
+        assert_eq!(request["stream"], true);
+    }
+    let replay = requests[1]["input"].as_array().unwrap();
+    // 必须由业务循环携带完整原生项，而不只是重建可见文本和工具调用。
+    assert_eq!(replay[2], output[0]);
+    assert_eq!(replay[3], output[1]);
+    assert_eq!(replay[4]["type"], "function_call_output");
+    assert_eq!(replay[4]["call_id"], "call_review_tree");
+    assert!(replay[4]["output"].as_str().unwrap().contains("review.txt"));
+}
 
 fn blame_commit() -> BlameCommitInfo {
     BlameCommitInfo {

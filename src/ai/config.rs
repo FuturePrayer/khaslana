@@ -1,7 +1,4 @@
 // AI 供应商配置：接口类型、连接参数、模型选择。
-//
-// 第一版只支持 OpenAI Chat Completions 兼容接口；AiApiType 预留扩展，
-// 后续可加入 Responses、Ollama Generate 等接口类型。
 
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +11,10 @@ pub enum AiApiType {
     #[default]
     /// OpenAI 兼容的 `/chat/completions` 接口。
     ChatCompletions,
-    // 未来：Responses、OllamaGenerate 等。
+    /// OpenAI `/responses` 接口。
+    Responses,
+    /// Anthropic `/messages` 接口。
+    AnthropicMessages,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -32,6 +32,9 @@ pub struct AiProviderSettings {
     pub max_tokens: u32,
     /// 请求超时秒数，覆盖网络较慢或 reasoning 模型长输出场景。
     pub request_timeout_secs: u64,
+    /// 服务端推理强度；允许供应商自定义值，旧存档缺省为 None。
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 impl AiApiType {
@@ -39,6 +42,8 @@ impl AiApiType {
     pub fn endpoint_path(self) -> &'static str {
         match self {
             Self::ChatCompletions => "/chat/completions",
+            Self::Responses => "/responses",
+            Self::AnthropicMessages => "/messages",
         }
     }
 
@@ -46,6 +51,8 @@ impl AiApiType {
     pub fn label(self) -> &'static str {
         match self {
             Self::ChatCompletions => "Chat Completions (/chat/completions)",
+            Self::Responses => "Responses (/responses)",
+            Self::AnthropicMessages => "Anthropic Messages (/messages)",
         }
     }
 }
@@ -59,19 +66,34 @@ impl Default for AiProviderSettings {
             api_key: String::new(),
             model: String::new(),
             temperature: 0.3,
-            // 一次性生成（commit message / 工作流模板）共用此默认输出上限；
-            // 800 连 reasoning 模型的思维链都装不下（思考与正文共享预算，
-            // 极易触发 finish_reason=length 截断）。冲突合并与 AI 评审另有
-            // 按需覆盖（段长放宽 / REVIEW_MAX_TOKENS），不走这个值。
-            max_tokens: 4000,
+            // 所有 AI 场景的单次请求共用此输出上限；推理模型的思考与正文
+            // 可能共享预算，用户可根据模型要求在高级设置中调整。
+            max_tokens: 16_384,
             request_timeout_secs: 60,
+            reasoning_effort: None,
         }
     }
 }
 
 impl AiProviderSettings {
+    /// 高级数值按协议校验，保存与测试不得绕过；模型更严约束由服务端判断。
+    pub fn validate_advanced(&self) -> KhaslanaResult<()> {
+        let max_temperature = if self.api_type == AiApiType::AnthropicMessages { 1.0 } else { 2.0 };
+        if !self.temperature.is_finite() || !(0.0..=max_temperature).contains(&self.temperature) {
+            return Err(GitError::Message(format!("温度必须是 0–{max_temperature} 之间的有限数值")));
+        }
+        if self.max_tokens == 0 {
+            return Err(GitError::Message("最大输出必须是大于 0 的整数".into()));
+        }
+        if self.request_timeout_secs == 0 {
+            return Err(GitError::Message("请求超时必须是大于 0 的整数秒数".into()));
+        }
+        Ok(())
+    }
+
     /// 校验配置字段；返回中文错误文案以便直接展示给用户。
     pub fn validate(&self) -> KhaslanaResult<()> {
+        self.validate_advanced()?;
         if self.base_url.trim().is_empty() {
             return Err(GitError::Message("请填写 Base URL".into()));
         }

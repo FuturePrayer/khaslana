@@ -256,6 +256,104 @@ fn skill_settings(base_url: String) -> crate::ai::config::AiProviderSettings {
     settings
 }
 
+// 此 fixture 独立于 client 层，验证已授权 Skill 的完整业务入口不会重写配置。
+fn skill_http_fixture() -> (String, std::thread::JoinHandle<serde_json::Value>) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Instant;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    listener.set_nonblocking(true).unwrap();
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "未收到 Skill HTTP 请求");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(err) => panic!("Skill fixture 接收失败：{err}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut bytes = Vec::new();
+        let header_end = loop {
+            let mut buffer = [0; 4096];
+            let count = stream.read(&mut buffer).unwrap();
+            assert_ne!(count, 0, "Skill 请求头提前结束");
+            bytes.extend_from_slice(&buffer[..count]);
+            if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                break end + 4;
+            }
+            assert!(bytes.len() < 64 * 1024, "Skill 请求头过大");
+        };
+        let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
+        assert!(headers.starts_with("POST /chat/completions HTTP/1.1\r\n"));
+        let length = headers.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().unwrap())
+        }).expect("Skill 请求应发送 Content-Length");
+        assert!(length < 1024 * 1024);
+        while bytes.len() < header_end + length {
+            let mut buffer = [0; 4096];
+            let count = stream.read(&mut buffer).unwrap();
+            assert_ne!(count, 0, "Skill 请求正文提前结束");
+            bytes.extend_from_slice(&buffer[..count]);
+        }
+        let request = serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
+        let response = format!("data: {}\n\ndata: [DONE]\n\n", json!({
+            "choices":[{"index":0,"delta":{"content":"已按 Skill 指令完成。"},"finish_reason":"stop"}]
+        }));
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+        request
+    });
+    (base_url, server)
+}
+
+#[test]
+fn skill_without_tools_preserves_custom_budget_above_4096_and_completes() {
+    let data_dir = tempfile::tempdir().unwrap();
+    test_skill(data_dir.path());
+    let mut grant = grant_for("{op:'invoke',id:'skill',uses:'skill.run',with:{skill:'fixture-skill',task:'只输出完成结果'}}");
+    grant.prepare_skills(data_dir.path()).unwrap();
+    let (base_url, server) = skill_http_fixture();
+    let mut settings = skill_settings(base_url);
+    settings.max_tokens = 20_123;
+    settings.temperature = 0.625;
+    settings.reasoning_effort = Some("high".into());
+    settings.request_timeout_secs = 5;
+    let mut registry = WorkflowActionRegistry::default();
+    register_external_actions_with_ai(
+        &mut registry, WorkflowMcpConfig::default(), Some(grant),
+        Some(settings), None, Some(data_dir.path()),
+    ).unwrap();
+    let (_repo_dir, mut repo, service) = git_support::init_repo();
+    let mut progress = Vec::new();
+    let result = registry.get("skill.run").unwrap().execute_with_control_and_progress(
+        &service, &mut repo,
+        &json!({"skill":"fixture-skill","task":"只输出完成结果"}),
+        &WorkflowRunControl::new(), &mut |line| progress.push(line),
+    ).unwrap();
+    assert_eq!(result.output, Some(json!("已按 Skill 指令完成。")));
+    assert!(result.details.iter().any(|line| line.contains("fixture-skill 已完成")));
+    assert!(progress.iter().any(|line| line.contains("允许 0 个工具")));
+    let request = server.join().unwrap();
+    assert_eq!(request["max_tokens"], 20_123);
+    assert_eq!(request["temperature"], 0.625);
+    assert_eq!(request["reasoning_effort"], "high");
+    assert_eq!(request["model"], "test-model");
+    assert_eq!(request["stream"], true);
+    assert!(request.get("tools").is_none());
+    assert!(request["messages"][0]["content"].as_str().unwrap().contains("读取 fixture 工具"));
+    assert_eq!(request["messages"][1]["content"], "只输出完成结果");
+    assert!(registry.finish().is_empty());
+}
+
 #[test]
 fn skill_package_content_is_required_before_authorization() {
     let dir = tempfile::tempdir().unwrap();

@@ -228,11 +228,18 @@ impl RepositoryView {
             external_merge_auto_open_form: external_merge_settings.auto_open_intellij,
             external_merge_settings: external_merge_settings.clone(),
             ai_enabled_form: ai_settings.enabled,
+            ai_api_type_form: ai_settings.api_type,
+            ai_api_type_select: None,
+            ai_advanced_expanded: false,
             ai_extensions: ai_extensions_view::AiExtensionsUiState::new(cx),
-            ai_settings,
             ai_base_url: TextFieldState::new(cx, "Base URL，例如 https://api.openai.com/v1"),
             ai_api_key: TextFieldState::new(cx, "API Key").secret(),
             ai_model: TextFieldState::new(cx, "模型名称，例如 gpt-4o-mini"),
+            ai_temperature: TextFieldState::new(cx, "温度，例如 0.3").with_value(ai_settings.temperature.to_string()),
+            ai_max_tokens: TextFieldState::new(cx, "最大输出，例如 4000").with_value(ai_settings.max_tokens.to_string()),
+            ai_request_timeout: TextFieldState::new(cx, "请求超时秒数，例如 60").with_value(ai_settings.request_timeout_secs.to_string()),
+            ai_reasoning_effort: TextFieldState::new(cx, "可选，例如 low、medium、high").with_value(ai_settings.reasoning_effort.clone().unwrap_or_default()),
+            ai_settings,
             external_merge_intellij_path: TextFieldState::new(cx, "IntelliJ IDEA 路径（可选）")
                 .with_value(external_merge_settings.normalized_intellij_path()),
             external_merge_detection: None,
@@ -1524,6 +1531,8 @@ impl RepositoryView {
         } else if matches!(
             field,
             FieldId::AiBaseUrl | FieldId::AiApiKey | FieldId::AiModel
+                | FieldId::AiTemperature | FieldId::AiMaxTokens
+                | FieldId::AiRequestTimeout | FieldId::AiReasoningEffort
         ) {
             if self.settings_center == Some(SettingsCategory::Ai) {
                 self.save_ai_provider_settings_from_form();
@@ -1715,6 +1724,10 @@ impl RepositoryView {
             FieldId::AiBaseUrl => &mut self.ai_base_url,
             FieldId::AiApiKey => &mut self.ai_api_key,
             FieldId::AiModel => &mut self.ai_model,
+            FieldId::AiTemperature => &mut self.ai_temperature,
+            FieldId::AiMaxTokens => &mut self.ai_max_tokens,
+            FieldId::AiRequestTimeout => &mut self.ai_request_timeout,
+            FieldId::AiReasoningEffort => &mut self.ai_reasoning_effort,
             FieldId::AiMcpServerId => &mut self.ai_extensions.mcp_id,
             FieldId::AiMcpCommand => &mut self.ai_extensions.mcp_command,
             FieldId::AiMcpArgs => &mut self.ai_extensions.mcp_args,
@@ -2848,15 +2861,24 @@ impl RepositoryView {
             .set_value(self.ai_settings.base_url.clone());
         self.ai_api_key.set_value(self.ai_settings.api_key.clone());
         self.ai_model.set_value(self.ai_settings.model.clone());
+        self.ai_api_type_form = self.ai_settings.api_type;
+        self.ai_advanced_expanded = false;
+        self.ai_temperature.set_value(self.ai_settings.temperature.to_string());
+        self.ai_max_tokens.set_value(self.ai_settings.max_tokens.to_string());
+        self.ai_request_timeout.set_value(self.ai_settings.request_timeout_secs.to_string());
+        self.ai_reasoning_effort.set_value(self.ai_settings.reasoning_effort.clone().unwrap_or_default());
     }
 
-    pub(crate) fn ai_form_settings(&self) -> AiProviderSettings {
+    pub(crate) fn ai_form_settings(&self) -> Result<AiProviderSettings, String> {
         let mut settings = self.ai_settings.clone();
         settings.enabled = self.ai_enabled_form;
+        settings.api_type = self.ai_api_type_form;
         settings.base_url = self.ai_base_url.value.trim().to_string();
         settings.api_key = self.ai_api_key.value.trim().to_string();
         settings.model = self.ai_model.value.trim().to_string();
-        settings
+        crate::ai_settings_page::state::parse_form_settings(settings,
+            &self.ai_temperature.value, &self.ai_max_tokens.value,
+            &self.ai_request_timeout.value, &self.ai_reasoning_effort.value)
     }
 
     pub(crate) fn set_ai_enabled_form(&mut self, enabled: bool) {
@@ -2866,7 +2888,14 @@ impl RepositoryView {
     }
 
     pub(crate) fn save_ai_provider_settings_from_form(&mut self) -> bool {
-        let settings = self.ai_form_settings();
+        let settings = match self.ai_form_settings() {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.ai_extensions.save_error = Some(error.clone());
+                self.last_error = Some(error);
+                return false;
+            }
+        };
         // 允许先启用 AI，再进入扩展页配置。模型调用仍由 is_usable 校验完整连接参数。
         if !settings.base_url.is_empty() || !settings.model.is_empty() {
             if let Err(err) = settings.validate() {
