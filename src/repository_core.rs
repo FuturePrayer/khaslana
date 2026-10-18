@@ -2,6 +2,14 @@
 
 use crate::*;
 
+/// 创建在关闭确认期间完成后，恢复弹窗的数据已销毁，不能再恢复只有遮罩的弹窗类型。
+pub(crate) fn window_close_dialog_to_restore(
+    saved: Option<DialogState>,
+    has_recovery_dialog: bool,
+) -> Option<DialogState> {
+    saved.filter(|dialog| *dialog != DialogState::CreateRecoveryBranch || has_recovery_dialog)
+}
+
 impl RepositoryView {
     fn new(cx: &mut Context<Self>) -> Self {
         let (tx, rx) = async_channel::unbounded();
@@ -622,6 +630,7 @@ impl RepositoryView {
         let Some(index) = self.tabs.iter().position(|tab| tab.id == tab_id) else {
             return;
         };
+        self.tabs[index].recovery.cancel_tasks();
         if let Some(run) = self.tabs[index].workflow_state.active_run.as_ref() {
             run.control.cancel();
         }
@@ -925,10 +934,12 @@ impl RepositoryView {
         if let Some(diff) = self.diff.clone() {
             self.load_diff(diff.path.clone(), diff.scope.clone());
         }
-        if self.main_mode == MainMode::History
-            && let Some(path) = self.history_selected_file.clone()
-        {
-            self.select_history_file_with_reload(path, true);
+        if self.main_mode == MainMode::History {
+            if self.recovery.show_recovery {
+                self.reload_recovery_diff();
+            } else if let Some(path) = self.history_selected_file.clone() {
+                self.select_history_file_with_reload(path, true);
+            }
         }
         if self.main_mode == MainMode::Stash
             && let Some(path) = self.stash_preview.selected_file.clone()
@@ -1484,8 +1495,32 @@ impl RepositoryView {
         }
     }
 
-    pub(crate) fn submit_focused_field(&mut self, field: FieldId) {
-        if matches!(field, FieldId::CommitMessage) {
+    /// 恢复输入只归属当前恢复页或恢复分支弹窗，隐藏宿主的迟到事件不得触发查询或提交。
+    pub(crate) fn recovery_field_accepts_input(&self, field: FieldId) -> bool {
+        match field {
+            FieldId::ReflogSearch => {
+                self.main_mode == MainMode::History
+                    && self.recovery.show_recovery
+                    && self.active_dialog.is_none()
+                    && self.settings_center.is_none()
+            }
+            FieldId::RecoveryBranchName => {
+                self.active_dialog == Some(DialogState::CreateRecoveryBranch)
+                    && !self.recovery.has_operation()
+            }
+            _ => true,
+        }
+    }
+
+    pub(crate) fn submit_focused_field(&mut self, field: FieldId, cx: &mut Context<Self>) {
+        if !self.recovery_field_accepts_input(field) {
+            return;
+        }
+        if field == FieldId::ReflogSearch {
+            self.refresh_recovery_query(cx, false);
+        } else if field == FieldId::RecoveryBranchName {
+            self.submit_recovery_branch(cx);
+        } else if matches!(field, FieldId::CommitMessage) {
             self.commit();
         } else if matches!(field, FieldId::CloneUrl | FieldId::ClonePath) {
             if self.active_dialog == Some(DialogState::CloneRepo) {
@@ -1563,6 +1598,11 @@ impl RepositoryView {
     }
 
     pub(crate) fn notify_text_field_changed(&mut self, field: FieldId) {
+        if field == FieldId::ReflogSearch {
+            self.recovery_search_changed();
+        } else if field == FieldId::RecoveryBranchName {
+            self.recovery_branch_name_changed();
+        }
         if field == FieldId::CodePaletteSearch {
             self.sync_code_search_scope();
         }
@@ -1615,7 +1655,7 @@ impl RepositoryView {
             .or_else(|| self.focused_text_field(window, cx))
         {
             if !self.submit_workflow_document_field(field, cx) {
-                self.submit_focused_field(field);
+                self.submit_focused_field(field, cx);
             }
             cx.notify();
         }
@@ -1716,6 +1756,8 @@ impl RepositoryView {
             FieldId::CodePaletteSearch => &mut self.code_palette_search,
             FieldId::CommitGraphSearch => &mut self.commit_graph_search,
             FieldId::CommitGraphBranchSearch => &mut self.commit_graph_branch_search,
+            FieldId::ReflogSearch => &mut self.recovery.search,
+            FieldId::RecoveryBranchName => &mut self.recovery.branch_name,
             FieldId::SidebarLocalBranchSearch => &mut self.sidebar_local_branch_search,
             FieldId::SidebarRemoteBranchSearch => &mut self.sidebar_remote_branch_search,
             FieldId::ProxyHttpUrl => &mut self.proxy_http_url,
@@ -1801,6 +1843,9 @@ impl RepositoryView {
     pub(crate) fn close_popups(&mut self) {
         // 全局搜索面板与其他弹层互斥：任何新弹层打开前都要关掉它。
         self.code_search_palette = None;
+        if self.active_dialog == Some(DialogState::CreateRecoveryBranch) {
+            self.close_recovery_dialog();
+        }
         self.active_dialog = None;
         self.ai_review_history = None;
         self.remote_branch_operation.branch_dropdown_open = false;
@@ -2064,6 +2109,11 @@ impl RepositoryView {
                     TopOverlayKind::Dialog if this.active_dialog == Some(DialogState::CloneRepo) => {
                         Some(this.clone_url.focus.clone())
                     }
+                    TopOverlayKind::Dialog
+                        if this.active_dialog == Some(DialogState::CreateRecoveryBranch) =>
+                    {
+                        Some(this.recovery.branch_name.focus.clone())
+                    }
                     _ => None,
                 };
                 if let Some(handle) = preferred.filter(|handle| allowed(handle)) {
@@ -2318,6 +2368,9 @@ impl RepositoryView {
             return;
         }
         let closing_submodule_manager = self.active_dialog == Some(DialogState::SubmoduleManager);
+        if self.active_dialog == Some(DialogState::CreateRecoveryBranch) {
+            self.close_recovery_dialog();
+        }
         self.active_dialog = None;
         self.remote_branch_operation.branch_dropdown_open = false;
         self.remote_branch_search.clear();
@@ -2342,7 +2395,10 @@ impl RepositoryView {
     }
 
     pub(crate) fn cancel_window_close(&mut self) {
-        self.active_dialog = self.dialog_before_window_close.take();
+        self.active_dialog = window_close_dialog_to_restore(
+            self.dialog_before_window_close.take(),
+            self.recovery.has_dialog(),
+        );
         self.last_error = None;
         // 关闭确认收回后焦点停在已消失的确认按钮上，移回对话框焦点圈。
         self.request_overlay_focus_restore();

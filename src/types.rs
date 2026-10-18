@@ -6,6 +6,13 @@ use thiserror::Error;
 mod blame;
 mod browse;
 mod conflicts;
+mod recovery;
+
+pub use recovery::{
+    CreateRecoveryBranchOutcome, CreateRecoveryBranchRequest, RecoveryCommitDetails,
+    RecoveryObjectState, RecoveryRepoIdentity, ReflogEntry, ReflogPage, ReflogQuery,
+    ReflogScope, ReflogSnapshot, ReflogSources,
+};
 
 pub use blame::{BlameCommitInfo, BlameHunkInfo, BlameView};
 

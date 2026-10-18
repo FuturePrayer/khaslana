@@ -37,6 +37,8 @@ mod merge;
 mod office;
 mod partial_stage;
 mod rebase;
+mod recovery;
+mod reflog;
 mod search;
 mod stash;
 mod submodule;

@@ -1,4 +1,4 @@
-//! 共享差异视图：工作区 / 历史 / 贮藏 / 浏览四个入口共用同一套差异渲染。
+//! 共享差异视图：工作区 / 历史 / 恢复 / 贮藏 / 浏览共用同一套差异渲染。
 //!
 //! 本模块承担两类职责：
 //!
@@ -46,6 +46,7 @@ impl RepositoryView {
             match target {
                 EncodingMenuTarget::Worktree => "worktree-full-file-toggle",
                 EncodingMenuTarget::History => "history-full-file-toggle",
+                EncodingMenuTarget::Recovery => "recovery-full-file-toggle",
                 EncodingMenuTarget::Stash => "stash-full-file-toggle",
                 EncodingMenuTarget::Browse => "browse-full-file-toggle",
                 // 追溯视图不经 diff_section_header 渲染该按钮（视图本身即整份文件）
@@ -82,10 +83,12 @@ impl RepositoryView {
         if let Some(diff) = self.diff.clone() {
             self.load_diff(diff.path.clone(), diff.scope.clone());
         }
-        if self.main_mode == MainMode::History
-            && let Some(path) = self.history_selected_file.clone()
-        {
-            self.select_history_file_with_reload(path, true);
+        if self.main_mode == MainMode::History {
+            if self.recovery.show_recovery {
+                self.reload_recovery_diff();
+            } else if let Some(path) = self.history_selected_file.clone() {
+                self.select_history_file_with_reload(path, true);
+            }
         }
         if self.main_mode == MainMode::Stash
             && let Some(path) = self.stash_preview.selected_file.clone()
@@ -127,6 +130,7 @@ impl RepositoryView {
         let title = match target {
             EncodingMenuTarget::Worktree => "工作区差异编码",
             EncodingMenuTarget::History => "提交差异编码",
+            EncodingMenuTarget::Recovery => "恢复差异编码",
             EncodingMenuTarget::Stash => "贮藏差异编码",
             EncodingMenuTarget::Browse => "浏览编码",
             EncodingMenuTarget::Blame => "追溯编码",
@@ -291,6 +295,7 @@ impl RepositoryView {
         let spans = match target {
             DiffHeaderTarget::Worktree => &self.diff_syntax,
             DiffHeaderTarget::History => &self.history_diff_syntax,
+            DiffHeaderTarget::Recovery => &self.recovery.preview.diff_syntax,
             DiffHeaderTarget::Stash => &self.stash_preview.diff_syntax,
             DiffHeaderTarget::Browse => &self.browse.diff_syntax,
         };
@@ -308,7 +313,7 @@ impl RepositoryView {
         empty_message: &str,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        // 仅工作区差异视图提供部分暂存交互（历史/贮藏/浏览只读）；Office
+        // 仅工作区差异视图提供部分暂存交互（历史/恢复/贮藏/浏览只读）；Office
         // 文档的文本化差异是提取合成的，不能按块/按行回写（部分暂存守卫在
         // 服务层同样拒绝），这里直接不显示按钮。
         let partial_stage_enabled =
@@ -450,6 +455,7 @@ impl RepositoryView {
         let diff = match target {
             EncodingMenuTarget::Worktree => self.diff.as_deref(),
             EncodingMenuTarget::History => self.history_diff.as_deref(),
+            EncodingMenuTarget::Recovery => self.recovery.preview.diff.as_deref(),
             EncodingMenuTarget::Stash => self.stash_preview.diff.as_deref(),
             EncodingMenuTarget::Browse => self.browse.diff.as_deref(),
             // 追溯视图没有 FileDiff；该 target 不经此头部渲染
@@ -509,6 +515,12 @@ impl RepositoryView {
                 },
             );
 
+        let tools = if target == EncodingMenuTarget::Recovery {
+            self.render_recovery_diff_tools(cx)
+        } else {
+            tools.into_any_element()
+        };
+
         // 工作区差异是独立悬浮面板的第一行：标题行带顶部圆角，避免方角
         // 分组底色盖住面板圆角；其他入口的差异列在面板内部，不加。
         let mut header = panel_section_header(title)
@@ -534,6 +546,7 @@ impl RepositoryView {
             match target {
                 EncodingMenuTarget::Worktree => "worktree-diff-encoding",
                 EncodingMenuTarget::History => "history-diff-encoding",
+                EncodingMenuTarget::Recovery => "recovery-diff-encoding",
                 EncodingMenuTarget::Stash => "stash-diff-encoding",
                 EncodingMenuTarget::Browse => "browse-encoding",
                 EncodingMenuTarget::Blame => "blame-encoding",

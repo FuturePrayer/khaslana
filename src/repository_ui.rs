@@ -118,8 +118,9 @@ impl RepositoryView {
             );
             return div().into_any_element();
         };
-        let blocked = self.active_operation_blocker_message().is_some()
-            && !self.operation_blocker_allows_text_field(id);
+        let blocked = (self.active_operation_blocker_message().is_some()
+            && !self.operation_blocker_allows_text_field(id))
+            || (id == FieldId::RecoveryBranchName && self.recovery.has_operation());
         field.render(compact, blocked, id == FieldId::AiApiKey)
     }
 

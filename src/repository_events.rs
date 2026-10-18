@@ -5,6 +5,7 @@ use crate::*;
 impl RepositoryView {
     pub(crate) fn handle_ui_event(&mut self, event: UiEvent, cx: &mut Context<Self>) {
         match event {
+            UiEvent::Recovery(event) => self.handle_recovery_event(event, cx),
             UiEvent::ConflictDraftApplied { tab_id, session_id, path, draft, snapshot, resolve } => {
                 self.with_tab_context(tab_id, |this| {
                     if !resolve && this.conflict_workbench.session_id == session_id
@@ -40,6 +41,7 @@ impl RepositoryView {
                 });
             }
             UiEvent::UiTick => {
+                self.tick_recovery(cx);
                 self.progress_phase = self.progress_phase.wrapping_add(1);
                 let now = Instant::now();
                 let feedbacks_before = self.feedbacks.len();
@@ -1006,6 +1008,12 @@ impl RepositoryView {
                             .history_diff
                             .as_ref()
                             .map(|diff| (Arc::as_ptr(diff) as usize, diff.lines.len())),
+                        SyntaxSlot::RecoveryDiff => this
+                            .recovery
+                            .preview
+                            .diff
+                            .as_ref()
+                            .map(|diff| (Arc::as_ptr(diff) as usize, diff.lines.len())),
                         SyntaxSlot::StashDiff => this
                             .stash_preview
                             .diff
@@ -1033,6 +1041,7 @@ impl RepositoryView {
                     match slot {
                         SyntaxSlot::WorktreeDiff => this.diff_syntax = spans,
                         SyntaxSlot::HistoryDiff => this.history_diff_syntax = spans,
+                        SyntaxSlot::RecoveryDiff => this.recovery.preview.diff_syntax = spans,
                         SyntaxSlot::StashDiff => this.stash_preview.diff_syntax = spans,
                         SyntaxSlot::BrowseDiff => this.browse.diff_syntax = spans,
                         SyntaxSlot::Blame => this.blame.syntax = spans,

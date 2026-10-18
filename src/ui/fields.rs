@@ -544,6 +544,9 @@ where
             if !matches!(event, InputEvent::Change) {
                 return;
             }
+            if !this.recovery_field_accepts_input(id) {
+                return;
+            }
             let value = reader.value(cx).to_string();
             // 严格寻址：动态字段被重建/删除后，残留事件直接丢弃，
             // 不允许经越界兜底写进无关的静态字段（如 branch_name）。
@@ -590,7 +593,7 @@ where
                 return;
             }
             if !this.submit_workflow_document_field(id, cx) {
-                this.submit_focused_field(id);
+                this.submit_focused_field(id, cx);
             }
             cx.notify();
         },

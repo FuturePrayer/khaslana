@@ -23,6 +23,7 @@ mod oauth;
 mod operation_blocker_view;
 mod proxy_view;
 mod rebase_view;
+mod recovery_view;
 mod remote_branch_operation;
 mod repository_actions;
 mod repository_core;
@@ -494,6 +495,8 @@ enum FieldId {
     RepoSwitcherSearch,
     CommitGraphSearch,
     CommitGraphBranchSearch,
+    ReflogSearch,
+    RecoveryBranchName,
     SidebarLocalBranchSearch,
     SidebarRemoteBranchSearch,
     ProxyHttpUrl,
@@ -587,6 +590,12 @@ const DEDICATED_FIELDS: &[(FieldId, DedicatedFieldAccessor)] = &[
     (FieldId::RepoSwitcherSearch, |view: &RepositoryView| {
         &view.repo_switcher_search
     }),
+    (FieldId::ReflogSearch, |view: &RepositoryView| {
+        &view.recovery.search
+    }),
+    (FieldId::RecoveryBranchName, |view: &RepositoryView| {
+        &view.recovery.branch_name
+    }),
     // 图谱页搜索词全局共享（与仓库切换下拉搜索同一模式），跨模式/跨 tab 保留；
     // 未注册时 focused_field 找不到字段，输入框会静默丢弃全部键盘/IME 输入。
     (FieldId::CommitGraphSearch, |view: &RepositoryView| {
@@ -666,6 +675,8 @@ pub(crate) const ALL_FIELD_IDS: &[FieldId] = &[
     FieldId::RepoSwitcherSearch,
     FieldId::CommitGraphSearch,
     FieldId::CommitGraphBranchSearch,
+    FieldId::ReflogSearch,
+    FieldId::RecoveryBranchName,
     FieldId::SidebarLocalBranchSearch,
     FieldId::SidebarRemoteBranchSearch,
     FieldId::ProxyHttpUrl,
@@ -776,6 +787,7 @@ impl CheckoutTarget {
 pub(crate) enum DialogState {
     CloneRepo,
     CreateBranch,
+    CreateRecoveryBranch,
     RenameBranch {
         branch: String,
     },
@@ -1121,6 +1133,7 @@ enum DiscardTarget {
 pub(crate) enum EncodingMenuTarget {
     Worktree,
     History,
+    Recovery,
     Stash,
     Browse,
     Blame,
@@ -1366,6 +1379,7 @@ struct PendingConflictResolve {
 pub(crate) enum SyntaxSlot {
     WorktreeDiff,
     HistoryDiff,
+    RecoveryDiff,
     StashDiff,
     BrowseDiff,
     Blame,
@@ -1945,6 +1959,7 @@ struct RepoTabState {
     /// 提交列表请求序号：每次发起加载递增，用于丢弃旧一代请求晚到的结果
     pub(crate) history_load_seq: u64,
     pub(crate) history_graph_rows: Vec<commit_graph_view::CommitGraphRow>,
+    pub(crate) recovery: recovery_view::RecoveryState,
     pub(crate) stash_preview: StashPreviewState,
     // 提交图谱页状态（模式切换不重置，跨页跳转无损保留）
     pub(crate) commit_graph: CommitGraphState,
@@ -1977,6 +1992,7 @@ struct RepoTabState {
 
 impl RepoTabState {
     fn new(id: RepoTabId, repo_path: Option<PathBuf>, commit_message: TextFieldState) -> Self {
+        let recovery = recovery_view::RecoveryState::new(&commit_message);
         Self {
             id,
             repo_path,
@@ -2010,6 +2026,7 @@ impl RepoTabState {
             history_refs_cache: None,
             history_load_seq: 0,
             history_graph_rows: Vec::new(),
+            recovery,
             stash_preview: StashPreviewState::default(),
             commit_graph: CommitGraphState::default(),
             branch_sync_status: None,
@@ -2314,6 +2331,7 @@ impl SidebarSectionState {
 pub(crate) enum DiffHeaderTarget {
     Worktree,
     History,
+    Recovery,
     Stash,
     Browse,
 }
@@ -2349,6 +2367,7 @@ impl RepositoryLoading {
 #[derive(Clone, Debug)]
 pub(crate) enum UiEvent {
     UiTick,
+    Recovery(recovery_view::RecoveryEvent),
     ConflictFilesLoaded {
         tab_id: RepoTabId,
         session_id: u64,
@@ -3828,6 +3847,7 @@ impl DerefMut for RepositoryView {
 impl Render for RepositoryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.drain_pending_events(cx);
+        self.tick_recovery(cx);
         // 先记录进入/退出的焦点关系，新元素树挂载后再应用初始焦点或返回目标。
         self.maintain_overlay_focus(window, cx);
         // 工作流模板编辑器：渲染前确保当前展示的文本框已创建

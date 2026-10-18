@@ -1315,6 +1315,7 @@ impl RepositoryView {
         let source = match slot {
             SyntaxSlot::WorktreeDiff => self.diff.clone().map(SyntaxSource::Diff),
             SyntaxSlot::HistoryDiff => self.history_diff.clone().map(SyntaxSource::Diff),
+            SyntaxSlot::RecoveryDiff => self.recovery.preview.diff.clone().map(SyntaxSource::Diff),
             SyntaxSlot::StashDiff => self.stash_preview.diff.clone().map(SyntaxSource::Diff),
             SyntaxSlot::BrowseDiff => self.browse.diff.clone().map(SyntaxSource::Diff),
             SyntaxSlot::Blame => self.blame.view.clone().map(SyntaxSource::Blame),
@@ -1427,6 +1428,7 @@ impl RepositoryView {
                     vec![
                         SyntaxSlot::WorktreeDiff,
                         SyntaxSlot::HistoryDiff,
+                        SyntaxSlot::RecoveryDiff,
                         SyntaxSlot::StashDiff,
                         SyntaxSlot::BrowseDiff,
                         SyntaxSlot::Blame,
@@ -1439,6 +1441,7 @@ impl RepositoryView {
             self.with_tab_context(tab_id, |this| {
                 this.diff_syntax = None;
                 this.history_diff_syntax = None;
+                this.recovery.preview.diff_syntax = None;
                 this.stash_preview.diff_syntax = None;
                 this.browse.diff_syntax = None;
                 this.browse.content_syntax = None;

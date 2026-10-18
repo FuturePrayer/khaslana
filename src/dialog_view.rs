@@ -35,6 +35,7 @@ impl RepositoryView {
             DialogState::CreateBranch => self
                 .render_create_branch_dialog(window, cx)
                 .into_any_element(),
+            DialogState::CreateRecoveryBranch => self.render_recovery_branch_dialog(window, cx),
             DialogState::RenameBranch { branch } => self
                 .render_rename_branch_dialog(branch, window, cx)
                 .into_any_element(),

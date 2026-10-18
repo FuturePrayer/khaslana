@@ -1194,6 +1194,7 @@ pub(crate) fn diff_header_toggle(
         .id(match target {
             DiffHeaderTarget::Worktree => "diff-header-toggle",
             DiffHeaderTarget::History => "history-diff-header-toggle",
+            DiffHeaderTarget::Recovery => "recovery-diff-header-toggle",
             DiffHeaderTarget::Stash => "stash-diff-header-toggle",
             DiffHeaderTarget::Browse => "browse-diff-header-toggle",
         })
@@ -1215,6 +1216,9 @@ pub(crate) fn diff_header_toggle(
             match target {
                 DiffHeaderTarget::Worktree => this.toggle_diff_headers(),
                 DiffHeaderTarget::History => this.toggle_history_diff_headers(),
+                DiffHeaderTarget::Recovery => {
+                    this.recovery.preview.headers_expanded = !this.recovery.preview.headers_expanded;
+                }
                 DiffHeaderTarget::Stash => this.toggle_stash_diff_headers(),
                 DiffHeaderTarget::Browse => this.toggle_browse_diff_headers(),
             }

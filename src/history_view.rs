@@ -101,6 +101,10 @@ impl RepositoryView {
                 .into_any_element();
         }
 
+        if self.recovery.show_recovery {
+            return self.render_recovery_view(window, cx).into_any_element();
+        }
+
         let available_height =
             crate::chrome_view::shell_content_height(window.viewport_size().height.into())
                 - crate::chrome_view::SHELL_PADDING * 2.0;
@@ -121,6 +125,7 @@ impl RepositoryView {
             .flex_1()
             .min_w(px(0.0))
             .min_h(px(0.0))
+            .child(self.render_history_section_tabs(cx))
             .child(
                 floating_panel()
                     .relative()
