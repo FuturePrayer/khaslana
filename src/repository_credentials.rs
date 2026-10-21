@@ -100,6 +100,11 @@ impl RepositoryView {
                 self.status = format!("已将适用远端地址切换为 SSH：{ssh_url}");
             }
             self.discover_ssh_credentials_if_needed();
+        } else if let Some(https_url) =
+            ssh_credentials::ssh_remote_to_https(&self.credential_remote_url.value)
+        {
+            self.credential_remote_url.set_value(https_url.clone());
+            self.status = format!("已将适用远端地址切换为 HTTPS：{https_url}");
         }
     }
 
