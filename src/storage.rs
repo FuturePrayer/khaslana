@@ -1,3 +1,4 @@
+use crate::types::domain_ui_resources;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,7 +18,7 @@ use crate::proxy::{CustomProxySettings, NetworkProxyMode, NetworkProxySettings};
 use crate::types::{DiffEncodingChoice, GitError, Result};
 
 const DB_FILE_NAME: &str = "khaslana.sqlite3";
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// 旧数据目录（`%APPDATA%\Khaslana`）下出现该标记文件，表示数据已迁移到便携目录；
 /// 启动解析路径时强制走便携路径，即使旧库文件仍在。
@@ -160,7 +161,7 @@ pub struct AppStorage {
 impl AppStorage {
     pub fn open_default() -> Result<Self> {
         let path = default_database_path()
-            .ok_or_else(|| GitError::Message("无法定位本地配置数据库目录".to_string()))?;
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_LOCATE_THE_LOCAL_SETTINGS_DATABASE_DIRECTORY, &[])))?;
         Self::open(path)
     }
 
@@ -186,7 +187,7 @@ impl AppStorage {
 
     pub fn recreate_default_after_failure() -> Result<Self> {
         let path = default_database_path()
-            .ok_or_else(|| GitError::Message("无法定位本地配置数据库目录".to_string()))?;
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_LOCATE_THE_LOCAL_SETTINGS_DATABASE_DIRECTORY, &[])))?;
         recreate_database_file(&path)?;
         Self::open(path)
     }
@@ -431,6 +432,40 @@ impl AppStorage {
         tx.commit().map_err(storage_error)
     }
 
+    pub fn load_language_preferences(&self) -> Result<crate::language::LanguagePreferences> {
+        use crate::language::{LanguagePreferences, PromptLanguagePreference, UiLanguagePreference};
+        let conn = self.lock_conn()?;
+        conn.query_row(
+            "SELECT ui_language, prompt_language FROM language_preferences WHERE id = 1",
+            [],
+            |row| Ok(LanguagePreferences {
+                ui: UiLanguagePreference::from_id(&row.get::<_, String>(0)?),
+                prompt: PromptLanguagePreference::from_id(&row.get::<_, String>(1)?),
+            }),
+        ).optional().map(|value| value.unwrap_or_default()).map_err(storage_error)
+    }
+
+    /// 单字段更新避免 UI 与提示词偏好互相覆盖；成功后调用方才能更新内存。
+    pub fn save_ui_language(&self, value: crate::language::UiLanguagePreference) -> Result<()> {
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "INSERT INTO language_preferences (id, ui_language) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET ui_language = excluded.ui_language",
+            params![value.id()],
+        ).map_err(storage_error)?;
+        Ok(())
+    }
+
+    pub fn save_prompt_language(&self, value: crate::language::PromptLanguagePreference) -> Result<()> {
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "INSERT INTO language_preferences (id, prompt_language) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET prompt_language = excluded.prompt_language",
+            params![value.id()],
+        ).map_err(storage_error)?;
+        Ok(())
+    }
+
     pub fn load_theme_mode(&self) -> Result<ThemeMode> {
         let conn = self.lock_conn()?;
         load_theme_mode_from_conn(&conn)
@@ -458,7 +493,7 @@ impl AppStorage {
     fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
         self.conn
             .lock()
-            .map_err(|_| GitError::Message("本地配置数据库状态异常".to_string()))
+            .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_LOCAL_SETTINGS_DATABASE_IS_IN_AN_INVALID_STATE, &[])))
     }
 }
 
@@ -701,8 +736,8 @@ pub fn apply_pending_portable_migration() -> MigrationOutcome {
 }
 
 fn run_pending_portable_migration() -> std::result::Result<(), String> {
-    let legacy_dir = legacy_database_dir().ok_or_else(|| "无法定位旧数据目录".to_string())?;
-    let portable_dir = portable_database_dir().ok_or_else(|| "无法定位便携数据目录".to_string())?;
+    let legacy_dir = legacy_database_dir().ok_or_else(|| crate::ui_i18n::text(domain_ui_resources::CANNOT_LOCATE_THE_LEGACY_DATA_DIRECTORY).to_string())?;
+    let portable_dir = portable_database_dir().ok_or_else(|| crate::ui_i18n::text(domain_ui_resources::CANNOT_LOCATE_THE_PORTABLE_DATA_DIRECTORY).to_string())?;
     let legacy_db = legacy_dir.join(DB_FILE_NAME);
     let portable_db = portable_dir.join(DB_FILE_NAME);
     let migrated_marker = legacy_dir.join(PORTABLE_MIGRATED_MARKER);
@@ -729,7 +764,7 @@ fn perform_portable_migration_files(
     if !src_db.exists() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "旧数据库文件不存在",
+            crate::ui_i18n::text(domain_ui_resources::THE_LEGACY_DATABASE_FILE_DOES_NOT_EXIST),
         ));
     }
     if let Some(parent) = dst_db.parent() {
@@ -792,13 +827,13 @@ pub fn exe_relocation_pending_marker() -> Option<PathBuf> {
 /// 随后由调用方重启应用，下次启动最早期执行搬运。
 pub fn request_exe_relocation(target_dir: &Path) -> Result<()> {
     let marker = exe_relocation_pending_marker()
-        .ok_or_else(|| GitError::Message("无法定位固定数据目录".to_string()))?;
+        .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_LOCATE_THE_FIXED_DATA_DIRECTORY, &[])))?;
     if let Some(parent) = marker.parent() {
         fs::create_dir_all(parent)
-            .map_err(|err| GitError::Message(format!("创建固定数据目录失败：{err}")))?;
+            .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CREATE_THE_FIXED_DATA_DIRECTORY, &[("err", &format!("{}", err))])))?;
     }
     fs::write(&marker, target_dir.to_string_lossy().as_bytes())
-        .map_err(|err| GitError::Message(format!("写入搬迁标记失败：{err}")))
+        .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_WRITE_THE_RELOCATION_MARKER, &[("err", &format!("{}", err))])))
 }
 
 /// 待执行搬迁的启动期结果。
@@ -830,7 +865,7 @@ pub fn apply_pending_exe_relocation() -> ExeRelocationOutcome {
         Ok(target_exe) => {
             if let Err(err) = std::process::Command::new(&target_exe).spawn() {
                 tracing::error!("启动搬迁后的新实例失败：{err}");
-                return ExeRelocationOutcome::Failed(format!("启动新实例失败：{err}"));
+                return ExeRelocationOutcome::Failed(crate::ui_i18n::format(domain_ui_resources::FAILED_TO_START_THE_NEW_INSTANCE, &[("err", &format!("{}", err))]));
             }
             std::process::exit(0);
         }
@@ -845,7 +880,7 @@ fn run_pending_exe_relocation(marker: &Path) -> std::result::Result<PathBuf, Str
     let target_text = fs::read_to_string(marker).map_err(|err| err.to_string())?;
     let target = PathBuf::from(target_text.trim());
     if target.as_os_str().is_empty() {
-        return Err("搬迁标记内容为空".to_string());
+        return Err(crate::ui_i18n::text(domain_ui_resources::THE_RELOCATION_MARKER_IS_EMPTY).to_string());
     }
     let exe = std::env::current_exe().map_err(|err| err.to_string())?;
     perform_exe_relocation_files(&exe, portable_database_dir().as_deref(), &target)
@@ -978,6 +1013,12 @@ fn initialize_schema(conn: &Connection) -> Result<()> {
             enabled INTEGER NOT NULL,
             payload TEXT NOT NULL,
             updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS language_preferences (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            ui_language TEXT NOT NULL DEFAULT 'system',
+            prompt_language TEXT NOT NULL DEFAULT 'follow-ui'
         );
 
         CREATE TABLE IF NOT EXISTS theme_preferences (
@@ -1381,7 +1422,7 @@ fn load_ai_provider_settings_from_conn(conn: &Connection) -> Result<AiProviderSe
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
                         rusqlite::types::Type::Text,
-                        Box::new(StorageConversionError(format!("AI 配置解析失败：{err}"))),
+                        Box::new(StorageConversionError(crate::ui_i18n::format(domain_ui_resources::FAILED_TO_PARSE_AI_SETTINGS, &[("err", &format!("{}", err))]))),
                     )
                 })?;
             Ok(settings)
@@ -1394,7 +1435,7 @@ fn load_ai_provider_settings_from_conn(conn: &Connection) -> Result<AiProviderSe
 
 fn save_ai_provider_settings_tx(tx: &Transaction<'_>, settings: &AiProviderSettings) -> Result<()> {
     let payload = serde_json::to_string(settings)
-        .map_err(|err| GitError::Message(format!("AI 配置序列化失败：{err}")))?;
+        .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_SERIALIZE_AI_SETTINGS, &[("err", &format!("{}", err))])))?;
     tx.execute(
         "INSERT OR REPLACE INTO ai_provider_settings (id, enabled, payload, updated_at)
          VALUES (1, ?1, ?2, ?3)",
@@ -1415,9 +1456,7 @@ fn load_external_merge_settings_from_conn(conn: &Connection) -> Result<ExternalM
                 rusqlite::Error::FromSqlConversionFailure(
                     0,
                     rusqlite::types::Type::Text,
-                    Box::new(StorageConversionError(format!(
-                        "外部合并工具配置解析失败：{err}"
-                    ))),
+                    Box::new(StorageConversionError(crate::ui_i18n::format(domain_ui_resources::FAILED_TO_PARSE_EXTERNAL_MERGE_TOOL_SETTINGS, &[("err", &format!("{}", err))]))),
                 )
             })
         },
@@ -1432,7 +1471,7 @@ fn save_external_merge_settings_tx(
     settings: &ExternalMergeSettings,
 ) -> Result<()> {
     let payload = serde_json::to_string(settings)
-        .map_err(|err| GitError::Message(format!("外部合并工具配置序列化失败：{err}")))?;
+        .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_SERIALIZE_EXTERNAL_MERGE_TOOL_SETTINGS, &[("err", &format!("{}", err))])))?;
     tx.execute(
         "INSERT OR REPLACE INTO external_merge_settings (id, enabled, payload, updated_at)
          VALUES (1, ?1, ?2, ?3)",
@@ -1453,7 +1492,7 @@ fn load_shortcut_bindings_from_conn(conn: &Connection) -> Result<ShortcutBinding
                 rusqlite::Error::FromSqlConversionFailure(
                     0,
                     rusqlite::types::Type::Text,
-                    Box::new(StorageConversionError(format!("快捷键配置解析失败：{err}"))),
+                    Box::new(StorageConversionError(crate::ui_i18n::format(domain_ui_resources::FAILED_TO_PARSE_SHORTCUT_SETTINGS, &[("err", &format!("{}", err))]))),
                 )
             })
         },
@@ -1465,7 +1504,7 @@ fn load_shortcut_bindings_from_conn(conn: &Connection) -> Result<ShortcutBinding
 
 fn save_shortcut_bindings_tx(tx: &Transaction<'_>, bindings: &ShortcutBindings) -> Result<()> {
     let payload = serde_json::to_string(bindings)
-        .map_err(|err| GitError::Message(format!("快捷键配置序列化失败：{err}")))?;
+        .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_SERIALIZE_SHORTCUT_SETTINGS, &[("err", &format!("{}", err))])))?;
     tx.execute(
         "INSERT OR REPLACE INTO shortcut_bindings (id, payload, updated_at) VALUES (1, ?1, ?2)",
         params![payload, now_seconds()],
@@ -1487,9 +1526,7 @@ fn load_workflow_shortcut_bindings_from_conn(
                 rusqlite::Error::FromSqlConversionFailure(
                     0,
                     rusqlite::types::Type::Text,
-                    Box::new(StorageConversionError(format!(
-                        "工作流快捷键配置解析失败：{err}"
-                    ))),
+                    Box::new(StorageConversionError(crate::ui_i18n::format(domain_ui_resources::FAILED_TO_PARSE_WORKFLOW_SHORTCUT_SETTINGS, &[("err", &format!("{}", err))]))),
                 )
             })
         },
@@ -1504,7 +1541,7 @@ fn save_workflow_shortcut_bindings_tx(
     bindings: &WorkflowShortcutBindings,
 ) -> Result<()> {
     let payload = serde_json::to_string(bindings)
-        .map_err(|err| GitError::Message(format!("工作流快捷键配置序列化失败：{err}")))?;
+        .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_SERIALIZE_WORKFLOW_SHORTCUT_SETTINGS, &[("err", &format!("{}", err))])))?;
     tx.execute(
         "INSERT OR REPLACE INTO workflow_shortcut_bindings (id, payload, updated_at) VALUES (1, ?1, ?2)",
         params![payload, now_seconds()],
@@ -1524,7 +1561,7 @@ fn load_layout_preferences_from_conn(conn: &Connection) -> Result<LayoutPreferen
                 rusqlite::Error::FromSqlConversionFailure(
                     0,
                     rusqlite::types::Type::Text,
-                    Box::new(StorageConversionError(format!("布局偏好解析失败：{err}"))),
+                    Box::new(StorageConversionError(crate::ui_i18n::format(domain_ui_resources::FAILED_TO_PARSE_LAYOUT_PREFERENCES, &[("err", &format!("{}", err))]))),
                 )
             })
         },
@@ -1536,7 +1573,7 @@ fn load_layout_preferences_from_conn(conn: &Connection) -> Result<LayoutPreferen
 
 fn save_layout_preferences_tx(tx: &Transaction<'_>, preferences: &LayoutPreferences) -> Result<()> {
     let payload = serde_json::to_string(preferences)
-        .map_err(|err| GitError::Message(format!("布局偏好序列化失败：{err}")))?;
+        .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_SERIALIZE_LAYOUT_PREFERENCES, &[("err", &format!("{}", err))])))?;
     tx.execute(
         "INSERT OR REPLACE INTO layout_preferences (id, payload, updated_at) VALUES (1, ?1, ?2)",
         params![payload, now_seconds()],
@@ -1632,7 +1669,7 @@ fn now_seconds() -> i64 {
 }
 
 fn storage_error(err: rusqlite::Error) -> GitError {
-    GitError::Message(format!("本地配置数据库错误：{err}"))
+    GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::LOCAL_SETTINGS_DATABASE_ERROR, &[("err", &format!("{}", err))]))
 }
 
 fn get_meta_value_from_conn(conn: &Connection, key: &str) -> Result<Option<String>> {
@@ -1667,7 +1704,7 @@ fn network_proxy_mode_from_db(value: String) -> Result<NetworkProxyMode> {
         "disabled" => Ok(NetworkProxyMode::Disabled),
         "system" => Ok(NetworkProxyMode::System),
         "custom" => Ok(NetworkProxyMode::Custom),
-        _ => Err(GitError::Message(format!("未知代理模式：{value}"))),
+        _ => Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::UNKNOWN_PROXY_MODE, &[("value", &format!("{}", value))]))),
     }
 }
 
@@ -1684,7 +1721,7 @@ fn theme_mode_from_db(value: String) -> Result<ThemeMode> {
         "system" => Ok(ThemeMode::System),
         "light" => Ok(ThemeMode::Light),
         "dark" => Ok(ThemeMode::Dark),
-        _ => Err(GitError::Message(format!("未知主题模式：{value}"))),
+        _ => Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::UNKNOWN_THEME_MODE, &[("value", &format!("{}", value))]))),
     }
 }
 
@@ -1703,7 +1740,7 @@ fn diff_encoding_choice_from_db(value: &str) -> Result<DiffEncodingChoice> {
         "utf8" => Ok(DiffEncodingChoice::Utf8),
         "gb18030" => Ok(DiffEncodingChoice::Gb18030),
         "big5" => Ok(DiffEncodingChoice::Big5),
-        _ => Err(GitError::Message(format!("未知 diff 编码偏好：{value}"))),
+        _ => Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::UNKNOWN_DIFF_ENCODING_PREFERENCE, &[("value", &format!("{}", value))]))),
     }
 }
 
@@ -1724,8 +1761,8 @@ fn remote_credential_policy_from_db(
         "none" => Ok(RemoteCredentialPolicy::NoCredential),
         "record" => credential_record_id
             .map(RemoteCredentialPolicy::Record)
-            .ok_or_else(|| GitError::Message("远端凭据绑定缺少记录 ID".to_string())),
-        _ => Err(GitError::Message(format!("未知远端凭据策略：{kind}"))),
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_REMOTE_CREDENTIAL_BINDING_IS_MISSING_A_RECORD_ID, &[]))),
+        _ => Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::UNKNOWN_REMOTE_CREDENTIAL_POLICY, &[("kind", &format!("{}", kind))]))),
     }
 }
 
@@ -1740,7 +1777,7 @@ fn credential_scope_from_db(value: String) -> Result<CredentialScope> {
     match value.as_str() {
         "remote_url" => Ok(CredentialScope::RemoteUrl),
         "host" => Ok(CredentialScope::Host),
-        _ => Err(GitError::Message(format!("未知凭据作用域：{value}"))),
+        _ => Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::UNKNOWN_CREDENTIAL_SCOPE, &[("value", &format!("{}", value))]))),
     }
 }
 
@@ -1755,7 +1792,7 @@ fn stored_credential_kind_from_db(value: String) -> Result<StoredCredentialKind>
     match value.as_str() {
         "https_user_pass" => Ok(StoredCredentialKind::HttpsUserPass),
         "ssh_key" => Ok(StoredCredentialKind::SshKey),
-        _ => Err(GitError::Message(format!("未知凭据类型：{value}"))),
+        _ => Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::UNKNOWN_CREDENTIAL_TYPE, &[("value", &format!("{}", value))]))),
     }
 }
 

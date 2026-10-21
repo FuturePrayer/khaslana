@@ -1,3 +1,6 @@
+#[path = "ui_resources/browse_view_messages.rs"]
+mod messages;
+
 // 分支浏览模式 UI 模块：左侧文件树浏览器 + 右侧只读内容/差异视图。
 // 实现 RepositoryView 的 render_browse_view 及相关渲染与展平逻辑。
 
@@ -21,9 +24,9 @@ pub(crate) fn browse_canvas_mode_label(
     view_mode: BrowseViewMode,
 ) -> &'static str {
     match view_mode {
-        BrowseViewMode::Content if is_compare => "目标分支全文",
-        BrowseViewMode::Content => "文件内容",
-        BrowseViewMode::Diff => "与当前分支差异",
+        BrowseViewMode::Content if is_compare => khaslana::ui_i18n::text(messages::FULL_TARGET_BRANCH_CONTENT),
+        BrowseViewMode::Content => khaslana::ui_i18n::text(messages::FILE_CONTENT),
+        BrowseViewMode::Diff => khaslana::ui_i18n::text(messages::DIFFERENCES_FROM_CURRENT_BRANCH),
     }
 }
 
@@ -152,7 +155,7 @@ impl RepositoryView {
             .target
             .as_ref()
             .map(|target| target.display_name.clone())
-            .unwrap_or_else(|| "加载中...".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::LOADING).to_string());
         let short_oid = self
             .browse
             .target
@@ -197,13 +200,13 @@ impl RepositoryView {
                             .map(|index| {
                                 if rows_snapshot.is_empty() {
                                     return empty_state(
-                                        "文件树",
+                                        khaslana::ui_i18n::text(messages::FILE_TREE),
                                         if !has_target {
-                                            "正在解析引用..."
+                                            khaslana::ui_i18n::text(messages::RESOLVING_REFERENCE)
                                         } else if this.browse.loading_tree {
-                                            "正在加载文件树..."
+                                            khaslana::ui_i18n::text(messages::LOADING_FILE_TREE)
                                         } else {
-                                            "仓库为空"
+                                            khaslana::ui_i18n::text(messages::THE_REPOSITORY_IS_EMPTY)
                                         },
                                     )
                                     .into_any_element();
@@ -236,7 +239,7 @@ impl RepositoryView {
             // 右侧分隔线由紧随的列分割条（BrowseFiles）统一绘制，
             // 面板不自画右边框，避免出现两条平行框线。
             .bg(rgb(ui_theme::SURFACE_BASE))
-            .child(page_header("分支浏览", Some("目标引用的只读文件树")))
+            .child(page_header(khaslana::ui_i18n::text(messages::BROWSE_BRANCH), Some(khaslana::ui_i18n::text(messages::READ_ONLY_FILE_TREE_OF_THE_TARGET_REFERENCE))))
             // 目标引用与退出操作保持在平面命令行，不额外堆叠卡片。
             .child(
                 div()
@@ -271,14 +274,14 @@ impl RepositoryView {
                             ),
                     )
                     .child(command_group().child(self.button(
-                        "关闭",
+                        khaslana::ui_i18n::text(messages::CLOSE),
                         !self.busy,
                         |this, _, _| this.close_browse(),
                         cx,
                     ))),
             )
             .child(
-                panel_section_header("文件树")
+                panel_section_header(khaslana::ui_i18n::text(messages::FILE_TREE))
                     .padding_x(ui_theme::SPACE_4)
                     .build(),
             )
@@ -426,14 +429,14 @@ impl RepositoryView {
             .selected_file
             .as_ref()
             .map(|path| path.to_string_lossy().to_string())
-            .unwrap_or_else(|| "未选择文件".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::NO_FILE_SELECTED).to_string());
 
         let mode_label = browse_canvas_mode_label(
             self.browse.list_mode == BrowseListMode::Compare,
             self.browse.view_mode,
         );
 
-        page_header("内容画布", Some("所选文件的只读内容或差异"))
+        page_header(khaslana::ui_i18n::text(messages::CONTENT_CANVAS), Some(khaslana::ui_i18n::text(messages::READ_ONLY_CONTENT_OR_DIFFERENCES_FOR_THE_SELECTED_FILE)))
             .child(
                 div()
                     .min_w(px(0.0))
@@ -452,8 +455,8 @@ impl RepositoryView {
                             .flex_none()
                             .items_center()
                             .gap(px(ui_theme::SPACE_1))
-                            .child(self.browse_mode_segment(BrowseViewMode::Content, "内容", cx))
-                            .child(self.browse_mode_segment(BrowseViewMode::Diff, "差异", cx)),
+                            .child(self.browse_mode_segment(BrowseViewMode::Content, khaslana::ui_i18n::text(messages::CONTENT), cx))
+                            .child(self.browse_mode_segment(BrowseViewMode::Diff, khaslana::ui_i18n::text(messages::DIFF), cx)),
                     )
                     // 编码按钮：两种模式都显示
                     .child(self.browse_encoding_button(cx)),
@@ -515,14 +518,14 @@ impl RepositoryView {
                 if let Some(content) = self.browse.content.as_ref() {
                     encoding_info_label(&content.encoding)
                 } else {
-                    format!("编码：{}", self.current_diff_encoding_choice().label())
+                    khaslana::ui_i18n::format(messages::ENCODING_LABEL, &[("label", &(self.current_diff_encoding_choice().label()).to_string())])
                 }
             }
             BrowseViewMode::Diff => {
                 if let Some(diff) = self.browse.diff.as_ref() {
                     diff_encoding_label(diff)
                 } else {
-                    format!("编码：{}", self.current_diff_encoding_choice().label())
+                    khaslana::ui_i18n::format(messages::ENCODING_LABEL, &[("label", &(self.current_diff_encoding_choice().label()).to_string())])
                 }
             }
         }
@@ -639,7 +642,7 @@ impl RepositoryView {
                             .map(|index| {
                                 let Some(content) = content.as_ref() else {
                                     let detail = if this.browse.loading_content {
-                                        "正在加载文件内容..."
+                                        khaslana::ui_i18n::text(messages::LOADING_FILE_CONTENT)
                                     } else if this
                                         .browse
                                         .selected_compare_file
@@ -648,16 +651,16 @@ impl RepositoryView {
                                             file.status == khaslana::ChangeState::Deleted
                                         })
                                     {
-                                        "目标分支中不存在该文件，请切换到差异视图查看删除内容"
+                                        khaslana::ui_i18n::text(messages::THIS_FILE_DOES_NOT_EXIST_IN_THE_TARGET_BRANCH_SWITCH)
                                     } else {
-                                        "请选择一个文件查看内容"
+                                        khaslana::ui_i18n::text(messages::SELECT_A_FILE_TO_VIEW_ITS_CONTENT)
                                     };
-                                    return empty_state("内容画布", detail).into_any_element();
+                                    return empty_state(khaslana::ui_i18n::text(messages::CONTENT_CANVAS), detail).into_any_element();
                                 };
                                 if content.is_binary && content.lines.is_empty() {
                                     return empty_state(
-                                        "无法预览二进制文件",
-                                        "请切换到差异视图查看文件变更信息",
+                                        khaslana::ui_i18n::text(messages::CANNOT_PREVIEW_BINARY_FILES),
+                                        khaslana::ui_i18n::text(messages::SWITCH_TO_THE_DIFF_VIEW_TO_SEE_FILE_CHANGE_INFORMATION),
                                     )
                                     .into_any_element();
                                 }
@@ -733,9 +736,9 @@ impl RepositoryView {
     /// 差异视图：复用现有 diff 渲染。
     fn render_browse_diff_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let empty_message = if self.browse.loading_diff {
-            "文件差异加载中..."
+            khaslana::ui_i18n::text(messages::LOADING_FILE_DIFFERENCES)
         } else {
-            "请选择一个文件查看与当前分支的差异"
+            khaslana::ui_i18n::text(messages::SELECT_A_FILE_TO_COMPARE_WITH_THE_CURRENT_BRANCH)
         };
 
         self.render_virtual_diff(

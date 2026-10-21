@@ -4,6 +4,9 @@
 //! 当 `snapshot.rebase_in_progress` 为真时，在工作区顶部显示变基状态条，
 //! 提供"继续变基 / 跳过此提交 / 中止"三个动作。
 
+#[path = "ui_resources/rebase_view_messages.rs"]
+mod messages;
+
 use gpui::{Context, IntoElement, div, prelude::*, px};
 use khaslana::{BranchName, GitError, RebaseOutcome};
 
@@ -13,10 +16,10 @@ use crate::{RepositoryView, ui::theme as ui_theme};
 impl RepositoryView {
     /// 把当前分支变基到指定分支之上。由侧边栏右键菜单调用。
     pub(crate) fn rebase_branch(&mut self, name: String) {
-        if !self.ensure_no_merge_in_progress("开始变基") {
+        if !self.ensure_no_merge_in_progress(khaslana::ui_i18n::text(messages::START_REBASE)) {
             return;
         }
-        self.with_repo_blocking("变基完成", move |service, repo| {
+        self.with_repo_blocking(crate::operation_ui_resources::REBASE_COMPLETED, move |service, repo| {
             match service.rebase_branch(repo, &BranchName::new(name))? {
                 RebaseOutcome::Completed(snapshot) => Ok(snapshot),
                 RebaseOutcome::Conflicts { snapshot, .. } => {
@@ -29,7 +32,7 @@ impl RepositoryView {
 
     /// 变基遇到冲突后，用户已解决所有冲突，继续重放下一个提交。
     pub(crate) fn rebase_continue(&mut self) {
-        self.with_repo_blocking("变基完成", move |service, repo| {
+        self.with_repo_blocking(crate::operation_ui_resources::REBASE_COMPLETED, move |service, repo| {
             match service.rebase_continue(repo)? {
                 RebaseOutcome::Completed(snapshot) => Ok(snapshot),
                 RebaseOutcome::Conflicts { snapshot, .. } => {
@@ -41,7 +44,7 @@ impl RepositoryView {
 
     /// 跳过当前冲突提交。
     pub(crate) fn rebase_skip(&mut self) {
-        self.with_repo_blocking("变基完成", move |service, repo| {
+        self.with_repo_blocking(crate::operation_ui_resources::REBASE_COMPLETED, move |service, repo| {
             match service.rebase_skip(repo)? {
                 RebaseOutcome::Completed(snapshot) => Ok(snapshot),
                 RebaseOutcome::Conflicts { snapshot, .. } => {
@@ -53,7 +56,7 @@ impl RepositoryView {
 
     /// 中止变基，回到变基前状态。
     pub(crate) fn rebase_abort(&mut self) {
-        self.with_repo_blocking("变基已中止", move |service, repo| {
+        self.with_repo_blocking(crate::operation_ui_resources::REBASE_ABORTED, move |service, repo| {
             service.rebase_abort(repo)
         });
     }
@@ -74,9 +77,9 @@ impl RepositoryView {
         let can_abort = !busy;
 
         let message = if has_conflicts {
-            "变基进行中 · 存在冲突待解决"
+            khaslana::ui_i18n::text(messages::REBASE_IN_PROGRESS_CONFLICTS_TO_RESOLVE)
         } else {
-            "变基进行中"
+            khaslana::ui_i18n::text(messages::REBASE_IN_PROGRESS)
         };
 
         Some(
@@ -104,7 +107,7 @@ impl RepositoryView {
                         .items_center()
                         .gap_2()
                         .child(self.button(
-                            "继续变基",
+                            khaslana::ui_i18n::text(messages::CONTINUE_REBASE),
                             can_continue,
                             |this, _, _| {
                                 this.rebase_continue();
@@ -113,14 +116,14 @@ impl RepositoryView {
                         ))
                         .when(has_conflicts, |this| {
                             this.child(self.button(
-                                "跳过此提交",
+                                khaslana::ui_i18n::text(messages::SKIP_THIS_COMMIT),
                                 can_skip,
                                 |this, _, _| this.rebase_skip(),
                                 cx,
                             ))
                         })
                         .child(self.button(
-                            "中止",
+                            khaslana::ui_i18n::text(messages::ABORT),
                             can_abort,
                             |this, _, _| {
                                 this.rebase_abort();

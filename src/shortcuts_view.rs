@@ -1,3 +1,6 @@
+#[path = "ui_resources/shortcuts_view_messages.rs"]
+mod messages;
+
 // 快捷键设置页 UI：列出全部可配置动作，支持录制新快捷键与恢复默认。
 
 use std::ops::DerefMut;
@@ -91,7 +94,7 @@ fn shortcut_reset_enabled(recording: Option<&ShortcutRecordingTarget>) -> bool {
 fn shortcut_reset_disabled_reason(
     recording: Option<&ShortcutRecordingTarget>,
 ) -> Option<&'static str> {
-    (!shortcut_reset_enabled(recording)).then_some("请先结束快捷键录制")
+    (!shortcut_reset_enabled(recording)).then_some(khaslana::ui_i18n::text(messages::FINISH_RECORDING_THE_SHORTCUT_FIRST))
 }
 
 impl RepositoryView {
@@ -110,11 +113,11 @@ impl RepositoryView {
         let view = cx.entity();
         let mut group = SettingGroup::new()
             .item(crate::settings_center::settings_group_heading(
-                "应用快捷键",
+                khaslana::ui_i18n::text(messages::APPLICATION_SHORTCUTS),
                 None,
             ))
             .item(crate::settings_center::settings_item_row(
-                "说明",
+                khaslana::ui_i18n::text(messages::DESCRIPTION),
                 None,
                 move |_options, _window, cx| {
                     view.update(cx, |_this, _cx| {
@@ -123,7 +126,7 @@ impl RepositoryView {
                             .text_size(px(12.0))
                             .line_height(px(18.0))
                             .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                            .child("点击「重新绑定」后按下组合键录入；按 Esc 取消录制。点「恢复默认」复位单条快捷键。")
+                            .child(khaslana::ui_i18n::text(messages::CLICK_REBIND_THEN_PRESS_A_KEY_COMBINATION_ESC_CANCELS_RECORDING))
                     })
                 },
             ));
@@ -141,7 +144,7 @@ impl RepositoryView {
                 SettingItem::render(move |_options, _window, cx| {
                     // 闭包是 Fn：键位文案每次渲染克隆一份，避免被移入 child。
                     let keycap = if is_recording {
-                        "按下组合键…".to_string()
+                        khaslana::ui_i18n::text(messages::PRESS_A_KEY_COMBINATION).to_string()
                     } else {
                         display.clone()
                     };
@@ -226,7 +229,7 @@ impl RepositoryView {
                                                 }
                                                 cx.notify();
                                             }))
-                                            .child(if is_recording { "取消" } else { "重新绑定" }),
+                                            .child(if is_recording { khaslana::ui_i18n::text(messages::CANCEL) } else { khaslana::ui_i18n::text(messages::REBIND) }),
                                     )
                                     .when(!is_default, |this_row| {
                                         this_row.child(
@@ -277,11 +280,7 @@ impl RepositoryView {
                                                             )
                                                         {
                                                             this.notify_warning(
-                                                                format!(
-                                                                    "快捷键 {} 已被「{}」占用，无法恢复默认",
-                                                                    format_keystroke(default_keystroke),
-                                                                    conflict.describe()
-                                                                ),
+                                                                khaslana::ui_i18n::format(messages::SHORTCUT_DEFAULT_KEYSTROKE_IS_ALREADY_USED_BY_DESCRIBE_CANNOT_RESTORE, &[("default_keystroke", &(format_keystroke(default_keystroke)).to_string()), ("describe", &(conflict.describe()).to_string())]),
                                                                 cx,
                                                             );
                                                             return;
@@ -300,7 +299,7 @@ impl RepositoryView {
                                                         cx.notify();
                                                     }
                                                 }))
-                                                .child("恢复默认"),
+                                                .child(khaslana::ui_i18n::text(messages::RESTORE_DEFAULT)),
                                         )
                                     }),
                             )
@@ -312,15 +311,15 @@ impl RepositoryView {
 
         let mut workflow_group = SettingGroup::new()
             .item(crate::settings_center::settings_group_heading(
-                "工作流快捷键",
-                Some("在工作流页右键模板行选择「绑定快捷键...」录制；此处可查看与清除。".into()),
+                khaslana::ui_i18n::text(messages::WORKFLOW_SHORTCUTS),
+                Some(khaslana::ui_i18n::text(messages::RIGHT_CLICK_A_TEMPLATE_ON_THE_WORKFLOWS_PAGE_AND_CHOOSE).into()),
             ));
         if self.workflow_shortcut_bindings.bindings.is_empty() {
             workflow_group = workflow_group.item(SettingItem::render(|_options, _window, _cx| {
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_TERTIARY))
-                    .child("暂无工作流快捷键")
+                    .child(khaslana::ui_i18n::text(messages::NO_WORKFLOW_SHORTCUTS))
             }));
         } else {
             for (file, binding) in &self.workflow_shortcut_bindings.bindings {
@@ -369,7 +368,7 @@ impl RepositoryView {
                                                     .bg(rgb(ui_theme::WB_ROW_HOVER))
                                                     .text_size(px(10.0))
                                                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                                                    .child("后台"),
+                                                    .child(khaslana::ui_i18n::text(messages::BACKGROUND)),
                                             )
                                         }),
                                 )
@@ -421,7 +420,7 @@ impl RepositoryView {
                                                 }
                                             }
                                         }))
-                                        .child("清除"),
+                                        .child(khaslana::ui_i18n::text(messages::CLEAR)),
                                 )
                         })
                     })

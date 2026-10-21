@@ -1,3 +1,4 @@
+use crate::types::domain_ui_resources;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path};
@@ -74,10 +75,6 @@ pub(crate) const FULL_FILE_MAX_BYTES: u64 = 3 * 1024 * 1024;
 /// 全文差异过大时返回的错误文案，UI 据此识别并回退到紧凑差异。
 pub const FULL_FILE_TOO_LARGE_MESSAGE: &str = "文件过大，无法显示全文视图";
 
-/// 推送被远端按 non-fast-forward 拒绝的统一文案（客户端预检查与服务器
-/// 状态报告两条路径共用），引导用户先拉取。
-pub(crate) const NON_FAST_FORWARD_PUSH_MESSAGE: &str =
-    "推送被拒绝（non-fast-forward）：远端分支有新提交，请先拉取并解决后再推送";
 
 /// 全文差异的字节预检：仅在请求全文（`full_context`）时，于分配逐行 String 之前
 /// 检查新旧侧文件体积，超过 `FULL_FILE_MAX_BYTES` 则直接返回错误。
@@ -100,7 +97,7 @@ fn guard_full_file_size(
             .any(|size| size > FULL_FILE_MAX_BYTES)
     });
     if too_large {
-        return Err(GitError::Message(FULL_FILE_TOO_LARGE_MESSAGE.into()));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FULL_FILE_TOO_LARGE, &[])));
     }
     Ok(())
 }
@@ -267,7 +264,7 @@ impl GitService {
         options: CloneOptions,
     ) -> Result<RepositorySnapshot> {
         self.progress
-            .emit(OperationEvent::Started(format!("正在克隆 {url}")));
+            .emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::CLONING, &[("url", &format!("{}", url))])));
 
         let mut fetch_options = FetchOptions::new();
         fetch_options.remote_callbacks(self.remote_callbacks(None));
@@ -290,7 +287,7 @@ impl GitService {
         }
 
         self.progress
-            .emit(OperationEvent::Finished(format!("已克隆 {url}")));
+            .emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::CLONED, &[("url", &format!("{}", url))])));
         self.snapshot(&mut repo)
     }
 
@@ -659,7 +656,7 @@ impl GitService {
         validate_remote_name(&name.0)?;
         validate_remote_url(url)?;
         if repo.find_remote(&name.0).is_ok() {
-            return Err(GitError::Message(format!("远端名称已存在：{}", name.0)));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::REMOTE_NAME_ALREADY_EXISTS, &[("value0", &format!("{}", name.0))])));
         }
         repo.remote(&name.0, url.trim())?;
         self.snapshot_after_operation(repo)
@@ -677,7 +674,7 @@ impl GitService {
         validate_remote_url(url)?;
         if old_name.0 != new_name.0 {
             if repo.find_remote(&new_name.0).is_ok() {
-                return Err(GitError::Message(format!("远端名称已存在：{}", new_name.0)));
+                return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::REMOTE_NAME_ALREADY_EXISTS, &[("value0", &format!("{}", new_name.0))])));
             }
             repo.remote_rename(&old_name.0, &new_name.0)?;
         } else {
@@ -727,10 +724,10 @@ impl GitService {
 
     pub fn fetch(&self, repo: &mut Repository, remote: &RemoteName) -> Result<RepositorySnapshot> {
         self.progress
-            .emit(OperationEvent::Started(format!("正在获取 {}", remote.0)));
+            .emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::FETCHING, &[("value0", &format!("{}", remote.0))])));
         self.fetch_remote_refs(repo, remote)?;
         self.progress
-            .emit(OperationEvent::Finished(format!("已获取 {}", remote.0)));
+            .emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::FETCHED, &[("value0", &format!("{}", remote.0))])));
         self.snapshot_after_operation(repo)
     }
 
@@ -741,10 +738,10 @@ impl GitService {
     ) -> Result<RepositorySnapshot> {
         if let Some(remote) = remote {
             self.progress
-                .emit(OperationEvent::Started(format!("正在刷新 {}", remote.0)));
+                .emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::REFRESHING, &[("value0", &format!("{}", remote.0))])));
             self.fetch_remote_refs(repo, remote)?;
             self.progress
-                .emit(OperationEvent::Finished(format!("已刷新 {}", remote.0)));
+                .emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::REFRESHED, &[("value0", &format!("{}", remote.0))])));
         }
         self.snapshot_after_operation(repo)
     }
@@ -784,7 +781,7 @@ impl GitService {
 
     pub fn pull(&self, repo: &mut Repository, remote: &RemoteName) -> Result<RepositorySnapshot> {
         self.progress
-            .emit(OperationEvent::Started(format!("正在拉取 {}", remote.0)));
+            .emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::PULLING, &[("value0", &format!("{}", remote.0))])));
         self.fetch_remote_refs(repo, remote)?;
 
         let head = repo.head()?;
@@ -800,7 +797,7 @@ impl GitService {
         self.complete_clean_merge(repo, &format!("{}/{}", remote.0, branch))?;
 
         self.progress
-            .emit(OperationEvent::Finished(format!("已拉取 {}", remote.0)));
+            .emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::PULLED, &[("value0", &format!("{}", remote.0))])));
         self.snapshot_after_operation(repo)
     }
 
@@ -811,10 +808,7 @@ impl GitService {
         remote_branch: &BranchName,
     ) -> Result<RepositorySnapshot> {
         validate_branch_name(&remote_branch.0)?;
-        self.progress.emit(OperationEvent::Started(format!(
-            "正在拉取 {}/{}",
-            remote.0, remote_branch.0
-        )));
+        self.progress.emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::PULLING_2, &[("value0", &format!("{}", remote.0)), ("value1", &format!("{}", remote_branch.0))])));
         self.fetch_remote_refs(repo, remote)?;
 
         let remote_ref = self.remote_ref_for_remote_branch(repo, remote, &remote_branch.0)?;
@@ -829,10 +823,7 @@ impl GitService {
         // 非快进干净合并自动提交，不保留待确认会话。
         self.complete_clean_merge(repo, &format!("{}/{}", remote.0, remote_branch.0))?;
 
-        self.progress.emit(OperationEvent::Finished(format!(
-            "已拉取 {}/{}",
-            remote.0, remote_branch.0
-        )));
+        self.progress.emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::PULLED_2, &[("value0", &format!("{}", remote.0)), ("value1", &format!("{}", remote_branch.0))])));
         self.snapshot_after_operation(repo)
     }
 
@@ -847,23 +838,20 @@ impl GitService {
         let remote = repo
             .branch_upstream_remote(&local_ref_name)?
             .as_str()
-            .map_err(|_| GitError::Message("upstream 远端名称不是有效 UTF-8".into()))?
+            .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_UPSTREAM_REMOTE_NAME_IS_NOT_VALID_UTF_8, &[])))?
             .to_string();
         let upstream_ref_name = repo
             .branch_upstream_name(&local_ref_name)?
             .as_str()
-            .map_err(|_| GitError::Message("upstream 分支名称不是有效 UTF-8".into()))?
+            .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_UPSTREAM_BRANCH_NAME_IS_NOT_VALID_UTF_8, &[])))?
             .to_string();
         let remote_prefix = format!("refs/remotes/{remote}/");
         let remote_branch = upstream_ref_name
             .strip_prefix(&remote_prefix)
-            .ok_or_else(|| GitError::Message("无法识别本地分支关联的远程分支".into()))?
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_IDENTIFY_THE_REMOTE_BRANCH_ASSOCIATED_WITH_THE_LOCAL_BRANCH, &[])))?
             .to_string();
 
-        self.progress.emit(OperationEvent::Started(format!(
-            "正在拉取本地分支 {}（{remote}/{remote_branch}）",
-            local_branch_name.0
-        )));
+        self.progress.emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::PULLING_LOCAL_BRANCH, &[("value0", &format!("{}", local_branch_name.0)), ("remote", &format!("{}", remote)), ("remote_branch", &format!("{}", remote_branch))])));
         self.fetch_remote_refs(repo, &RemoteName::new(remote.clone()))?;
 
         let local_branch = repo.find_branch(&local_branch_name.0, BranchType::Local)?;
@@ -871,19 +859,16 @@ impl GitService {
         let local_oid = local_branch
             .get()
             .target()
-            .ok_or_else(|| GitError::Message("本地分支没有可更新的提交".into()))?;
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_LOCAL_BRANCH_HAS_NO_COMMIT_TO_UPDATE, &[])))?;
         let upstream_branch = local_branch.upstream()?;
         let upstream_oid = upstream_branch
             .get()
             .target()
-            .ok_or_else(|| GitError::Message("远程分支没有可拉取的提交".into()))?;
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_REMOTE_BRANCH_HAS_NO_COMMIT_TO_PULL, &[])))?;
         let (ahead, behind) = repo.graph_ahead_behind(local_oid, upstream_oid)?;
 
         if behind == 0 {
-            self.progress.emit(OperationEvent::Finished(format!(
-                "本地分支 {} 已是最新",
-                local_branch_name.0
-            )));
+            self.progress.emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::LOCAL_BRANCH_IS_UP_TO_DATE, &[("value0", &format!("{}", local_branch_name.0))])));
             drop(upstream_branch);
             drop(local_branch);
             return self.snapshot_after_operation(repo);
@@ -891,10 +876,7 @@ impl GitService {
 
         if !is_head {
             if ahead > 0 {
-                return Err(GitError::Message(format!(
-                    "分支 {} 与 {remote}/{remote_branch} 已分叉，请先切换到该分支再拉取",
-                    local_branch_name.0
-                )));
+                return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::BRANCH_HAS_DIVERGED_FROM_SWITCH_TO_THAT_BRANCH_BEFORE_PULLING, &[("value0", &format!("{}", local_branch_name.0)), ("remote", &format!("{}", remote)), ("remote_branch", &format!("{}", remote_branch))])));
             }
             drop(upstream_branch);
             drop(local_branch);
@@ -912,10 +894,7 @@ impl GitService {
             self.complete_clean_merge(repo, &format!("{remote}/{remote_branch}"))?;
         }
 
-        self.progress.emit(OperationEvent::Finished(format!(
-            "已拉取本地分支 {}",
-            local_branch_name.0
-        )));
+        self.progress.emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::PULLED_LOCAL_BRANCH, &[("value0", &format!("{}", local_branch_name.0))])));
         self.snapshot_after_operation(repo)
     }
 
@@ -950,15 +929,9 @@ impl GitService {
             .find_branch(&local_branch.0, BranchType::Local)
             .is_err()
         {
-            return Err(GitError::Message(format!(
-                "本地分支不存在：{}",
-                local_branch.0
-            )));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::LOCAL_BRANCH_DOES_NOT_EXIST, &[("value0", &format!("{}", local_branch.0))])));
         }
-        self.progress.emit(OperationEvent::Started(format!(
-            "正在推送 {} 到 {}/{}",
-            local_branch.0, remote.0, remote_branch.0
-        )));
+        self.progress.emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::PUSHING_TO, &[("value0", &format!("{}", local_branch.0)), ("value1", &format!("{}", remote.0)), ("value2", &format!("{}", remote_branch.0))])));
         let _remote_context = self.set_remote_context(repo, remote);
         let mut remote_handle = repo.find_remote(&remote.0)?;
         let mut options = PushOptions::new();
@@ -978,7 +951,7 @@ impl GitService {
         match result {
             Ok(()) => {}
             Err(err) if err.code() == git2::ErrorCode::NotFastForward => {
-                return Err(GitError::Message(NON_FAST_FORWARD_PUSH_MESSAGE.into()));
+                return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::NON_FAST_FORWARD_PUSH, &[])));
             }
             Err(err) => return Err(err.into()),
         }
@@ -989,10 +962,7 @@ impl GitService {
             let _ = local.set_upstream(Some(&upstream));
         }
 
-        self.progress.emit(OperationEvent::Finished(format!(
-            "已推送 {} 到 {}/{}",
-            local_branch.0, remote.0, remote_branch.0
-        )));
+        self.progress.emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::PUSHED_TO, &[("value0", &format!("{}", local_branch.0)), ("value1", &format!("{}", remote.0)), ("value2", &format!("{}", remote_branch.0))])));
         self.snapshot_after_operation(repo)
     }
 
@@ -1010,12 +980,12 @@ impl GitService {
         let upstream = format!("{}/{}", remote.0, remote_branch.0);
         match repo.find_branch(&upstream, BranchType::Remote) {
             Ok(branch) if branch.get().target().is_some() => drop(branch),
-            _ => return Err(GitError::Message(format!("远端分支不存在：{upstream}"))),
+            _ => return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::REMOTE_BRANCH_DOES_NOT_EXIST, &[("upstream", &format!("{}", upstream))]))),
         }
 
         let mut branch = repo
             .find_branch(&local_branch.0, BranchType::Local)
-            .map_err(|_| GitError::Message(format!("本地分支不存在：{}", local_branch.0)))?;
+            .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::LOCAL_BRANCH_DOES_NOT_EXIST, &[("value0", &format!("{}", local_branch.0))])))?;
         branch.set_upstream(Some(&upstream))?;
         drop(branch);
         self.snapshot_after_operation(repo)
@@ -1031,12 +1001,10 @@ impl GitService {
         validate_branch_name(&remote_branch.0)?;
         let upstream = format!("{}/{}", remote.0, remote_branch.0);
         if repo.find_branch(&upstream, BranchType::Remote).is_err() {
-            return Err(GitError::Message(format!("远端分支不存在：{upstream}")));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::REMOTE_BRANCH_DOES_NOT_EXIST, &[("upstream", &format!("{}", upstream))])));
         }
 
-        self.progress.emit(OperationEvent::Started(format!(
-            "正在删除远端分支 {upstream}"
-        )));
+        self.progress.emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::DELETING_REMOTE_BRANCH, &[("upstream", &format!("{}", upstream))])));
         let _remote_context = self.set_remote_context(repo, remote);
         let mut remote_handle = repo.find_remote(&remote.0)?;
         let mut options = PushOptions::new();
@@ -1051,9 +1019,7 @@ impl GitService {
         drop(_remote_context);
 
         self.fetch_remote_refs(repo, remote)?;
-        self.progress.emit(OperationEvent::Finished(format!(
-            "已删除远端分支 {upstream}"
-        )));
+        self.progress.emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::DELETED_REMOTE_BRANCH, &[("upstream", &format!("{}", upstream))])));
         self.snapshot_after_operation(repo)
     }
 
@@ -1066,7 +1032,7 @@ impl GitService {
         let reference = branch_handle.get();
         let target = reference
             .target()
-            .ok_or_else(|| GitError::Message(format!("分支 {} 没有目标提交", branch.0)))?;
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::BRANCH_HAS_NO_TARGET_COMMIT, &[("value0", &format!("{}", branch.0))])))?;
         let object = repo.find_object(target, None)?;
 
         let mut checkout = CheckoutBuilder::new();
@@ -1090,7 +1056,7 @@ impl GitService {
         let remote_branch_handle = repo.find_branch(&remote_branch.0, BranchType::Remote)?;
         let reference = remote_branch_handle.get();
         let target = reference.target().ok_or_else(|| {
-            GitError::Message(format!("远端分支 {} 没有目标提交", remote_branch.0))
+            GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::REMOTE_BRANCH_HAS_NO_TARGET_COMMIT, &[("value0", &format!("{}", remote_branch.0))]))
         })?;
         let commit = repo.find_commit(target)?;
         let upstream = format!("{remote}/{local_name}");
@@ -1111,10 +1077,7 @@ impl GitService {
                 GitError::Git(git_err) if git_err.code() == ErrorCode::Conflict => {
                     GitError::Git(git_err)
                 }
-                GitError::Git(git_err) => GitError::Message(format!(
-                    "无法切换到本地分支 {local_name}：{}",
-                    git_err.message()
-                )),
+                GitError::Git(git_err) => GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_SWITCH_TO_LOCAL_BRANCH, &[("local_name", &format!("{}", local_name)), ("value0", &format!("{}", git_err.message()))])),
                 other => other,
             })
     }
@@ -1142,7 +1105,7 @@ impl GitService {
     ) -> Result<RepositorySnapshot> {
         validate_tag_name(&tag.0)?;
         if repo.find_reference(&format!("refs/tags/{}", tag.0)).is_ok() {
-            return Err(GitError::Message(format!("标签已存在：{}", tag.0)));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::TAG_ALREADY_EXISTS, &[("value0", &format!("{}", tag.0))])));
         }
         let target = match target_oid {
             Some(oid) => self.find_commit_by_oid(repo, oid)?,
@@ -1150,7 +1113,7 @@ impl GitService {
         };
         let message = message.filter(|message| !message.trim().is_empty());
         self.progress
-            .emit(OperationEvent::Started("正在创建标签".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::CREATING_TAG).into()));
         match message {
             Some(message) => {
                 let tagger = signature(repo)?;
@@ -1162,7 +1125,7 @@ impl GitService {
         }
         drop(target);
         self.progress
-            .emit(OperationEvent::Finished("标签已创建".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::TAG_CREATED).into()));
         self.snapshot_after_operation(repo)
     }
 
@@ -1172,13 +1135,13 @@ impl GitService {
             .find_reference(&format!("refs/tags/{}", tag.0))
             .is_err()
         {
-            return Err(GitError::Message(format!("标签不存在：{}", tag.0)));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::TAG_DOES_NOT_EXIST, &[("value0", &format!("{}", tag.0))])));
         }
         self.progress
-            .emit(OperationEvent::Started("正在删除标签".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::DELETING_TAG).into()));
         repo.tag_delete(&tag.0)?;
         self.progress
-            .emit(OperationEvent::Finished("标签已删除".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::TAG_DELETED).into()));
         self.snapshot_after_operation(repo)
     }
 
@@ -1194,19 +1157,16 @@ impl GitService {
             .find_reference(&format!("refs/tags/{}", tag.0))
             .is_err()
         {
-            return Err(GitError::Message(format!("本地标签不存在：{}", tag.0)));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::LOCAL_TAG_DOES_NOT_EXIST, &[("value0", &format!("{}", tag.0))])));
         }
-        self.progress.emit(OperationEvent::Started(format!(
-            "正在推送标签 {} 到 {}",
-            tag.0, remote.0
-        )));
+        self.progress.emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::PUSHING_TAG_TO, &[("value0", &format!("{}", tag.0)), ("value1", &format!("{}", remote.0))])));
         self.push_tag_refspec(
             repo,
             remote,
             format!("refs/tags/{}:refs/tags/{}", tag.0, tag.0),
         )?;
         self.progress
-            .emit(OperationEvent::Finished("标签已推送".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::TAG_PUSHED).into()));
         self.snapshot_after_operation(repo)
     }
 
@@ -1218,15 +1178,12 @@ impl GitService {
         tag: &TagName,
     ) -> Result<RepositorySnapshot> {
         validate_tag_name(&tag.0)?;
-        self.progress.emit(OperationEvent::Started(format!(
-            "正在删除远端标签 {}/{}",
-            remote.0, tag.0
-        )));
+        self.progress.emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::DELETING_REMOTE_TAG, &[("value0", &format!("{}", remote.0)), ("value1", &format!("{}", tag.0))])));
         self.push_tag_refspec(repo, remote, format!(":refs/tags/{}", tag.0))?;
         // 删除后同步远端引用缓存（与删除远端分支一致）。
         self.fetch_remote_refs(repo, remote)?;
         self.progress
-            .emit(OperationEvent::Finished("远端标签已删除".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::REMOTE_TAG_DELETED).into()));
         self.snapshot_after_operation(repo)
     }
 
@@ -1250,7 +1207,7 @@ impl GitService {
         match result {
             Ok(()) => Ok(()),
             Err(err) if err.code() == git2::ErrorCode::NotFastForward => {
-                Err(GitError::Message(NON_FAST_FORWARD_PUSH_MESSAGE.into()))
+                Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::NON_FAST_FORWARD_PUSH, &[])))
             }
             Err(err) => Err(err.into()),
         }
@@ -1273,7 +1230,7 @@ impl GitService {
     ) -> Result<RepositorySnapshot> {
         validate_branch_name(&branch.0)?;
         if repo.find_branch(&branch.0, BranchType::Local).is_ok() {
-            return Err(GitError::Message(format!("分支名称已存在：{}", branch.0)));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::BRANCH_NAME_ALREADY_EXISTS, &[("value0", &format!("{}", branch.0))])));
         }
         let commit = if let Some(from) = from {
             self.find_branch_reference(repo, &from.0)?
@@ -1394,7 +1351,7 @@ impl GitService {
             self.ensure_path_not_conflicted(repo, path)?;
         }
         self.progress
-            .emit(OperationEvent::Started("正在回滚未暂存更改".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::DISCARDING_UNSTAGED_CHANGES).into()));
 
         let mut index = repo.index()?;
         for path in paths {
@@ -1414,7 +1371,7 @@ impl GitService {
         drop(index);
 
         self.progress
-            .emit(OperationEvent::Finished("已回滚未暂存更改".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::UNSTAGED_CHANGES_DISCARDED).into()));
         self.snapshot_after_operation(repo)
     }
 
@@ -1439,7 +1396,7 @@ impl GitService {
             self.ensure_path_not_conflicted(repo, path)?;
         }
         self.progress
-            .emit(OperationEvent::Started("正在回滚文件全部更改".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::DISCARDING_ALL_FILE_CHANGES).into()));
 
         {
             let head_commit = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
@@ -1464,9 +1421,7 @@ impl GitService {
                 let mut index = repo.index()?;
                 for path in &paths {
                     if index.get_path(path, 0).is_none() {
-                        return Err(GitError::Message(
-                            "当前仓库还没有 HEAD，不能回滚该文件更改".into(),
-                        ));
+                        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_REPOSITORY_HAS_NO_HEAD_YET_CANNOT_DISCARD_CHANGES_TO_THIS_FILE, &[])));
                     }
                 }
                 for path in paths {
@@ -1478,7 +1433,7 @@ impl GitService {
         }
 
         self.progress
-            .emit(OperationEvent::Finished("已回滚文件全部更改".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::ALL_FILE_CHANGES_DISCARDED).into()));
         self.snapshot_after_operation(repo)
     }
 
@@ -1494,9 +1449,7 @@ impl GitService {
         // 随后的 cleanup_state 还会删除 rebase-merge 状态目录，剩余待重放
         // 提交直接丢失。变基期间应通过 rebase_continue 推进。
         if rebase_in_progress(repo) {
-            return Err(GitError::Message(
-                "变基进行中，请通过变基状态条继续/跳过/中止，不能直接提交".into(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::A_REBASE_IS_IN_PROGRESS_CONTINUE_SKIP_OR_ABORT_FROM_THE_REBASE_STATUS_BAR_INSTEAD_OF, &[])));
         }
 
         let message = message.0.trim();
@@ -1547,26 +1500,18 @@ impl GitService {
         message: Option<&CommitMessage>,
     ) -> Result<RepositorySnapshot> {
         if merge::merge_in_progress(repo) {
-            return Err(GitError::Message(
-                "合并进行中，请先完成或中止合并，不能修补提交".into(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::A_MERGE_IS_IN_PROGRESS_COMPLETE_OR_ABORT_IT_BEFORE_AMENDING_A_COMMIT, &[])));
         }
         if rebase_in_progress(repo) {
-            return Err(GitError::Message(
-                "变基进行中，请通过变基状态条继续/跳过/中止，不能修补提交".into(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::A_REBASE_IS_IN_PROGRESS_CONTINUE_SKIP_OR_ABORT_FROM_THE_REBASE_STATUS_BAR_BEFORE_AMEN, &[])));
         }
         if repo.head_detached()? {
-            return Err(GitError::Message(
-                "当前处于 detached HEAD，不能修补提交，请先切回分支".into(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::HEAD_IS_DETACHED_SWITCH_TO_A_BRANCH_BEFORE_AMENDING_A_COMMIT, &[])));
         }
 
         let head = repo.head()?;
         if !head.is_branch() {
-            return Err(GitError::Message(
-                "当前 HEAD 未指向本地分支，不能修补提交".into(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::HEAD_DOES_NOT_POINT_TO_A_LOCAL_BRANCH_CANNOT_AMEND_A_COMMIT, &[])));
         }
         let head_commit = head.peel_to_commit()?;
 
@@ -1601,7 +1546,7 @@ impl GitService {
             .unwrap_or_else(|_| "main".to_string());
 
         self.progress
-            .emit(OperationEvent::Started("正在修补提交".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::AMENDING_COMMIT).into()));
         // git_commit_create(update_ref) 要求新提交的首父必须是当前 tip，
         // amend 语义恰恰要重写 tip：先不带引用创建提交，再手动前移当前分支。
         let new_oid = repo.commit(None, &author, &committer, &message, &tree, &parent_refs)?;
@@ -1617,7 +1562,7 @@ impl GitService {
         drop(head_commit);
         drop(head);
         self.progress
-            .emit(OperationEvent::Finished("修补提交完成".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::COMMIT_AMENDED).into()));
         self.snapshot_after_operation(repo)
     }
 
@@ -1785,7 +1730,7 @@ impl GitService {
     ) -> Result<RepositorySnapshot> {
         if repo.head_detached()? {
             return Err(GitError::Git(git2::Error::from_str(
-                "当前处于 detached HEAD，不能重置分支",
+                crate::ui_i18n::text(domain_ui_resources::HEAD_IS_DETACHED_CANNOT_RESET_A_BRANCH),
             )));
         }
         let commit = self.find_commit_by_oid(repo, commit_oid)?;
@@ -1795,11 +1740,11 @@ impl GitService {
             ResetMode::Hard => ResetType::Hard,
         };
         self.progress
-            .emit(OperationEvent::Started("正在重置分支".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::RESETTING_BRANCH).into()));
         reset_preserving_locked_directories(repo, commit.as_object(), reset_type)?;
         drop(commit);
         self.progress
-            .emit(OperationEvent::Finished("分支已重置".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::BRANCH_RESET).into()));
         self.snapshot_after_operation(repo)
     }
 
@@ -1810,38 +1755,38 @@ impl GitService {
     ) -> Result<RepositorySnapshot> {
         if repo.head_detached()? {
             return Err(GitError::Git(git2::Error::from_str(
-                "当前处于 detached HEAD，不能还原提交到暂存区",
+                crate::ui_i18n::text(domain_ui_resources::HEAD_IS_DETACHED_CANNOT_RESTORE_A_COMMIT_TO_THE_INDEX),
             )));
         }
 
         let head = repo.head()?;
         if !head.is_branch() {
             return Err(GitError::Git(git2::Error::from_str(
-                "当前 HEAD 未指向本地分支，不能还原提交到暂存区",
+                crate::ui_i18n::text(domain_ui_resources::HEAD_DOES_NOT_POINT_TO_A_LOCAL_BRANCH_CANNOT_RESTORE_A_COMMIT_TO_THE_INDEX),
             )));
         }
         let Some(head_oid) = head.target() else {
             return Err(GitError::Git(git2::Error::from_str(
-                "当前分支没有可还原的提交",
+                crate::ui_i18n::text(domain_ui_resources::THE_CURRENT_BRANCH_HAS_NO_COMMIT_TO_RESTORE),
             )));
         };
 
         let commit = self.find_commit_by_oid(repo, commit_oid)?;
         if commit.id() != head_oid {
             return Err(GitError::Git(git2::Error::from_str(
-                "只能将当前最新提交还原到暂存区",
+                crate::ui_i18n::text(domain_ui_resources::ONLY_THE_CURRENT_LATEST_COMMIT_CAN_BE_RESTORED_TO_THE_INDEX),
             )));
         }
         let parent_oid = match commit.parent_count() {
             0 => {
                 return Err(GitError::Git(git2::Error::from_str(
-                    "初始提交暂不支持还原到暂存区",
+                    crate::ui_i18n::text(domain_ui_resources::RESTORING_THE_INITIAL_COMMIT_TO_THE_INDEX_IS_NOT_SUPPORTED),
                 )));
             }
             1 => commit.parent_id(0)?,
             _ => {
                 return Err(GitError::Git(git2::Error::from_str(
-                    "合并提交暂不支持还原到暂存区",
+                    crate::ui_i18n::text(domain_ui_resources::RESTORING_A_MERGE_COMMIT_TO_THE_INDEX_IS_NOT_SUPPORTED),
                 )));
             }
         };
@@ -1851,11 +1796,11 @@ impl GitService {
 
         let parent = repo.find_commit(parent_oid)?;
         self.progress
-            .emit(OperationEvent::Started("正在还原提交到暂存区".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::RESTORING_COMMIT_TO_THE_INDEX).into()));
         reset_preserving_locked_directories(repo, parent.as_object(), ResetType::Soft)?;
         drop(parent);
         self.progress
-            .emit(OperationEvent::Finished("提交已还原到暂存区".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::COMMIT_RESTORED_TO_THE_INDEX).into()));
         self.snapshot_after_operation(repo)
     }
 
@@ -1919,10 +1864,10 @@ impl GitService {
         repo: &mut Repository,
         commit_oid: &str,
     ) -> Result<RepositorySnapshot> {
-        self.ensure_clean_before_revert(repo, "回滚提交前需要先提交、暂存或丢弃当前工作区修改")?;
+        self.ensure_clean_before_revert(repo, crate::ui_i18n::text(domain_ui_resources::COMMIT_STASH_OR_DISCARD_WORKING_TREE_CHANGES_BEFORE_REVERTING_A_COMMIT))?;
         let revert_commit = self.find_commit_by_oid(repo, commit_oid)?;
         if revert_commit.parent_count() > 1 {
-            return Err(GitError::Git(git2::Error::from_str("暂不支持回滚合并提交")));
+            return Err(GitError::Git(git2::Error::from_str(crate::ui_i18n::text(domain_ui_resources::REVERTING_MERGE_COMMITS_IS_NOT_SUPPORTED))));
         }
         let summary = revert_commit.summary().ok().flatten().unwrap_or("commit");
         let message = format!(
@@ -1930,7 +1875,7 @@ impl GitService {
             revert_commit.id()
         );
         self.progress
-            .emit(OperationEvent::Started("正在回滚提交".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::REVERTING_COMMIT).into()));
         let mut options = RevertOptions::new();
         let revert_result =
             revert_preserving_locked_directories(repo, &revert_commit, &mut options);
@@ -1938,7 +1883,7 @@ impl GitService {
         if let Err(err) = revert_result {
             self.handle_revert_apply_error(repo, err)?;
         }
-        self.finish_revert_commit(repo, message, "回滚提交完成")
+        self.finish_revert_commit(repo, message, crate::ui_i18n::text(domain_ui_resources::COMMIT_REVERTED))
     }
 
     pub fn revert_merge_commit(
@@ -1946,11 +1891,11 @@ impl GitService {
         repo: &mut Repository,
         commit_oid: &str,
     ) -> Result<RepositorySnapshot> {
-        self.ensure_clean_before_revert(repo, "撤销合并前需要先提交、暂存或丢弃当前工作区修改")?;
+        self.ensure_clean_before_revert(repo, crate::ui_i18n::text(domain_ui_resources::COMMIT_STASH_OR_DISCARD_WORKING_TREE_CHANGES_BEFORE_REVERTING_A_MERGE))?;
         let merge_commit = self.find_commit_by_oid(repo, commit_oid)?;
         if merge_commit.parent_count() <= 1 {
             return Err(GitError::Git(git2::Error::from_str(
-                "该提交不是合并提交，请使用普通回滚提交",
+                crate::ui_i18n::text(domain_ui_resources::THIS_IS_NOT_A_MERGE_COMMIT_USE_REGULAR_COMMIT_REVERT),
             )));
         }
         let summary = merge_commit
@@ -1963,7 +1908,7 @@ impl GitService {
             merge_commit.id()
         );
         self.progress
-            .emit(OperationEvent::Started("正在撤销合并提交".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::REVERTING_MERGE_COMMIT).into()));
 
         // 第一版固定使用 git revert -m 1 语义：保留合并提交的第一父提交主线侧。
         let mut options = RevertOptions::new();
@@ -1973,7 +1918,7 @@ impl GitService {
         if let Err(err) = revert_result {
             self.handle_revert_apply_error(repo, err)?;
         }
-        self.finish_revert_commit(repo, message, "撤销合并完成")
+        self.finish_revert_commit(repo, message, crate::ui_i18n::text(domain_ui_resources::MERGE_REVERTED))
     }
 
     /// 拣选提交到当前分支（`git cherry-pick`）：把指定提交的改动作为新提交
@@ -1987,10 +1932,10 @@ impl GitService {
         repo: &mut Repository,
         commit_oid: &str,
     ) -> Result<RepositorySnapshot> {
-        self.ensure_clean_before_revert(repo, "拣选提交前需要先提交、暂存或丢弃当前工作区修改")?;
+        self.ensure_clean_before_revert(repo, crate::ui_i18n::text(domain_ui_resources::COMMIT_STASH_OR_DISCARD_WORKING_TREE_CHANGES_BEFORE_CHERRY_PICKING))?;
         let pick_commit = self.find_commit_by_oid(repo, commit_oid)?;
         if pick_commit.parent_count() > 1 {
-            return Err(GitError::Git(git2::Error::from_str("暂不支持拣选合并提交")));
+            return Err(GitError::Git(git2::Error::from_str(crate::ui_i18n::text(domain_ui_resources::CHERRY_PICKING_MERGE_COMMITS_IS_NOT_SUPPORTED))));
         }
         // 提前取出作者签名与完整提交信息：cherry-pick 借用检查要求 drop 提交对象。
         let author = preserved_signature(&pick_commit).or_else(|_| signature(repo))?;
@@ -1998,7 +1943,7 @@ impl GitService {
         let short_oid = pick_commit.id().to_string()[..8].to_string();
 
         self.progress
-            .emit(OperationEvent::Started("正在拣选提交".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::CHERRY_PICKING_COMMIT).into()));
         let mut options = CherrypickOptions::new();
         let pick_result =
             cherrypick_preserving_locked_directories(repo, &pick_commit, &mut options);
@@ -2036,9 +1981,7 @@ impl GitService {
         let head_commit = repo.head()?.peel_to_commit()?;
         if tree_oid == head_commit.tree_id() {
             repo.cleanup_state()?;
-            return Err(GitError::Message(format!(
-                "提交 {short_oid} 的改动已在当前分支中，拣选结果为空"
-            )));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CHANGES_FROM_COMMIT_ARE_ALREADY_IN_THE_CURRENT_BRANCH_CHERRY_PICK_RESULT_IS_EMPTY, &[("short_oid", &format!("{}", short_oid))])));
         }
 
         let tree = repo.find_tree(tree_oid)?;
@@ -2058,7 +2001,7 @@ impl GitService {
         drop(tree);
         drop(head_commit);
         self.progress
-            .emit(OperationEvent::Finished("拣选提交完成".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::CHERRY_PICK_COMPLETED).into()));
         self.snapshot_after_operation(repo)
     }
 
@@ -2112,9 +2055,9 @@ impl GitService {
             let oid = oid?;
             let commit = repo.find_commit(oid)?;
             let author = commit.author();
-            let author_name = author.name().unwrap_or("未知作者").to_string();
+            let author_name = author.name().unwrap_or(crate::ui_i18n::text(domain_ui_resources::UNKNOWN_AUTHOR)).to_string();
             let committer = commit.committer();
-            let committer_name = committer.name().unwrap_or("未知提交者").to_string();
+            let committer_name = committer.name().unwrap_or(crate::ui_i18n::text(domain_ui_resources::UNKNOWN_COMMITTER)).to_string();
             let oid_string = oid.to_string();
             let parents = commit
                 .parent_ids()
@@ -2128,7 +2071,7 @@ impl GitService {
                     .summary()
                     .ok()
                     .flatten()
-                    .unwrap_or("(无提交信息)")
+                    .unwrap_or(crate::ui_i18n::text(domain_ui_resources::NO_COMMIT_MESSAGE))
                     .to_string(),
                 // message() 对非 UTF-8 编码返回 Err，统一走字节读取 + 有损转换。
                 message: String::from_utf8_lossy(commit.message_bytes()).into_owned(),
@@ -2286,7 +2229,7 @@ impl GitService {
         commit_oid: &str,
     ) -> Result<git2::Commit<'repo>> {
         let oid = git2::Oid::from_str(commit_oid)
-            .map_err(|err| GitError::Message(format!("提交 ID 无效：{}", err.message())))?;
+            .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INVALID_COMMIT_ID, &[("value0", &format!("{}", err.message()))])))?;
         Ok(repo.find_commit(oid)?)
     }
 
@@ -2727,11 +2670,7 @@ impl GitService {
 
         let mut callbacks = RemoteCallbacks::new();
         callbacks.transfer_progress(move |stats| {
-            progress.emit(OperationEvent::Progress(format!(
-                "已接收 {}/{} 个对象",
-                stats.received_objects(),
-                stats.total_objects()
-            )));
+            progress.emit(OperationEvent::Progress(crate::ui_i18n::format(domain_ui_resources::RECEIVED_OBJECTS, &[("value0", &format!("{}", stats.received_objects())), ("value1", &format!("{}", stats.total_objects()))])));
             true
         });
 
@@ -2757,16 +2696,14 @@ impl GitService {
         callbacks.push_update_reference(|refname, status| match status {
             None => Ok(()),
             Some(msg) if msg.contains("non-fast-forward") || msg.contains("fetch first") => {
-                Err(git2::Error::from_str(NON_FAST_FORWARD_PUSH_MESSAGE))
+                Err(git2::Error::new(git2::ErrorCode::NotFastForward, git2::ErrorClass::Net, "non-fast-forward"))
             }
             Some(msg) => {
                 let name = refname
                     .strip_prefix("refs/heads/")
                     .or_else(|| refname.strip_prefix("refs/tags/"))
                     .unwrap_or(refname);
-                Err(git2::Error::from_str(&format!(
-                    "远端拒绝推送 {name}：{msg}"
-                )))
+                Err(git2::Error::from_str(&crate::ui_i18n::format(domain_ui_resources::REMOTE_REJECTED_PUSH_TO, &[("name", &format!("{}", name)), ("msg", &format!("{}", msg))])))
             }
         });
         callbacks
@@ -2820,7 +2757,7 @@ impl GitService {
         repo.find_reference(&format!("refs/remotes/{}/{}", remote.0, branch))
             .map_err(|err| {
                 if matches!(err.code(), ErrorCode::NotFound | ErrorCode::InvalidSpec) {
-                    GitError::Message(format!("远端分支不存在：{}/{}", remote.0, branch))
+                    GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::REMOTE_BRANCH_DOES_NOT_EXIST_2, &[("value0", &format!("{}", remote.0)), ("value1", &format!("{}", branch))]))
                 } else {
                     GitError::from(err)
                 }
@@ -2902,7 +2839,7 @@ impl GitService {
     }
 
     fn ensure_path_not_conflicted(&self, repo: &Repository, path: &Path) -> Result<()> {
-        self.ensure_path_not_conflicted_with_action(repo, path, "回滚更改")
+        self.ensure_path_not_conflicted_with_action(repo, path, crate::ui_i18n::text(domain_ui_resources::DISCARD_CHANGES))
     }
 
     fn ensure_path_not_conflicted_with_action(
@@ -2913,9 +2850,7 @@ impl GitService {
     ) -> Result<()> {
         let git_path = path_to_git(path);
         if self.conflicts(repo)?.iter().any(|path| path == &git_path) {
-            return Err(GitError::Message(format!(
-                "该文件存在冲突，请先解决冲突后再{action}"
-            )));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_FILE_HAS_CONFLICTS_RESOLVE_THEM_BEFORE_ATTEMPTING_TO, &[("action", &format!("{}", action))])));
         }
         Ok(())
     }
@@ -2941,7 +2876,7 @@ fn validate_remote_name(name: &str) -> Result<()> {
         || trimmed.starts_with('-')
         || !git2::Reference::is_valid_name(&refname)
     {
-        return Err(GitError::Message(format!("远端名称无效：{name}")));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INVALID_REMOTE_NAME, &[("name", &format!("{}", name))])));
     }
     Ok(())
 }
@@ -2957,14 +2892,14 @@ fn validate_tag_name(name: &str) -> Result<()> {
         || trimmed.starts_with('-')
         || !git2::Reference::is_valid_name(&refname)
     {
-        return Err(GitError::Message(format!("标签名称无效：{name}")));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INVALID_TAG_NAME, &[("name", &format!("{}", name))])));
     }
     Ok(())
 }
 
 fn validate_remote_url(url: &str) -> Result<()> {
     if url.trim().is_empty() {
-        return Err(GitError::Message("远端地址不能为空".into()));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::REMOTE_URL_CANNOT_BE_EMPTY, &[])));
     }
     Ok(())
 }
@@ -3173,10 +3108,10 @@ fn preserved_signature(
     // git2 0.21 的 name()/email() 返回 Result（非 UTF-8 时 Err）。
     let name = author
         .name()
-        .map_err(|_| git2::Error::from_str("提交作者名字缺失"))?;
+        .map_err(|_| git2::Error::from_str(crate::ui_i18n::text(domain_ui_resources::THE_COMMIT_AUTHOR_NAME_IS_MISSING)))?;
     let email = author
         .email()
-        .map_err(|_| git2::Error::from_str("提交作者邮箱缺失"))?;
+        .map_err(|_| git2::Error::from_str(crate::ui_i18n::text(domain_ui_resources::THE_COMMIT_AUTHOR_EMAIL_IS_MISSING)))?;
     git2::Signature::new(name, email, &author.when())
 }
 
@@ -3223,7 +3158,7 @@ fn credential_for_remote(
     };
     match provider.credential_for(request.clone()) {
         Ok(Some(credential)) => to_git_credential(&request, credential),
-        Ok(None) => Err(git2::Error::from_str(&format!("访问 {url} 需要身份验证"))),
+        Ok(None) => Err(git2::Error::from_str(&crate::ui_i18n::format(domain_ui_resources::AUTHENTICATION_IS_REQUIRED_TO_ACCESS, &[("url", &format!("{}", url))]))),
         Err(err) => Err(git2::Error::from_str(&err.to_string())),
     }
 }
@@ -3243,15 +3178,15 @@ fn ensure_worktree_relative_path(path: &Path, action: &str) -> Result<()> {
         return Ok(());
     }
 
-    Err(GitError::Message(format!("文件路径无效，{action}")))
+    Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INVALID_FILE_PATH, &[("action", &format!("{}", action))])))
 }
 
 fn remove_worktree_path(repo: &Repository, path: &Path) -> Result<()> {
-    ensure_worktree_relative_path(path, "不能回滚更改")?;
+    ensure_worktree_relative_path(path, crate::ui_i18n::text(domain_ui_resources::CANNOT_DISCARD_CHANGES))?;
 
     let workdir = repo
         .workdir()
-        .ok_or_else(|| GitError::Message("裸仓库没有工作区，不能回滚文件更改".into()))?;
+        .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::A_BARE_REPOSITORY_HAS_NO_WORKING_TREE_CANNOT_DISCARD_FILE_CHANGES, &[])))?;
     let full_path = workdir.join(path);
     let metadata = match fs::symlink_metadata(&full_path) {
         Ok(metadata) => metadata,

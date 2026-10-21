@@ -17,6 +17,9 @@
 //! JSON5 注释时先弹确认（序列化保存会丢失注释与排版），副本不弹确认——
 //! 原文件不动，强制另存新文件名。
 
+#[path = "workflow_editor_resources.rs"]
+mod messages;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -122,57 +125,61 @@ pub(crate) enum WorkflowStepSlot {
 impl WorkflowStepSlot {
     /// 槽的中文显示名（表单 label）。
     pub(crate) fn label(self) -> &'static str {
+        khaslana::ui_i18n::text(self.label_message())
+    }
+
+    pub(crate) fn label_message(self) -> khaslana::ui_i18n::UiMessage {
         match self {
-            Self::StepId => "步骤标识",
-            Self::Uses => "动作名称",
-            Self::Arguments => "高级参数（JSON5 对象）",
-            Self::SaveAs => "输出变量（可选）",
-            Self::Server => "MCP 服务",
-            Self::Tool => "工具名称",
-            Self::ToolArguments => "工具参数（JSON5 对象）",
-            Self::Script => "JavaScript 脚本",
-            Self::JsInput => "脚本输入（JSON5）",
-            Self::Skill => "Skill 名称",
-            Self::Task => "任务描述",
-            Self::Tools => "允许的工具（JSON5 数组）",
-            Self::Branch => "分支",
-            Self::Remote => "远端（留空用默认远端）",
-            Self::Name => "新分支名",
-            Self::From => "起点（留空用当前 HEAD）",
-            Self::Output => "输出变量名",
-            Self::Pattern => "分支名正则（需含日期捕获组）",
-            Self::DateFormat => "日期格式",
-            Self::DateGroup => "日期捕获组名",
-            Self::OlderThanMonths => "距今月数阈值",
-            Self::Branches => "分支列表（换行分隔或 ${数组变量}）",
+            Self::StepId => messages::STEP_ID,
+            Self::Uses => messages::ACTION_NAME,
+            Self::Arguments => messages::ADVANCED_ARGUMENTS_JSON5_OBJECT,
+            Self::SaveAs => messages::OUTPUT_VARIABLE_OPTIONAL,
+            Self::Server => messages::MCP_SERVER,
+            Self::Tool => messages::TOOL_NAME,
+            Self::ToolArguments => messages::TOOL_ARGUMENTS_JSON5_OBJECT,
+            Self::Script => messages::JAVASCRIPT_SCRIPT,
+            Self::JsInput => messages::SCRIPT_INPUT_JSON5,
+            Self::Skill => messages::SKILL_NAME,
+            Self::Task => messages::TASK_DESCRIPTION,
+            Self::Tools => messages::ALLOWED_TOOLS_JSON5_ARRAY,
+            Self::Branch => messages::BRANCH,
+            Self::Remote => messages::REMOTE_LEAVE_BLANK_FOR_DEFAULT,
+            Self::Name => messages::NEW_BRANCH_NAME,
+            Self::From => messages::STARTING_POINT_LEAVE_BLANK_FOR_HEAD,
+            Self::Output => messages::OUTPUT_VARIABLE_NAME,
+            Self::Pattern => messages::BRANCH_NAME_REGEX_WITH_DATE_CAPTURE_GROUP,
+            Self::DateFormat => messages::DATE_FORMAT,
+            Self::DateGroup => messages::DATE_CAPTURE_GROUP_NAME,
+            Self::OlderThanMonths => messages::AGE_THRESHOLD_IN_MONTHS,
+            Self::Branches => messages::BRANCH_LIST_ONE_PER_LINE_OR,
         }
     }
 
     /// 槽的 placeholder 示例。
-    pub(crate) fn placeholder(self) -> &'static str {
+    pub(crate) fn placeholder(self) -> khaslana::ui_i18n::UiMessage {
         match self {
-            Self::StepId => "如 browser-step",
-            Self::Uses => "如 js.run / skill.run",
-            Self::Arguments => "{}",
-            Self::SaveAs => "如 browserResult",
-            Self::Server => "如 browser.edge",
-            Self::Tool => "如 browser_type",
-            Self::ToolArguments => "{}",
-            Self::Script => "return input;",
-            Self::JsInput => "{}",
-            Self::Skill => "已安装的 Skill 名称",
-            Self::Task => "描述任务目标，可引用 ${变量}",
-            Self::Tools => "如 [{server:'browser.edge', tool:'browser_type'}]",
-            Self::Branch => "如 master",
-            Self::Remote => "如 origin",
-            Self::Name => "如 feature-login",
-            Self::From => "如 master",
-            Self::Output => "如 stale",
-            Self::Pattern => "如 uat_(?<date>\\d{8})",
-            Self::DateFormat => "%Y%m%d",
-            Self::DateGroup => "date",
-            Self::OlderThanMonths => "如 3",
-            Self::Branches => "如 ${out.stale}",
+            Self::StepId => messages::E_G_BROWSER_STEP,
+            Self::Uses => messages::E_G_JS_RUN_SKILL_RUN,
+            Self::Arguments => messages::PLACEHOLDER_OBJECT,
+            Self::SaveAs => messages::E_G_BROWSERRESULT,
+            Self::Server => messages::E_G_BROWSER_EDGE,
+            Self::Tool => messages::E_G_BROWSER_TYPE,
+            Self::ToolArguments => messages::PLACEHOLDER_OBJECT,
+            Self::Script => messages::PLACEHOLDER_SCRIPT,
+            Self::JsInput => messages::PLACEHOLDER_OBJECT,
+            Self::Skill => messages::INSTALLED_SKILL_NAME,
+            Self::Task => messages::DESCRIBE_THE_TASK_REFERENCES_ARE_SUPPORTED,
+            Self::Tools => messages::E_G,
+            Self::Branch => messages::E_G_MASTER,
+            Self::Remote => messages::E_G_ORIGIN,
+            Self::Name => messages::E_G_FEATURE_LOGIN,
+            Self::From => messages::E_G_MASTER,
+            Self::Output => messages::E_G_STALE,
+            Self::Pattern => messages::PLACEHOLDER_PATTERN,
+            Self::DateFormat => messages::PLACEHOLDER_DATE_FORMAT,
+            Self::DateGroup => messages::PLACEHOLDER_DATE_GROUP,
+            Self::OlderThanMonths => messages::E_G_2,
+            Self::Branches => messages::E_G_3,
         }
     }
 }
@@ -222,37 +229,41 @@ impl WorkflowStepKind {
 
     /// 步骤类型的中文显示名。
     pub(crate) fn display_name(self) -> &'static str {
+        khaslana::ui_i18n::text(self.display_name_message())
+    }
+
+    pub(crate) fn display_name_message(self) -> khaslana::ui_i18n::UiMessage {
         match self {
-            Self::Invoke => "扩展动作",
-            Self::Checkout => "切换分支",
-            Self::Fetch => "获取",
-            Self::Pull => "拉取",
-            Self::CreateBranch => "新建分支",
-            Self::Merge => "合并分支",
-            Self::Push => "推送",
-            Self::GuardRemoteBranch => "检查远端分支",
-            Self::EnsureClean => "检查工作区干净",
-            Self::AssertBranch => "断言当前分支",
-            Self::FilterBranches => "筛选本地分支",
-            Self::DeleteBranches => "删除本地分支",
+            Self::Invoke => messages::EXTENSION_ACTION,
+            Self::Checkout => messages::SWITCH_BRANCH,
+            Self::Fetch => messages::FETCH,
+            Self::Pull => messages::PULL,
+            Self::CreateBranch => messages::CREATE_BRANCH,
+            Self::Merge => messages::MERGE_BRANCH,
+            Self::Push => messages::PUSH,
+            Self::GuardRemoteBranch => messages::CHECK_REMOTE_BRANCH,
+            Self::EnsureClean => messages::ENSURE_CLEAN_WORKING_TREE,
+            Self::AssertBranch => messages::ASSERT_CURRENT_BRANCH,
+            Self::FilterBranches => messages::FILTER_LOCAL_BRANCHES,
+            Self::DeleteBranches => messages::DELETE_LOCAL_BRANCHES,
         }
     }
 
     /// 简短说明（类型下拉/参数区的辅助文案）。
     pub(crate) fn description(self) -> &'static str {
         match self {
-            Self::Invoke => "调用 MCP、JavaScript、Skill 或已注册动作",
-            Self::Checkout => "切换到指定本地分支",
-            Self::Fetch => "从远端获取最新引用，不合并",
-            Self::Pull => "拉取并合并当前分支的远端更新",
-            Self::CreateBranch => "基于起点创建新分支，可同时切换",
-            Self::Merge => "把指定分支合并进当前分支",
-            Self::Push => "推送当前分支到远端",
-            Self::GuardRemoteBranch => "按远端分支是否存在决定继续或停止",
-            Self::EnsureClean => "确保工作区没有未提交改动，否则停止",
-            Self::AssertBranch => "当前分支与预期不符时报错停止",
-            Self::FilterBranches => "按正则筛选本地分支，输出数组变量",
-            Self::DeleteBranches => "删除一批本地分支（可试运行）",
+            Self::Invoke => khaslana::ui_i18n::text(messages::INVOKE_MCP_JAVASCRIPT_SKILL_OR_A_REGISTERED_ACTION),
+            Self::Checkout => khaslana::ui_i18n::text(messages::SWITCH_TO_THE_SPECIFIED_LOCAL_BRANCH),
+            Self::Fetch => khaslana::ui_i18n::text(messages::FETCH_REMOTE_REFERENCES_WITHOUT_MERGING),
+            Self::Pull => khaslana::ui_i18n::text(messages::PULL_AND_MERGE_REMOTE_UPDATES_FOR_THE_CURRENT_BRANCH),
+            Self::CreateBranch => khaslana::ui_i18n::text(messages::CREATE_A_BRANCH_FROM_A_STARTING_POINT_AND_OPTIONALLY_SWITCH),
+            Self::Merge => khaslana::ui_i18n::text(messages::MERGE_THE_SPECIFIED_BRANCH_INTO_THE_CURRENT_BRANCH),
+            Self::Push => khaslana::ui_i18n::text(messages::PUSH_THE_CURRENT_BRANCH_TO_THE_REMOTE),
+            Self::GuardRemoteBranch => khaslana::ui_i18n::text(messages::CONTINUE_OR_STOP_DEPENDING_ON_WHETHER_A_REMOTE_BRANCH_EXISTS),
+            Self::EnsureClean => khaslana::ui_i18n::text(messages::STOP_IF_THE_WORKING_TREE_HAS_UNCOMMITTED_CHANGES),
+            Self::AssertBranch => khaslana::ui_i18n::text(messages::STOP_WITH_AN_ERROR_IF_THE_CURRENT_BRANCH_DIFFERS_FROM),
+            Self::FilterBranches => khaslana::ui_i18n::text(messages::FILTER_LOCAL_BRANCHES_BY_REGEX_AND_OUTPUT_AN_ARRAY_VARIABLE),
+            Self::DeleteBranches => khaslana::ui_i18n::text(messages::DELETE_A_BATCH_OF_LOCAL_BRANCHES_DRY_RUN_SUPPORTED),
         }
     }
 
@@ -600,7 +611,7 @@ pub(crate) fn workflow_editor_data_from_definition(
     file_stem: &str,
 ) -> Result<WorkflowEditorData, String> {
     if !matches!(definition.version, 1 | 2) {
-        return Err("可视化编辑器仅支持 V1、V2 模板".into());
+        return Err(khaslana::ui_i18n::encode(messages::THE_VISUAL_EDITOR_ONLY_SUPPORTS_V1_AND_V2_TEMPLATES, &[]));
     }
     let optional = |value: &Option<String>| value.clone().unwrap_or_default();
     let steps = definition
@@ -733,7 +744,7 @@ pub(crate) fn apply_ai_generated_to_editor_data(
 ) -> Result<(), String> {
     let cleaned = khaslana::strip_code_fence(json5_text.trim());
     let definition = parse_workflow_json5(&cleaned)
-        .map_err(|err| format!("AI 生成的内容不是有效的工作流模板：{err}。请重试或调整需求描述"));
+        .map_err(|err| khaslana::ui_i18n::format(messages::AI_OUTPUT_IS_NOT_A_VALID_WORKFLOW_TEMPLATE_RETRY_OR, &[("err", &(err).to_string())]));
 
     let mut generated = match definition {
         Ok(definition) => {
@@ -749,7 +760,7 @@ pub(crate) fn apply_ai_generated_to_editor_data(
     };
 
     if data.version == 1 && generated.version == 2 {
-        return Err("当前模板为 V1，请新建 V2 模板后再生成扩展动作".into());
+        return Err(khaslana::ui_i18n::encode(messages::THE_CURRENT_TEMPLATE_IS_V1_CREATE_A_V2_TEMPLATE_TO, &[]));
     }
     generated.version = data.version;
     let file_name_empty = data.file_name.trim().is_empty();
@@ -817,7 +828,7 @@ pub(crate) fn build_workflow_definition(
     data: &WorkflowEditorData,
 ) -> Result<WorkflowDefinition, String> {
     if data.steps.is_empty() {
-        return Err("至少需要一个步骤".to_string());
+        return Err(khaslana::ui_i18n::encode(messages::AT_LEAST_ONE_STEP_IS_REQUIRED, &[]));
     }
     let steps = data
         .steps
@@ -826,19 +837,17 @@ pub(crate) fn build_workflow_definition(
         .map(|(index, step)| {
             for &slot in step.kind.slots() {
                 if step.kind.slot_required(slot) && step.slot_value(slot).trim().is_empty() {
-                    return Err(format!(
-                        "第 {} 个步骤（{}）缺少「{}」",
-                        index + 1,
-                        step.kind.display_name(),
-                        slot.label()
-                    ));
+                    return Err(khaslana::ui_i18n::encode_with_messages(messages::STEP_IS_MISSING,
+                        &[("index", &(index + 1).to_string())],
+                        &[("kind", &khaslana::ui_i18n::encode(step.kind.display_name_message(), &[])),
+                          ("slot", &khaslana::ui_i18n::encode(slot.label_message(), &[]))]));
                 }
             }
             if step.kind == WorkflowStepKind::Invoke {
                 if data.version != 2 {
-                    return Err("扩展动作需要 V2 模板".into());
+                    return Err(khaslana::ui_i18n::encode(messages::EXTENSION_ACTIONS_REQUIRE_A_V2_TEMPLATE, &[]));
                 }
-                step.invoke.build().map_err(|error| format!("第 {} 个步骤：{error}", index + 1))
+                step.invoke.build().map_err(|error| khaslana::ui_i18n::encode_with_messages(messages::STEP, &[("arg0", &(index + 1).to_string())], &[("error", &error)]))
             } else {
                 Ok(step.build_step())
             }
@@ -849,15 +858,13 @@ pub(crate) fn build_workflow_definition(
     for (index, input) in data.inputs.iter().enumerate() {
         let key = input.key.trim();
         if key.is_empty() {
-            return Err(format!("第 {} 个输入变量的变量名为空", index + 1));
+            return Err(khaslana::ui_i18n::encode(messages::INPUT_VARIABLE_HAS_NO_NAME, &[("arg0", &(index + 1).to_string())]));
         }
         if workflow_editor_key_reserved(key) {
-            return Err(format!(
-                "输入变量「{key}」使用了保留前缀（git. / run. / date:），请换一个名字"
-            ));
+            return Err(khaslana::ui_i18n::encode(messages::INPUT_VARIABLE_USES_A_RESERVED_PREFIX_GIT_RUN_DATE_CHOOSE, &[("key", key)]));
         }
         if inputs.contains_key(key) {
-            return Err(format!("输入变量「{key}」重复"));
+            return Err(khaslana::ui_i18n::encode(messages::DUPLICATE_INPUT_VARIABLE, &[("key", &(key).to_string())]));
         }
         let label = input.label.trim();
         let description = input.description.trim();
@@ -879,15 +886,13 @@ pub(crate) fn build_workflow_definition(
     for (index, var) in data.vars.iter().enumerate() {
         let key = var.key.trim();
         if key.is_empty() {
-            return Err(format!("第 {} 个自定义变量的变量名为空", index + 1));
+            return Err(khaslana::ui_i18n::encode(messages::CUSTOM_VARIABLE_HAS_NO_NAME, &[("arg0", &(index + 1).to_string())]));
         }
         if workflow_editor_key_reserved(key) {
-            return Err(format!(
-                "自定义变量「{key}」使用了保留前缀（git. / run. / date:），请换一个名字"
-            ));
+            return Err(khaslana::ui_i18n::encode(messages::CUSTOM_VARIABLE_USES_A_RESERVED_PREFIX_GIT_RUN_DATE_CHOOSE, &[("key", key)]));
         }
         if vars.contains_key(key) {
-            return Err(format!("自定义变量「{key}」重复"));
+            return Err(khaslana::ui_i18n::encode(messages::DUPLICATE_CUSTOM_VARIABLE, &[("key", &(key).to_string())]));
         }
         vars.insert(key.to_string(), var.value.trim().to_string());
     }
@@ -924,22 +929,22 @@ pub(crate) fn workflow_editor_file_name(
         .trim_end_matches(".jsonc")
         .trim();
     if stem.is_empty() {
-        return Err("请填写模板文件名".to_string());
+        return Err(khaslana::ui_i18n::encode(messages::ENTER_A_TEMPLATE_FILE_NAME, &[]));
     }
     if stem.chars().count() > 80 {
-        return Err("模板文件名过长（最多 80 字符）".to_string());
+        return Err(khaslana::ui_i18n::encode(messages::TEMPLATE_FILE_NAME_IS_TOO_LONG_MAXIMUM_CHARACTERS, &[]));
     }
     if let Some(bad) = stem.chars().find(|ch| {
         ch.is_control() || matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
     }) {
-        return Err(format!("文件名含非法字符「{bad}」"));
+        return Err(khaslana::ui_i18n::encode(messages::FILE_NAME_CONTAINS_INVALID_CHARACTER, &[("bad", &(bad).to_string())]));
     }
     let file_name = format!("{stem}.json5");
     if existing_templates
         .iter()
         .any(|name| name.eq_ignore_ascii_case(&file_name))
     {
-        return Err(format!("已存在同名模板文件「{file_name}」，请换个文件名"));
+        return Err(khaslana::ui_i18n::encode(messages::TEMPLATE_FILE_ALREADY_EXISTS_CHOOSE_ANOTHER_NAME, &[("file_name", &(file_name).to_string())]));
     }
     Ok(file_name)
 }
@@ -999,18 +1004,18 @@ impl WorkflowEditorPreset {
     /// 预设卡片标题。
     fn title(self) -> &'static str {
         match self {
-            Self::SyncCurrentBranch => "同步当前分支",
-            Self::FeatureBranch => "新建功能分支并推送",
-            Self::MergeAndPush => "合并分支并推送",
+            Self::SyncCurrentBranch => khaslana::ui_i18n::text(messages::SYNC_CURRENT_BRANCH),
+            Self::FeatureBranch => khaslana::ui_i18n::text(messages::CREATE_AND_PUSH_FEATURE_BRANCH),
+            Self::MergeAndPush => khaslana::ui_i18n::text(messages::MERGE_AND_PUSH_BRANCH),
         }
     }
 
     /// 预设卡片描述。
     fn description(self) -> &'static str {
         match self {
-            Self::SyncCurrentBranch => "拉取远端更新并推送本地提交，适合日常同步",
-            Self::FeatureBranch => "切到基础分支、拉取最新、创建功能分支并推送（示范输入变量）",
-            Self::MergeAndPush => "获取远端、把指定分支合并进当前分支并推送",
+            Self::SyncCurrentBranch => khaslana::ui_i18n::text(messages::PULL_REMOTE_UPDATES_AND_PUSH_LOCAL_COMMITS_FOR_EVERYDAY_SYNCHRONIZATION),
+            Self::FeatureBranch => khaslana::ui_i18n::text(messages::SWITCH_TO_THE_BASE_BRANCH_PULL_UPDATES_CREATE_AND_PUSH),
+            Self::MergeAndPush => khaslana::ui_i18n::text(messages::FETCH_MERGE_THE_SPECIFIED_BRANCH_INTO_THE_CURRENT_BRANCH_AND),
         }
     }
 
@@ -1087,7 +1092,7 @@ const WORKFLOW_EDITOR_PRESETS: &[WorkflowEditorPreset] = &[
 // ---------------------------------------------------------------------------
 
 /// 向导各步的标签（下标即展示顺序，步骤指示器与底部计数共用）。
-pub(crate) const WORKFLOW_WIZARD_STEPS: [&str; 4] = ["基本信息", "操作步骤", "变量设置", "完成"];
+pub(crate) const WORKFLOW_WIZARD_STEPS: [khaslana::ui_i18n::UiMessage; 4] = [messages::WIZARD_BASICS, messages::ACTION_STEPS, messages::WIZARD_VARIABLES, messages::WIZARD_DONE];
 
 /// 「变量设置」步在向导中的下标（绑定条的「去定义」跳转目标）。
 pub(crate) const WIZARD_STEP_VARS: usize = 2;
@@ -1190,19 +1195,16 @@ pub(crate) fn workflow_step_binding(
 pub(crate) fn workflow_binding_summary(binding: &WorkflowStepBinding) -> String {
     let mut parts: Vec<String> = Vec::new();
     if !binding.used.is_empty() {
-        parts.push(format!("使用变量 {}", binding.used.join("、")));
+        parts.push(khaslana::ui_i18n::format(messages::USES_VARIABLES, &[("arg0", &(binding.used.join("、")).to_string())]));
     }
     if let Some(out) = &binding.produces {
-        parts.push(format!("输出 {out} 可供后续步骤使用"));
+        parts.push(khaslana::ui_i18n::format(messages::OUTPUT_IS_AVAILABLE_TO_LATER_STEPS, &[("out", &(out).to_string())]));
     }
     if !binding.unknown.is_empty() {
-        parts.push(format!(
-            "引用了未声明变量 {} · 去「变量设置」定义",
-            binding.unknown.join("、")
-        ));
+        parts.push(khaslana::ui_i18n::format(messages::REFERENCES_UNDECLARED_VARIABLES_DEFINE_THEM_IN_VARIABLE_SETTINGS, &[("variables", &binding.unknown.join("、"))]));
     }
     if parts.is_empty() {
-        "未引用变量".to_string()
+        khaslana::ui_i18n::text(messages::NO_VARIABLE_REFERENCES).to_string()
     } else {
         parts.join(" · ")
     }
@@ -1306,7 +1308,8 @@ pub(crate) struct WorkflowEditorInputRowState {
     pub(crate) description_field: Option<TextFieldState>,
     pub(crate) default_field: Option<TextFieldState>,
     pub(crate) option_fields: Vec<(TextFieldState, TextFieldState)>,
-    pub(crate) kind_control: Option<gpui::Entity<gpui_kit::component::select::SelectState<Vec<String>>>>,
+    pub(crate) kind_control_language: Option<khaslana::language::Language>,
+    pub(crate) kind_control: Option<gpui::Entity<gpui_kit::component::select::SelectState<Vec<inputs::WorkflowInputKindOption>>>>,
 }
 
 pub(crate) struct WorkflowEditorVarRowState {
@@ -1323,9 +1326,9 @@ impl WorkflowEditorState {
     /// 由纯数据（预设或既有草稿）构建 UI 状态，文本框按需初始化并预填。
     fn from_data(data: WorkflowEditorData, cx: &mut Context<RepositoryView>) -> Self {
         let name_field =
-            TextFieldState::new(cx, "显示在模板列表中的名称").with_value(data.name.clone());
+            TextFieldState::localized(cx, messages::NAME_SHOWN_IN_THE_TEMPLATE_LIST).with_value(data.name.clone());
         let file_name_field =
-            TextFieldState::new(cx, "如 my-workflow").with_value(data.file_name.clone());
+            TextFieldState::localized(cx, messages::E_G_MY_WORKFLOW).with_value(data.file_name.clone());
         let mut state = Self {
             document_bounds: Default::default(),
             document_details_open: false,
@@ -1345,13 +1348,13 @@ impl WorkflowEditorState {
             kind_menu_open: None,
             guard_menu_open: None,
             ai_loading: false,
-            ai_description_field: TextFieldState::new(
+            ai_description_field: TextFieldState::localized(
                 cx,
-                "用一句话描述你想要的模板，如：基于 master 创建 release 分支并推送",
+                messages::DESCRIBE_THE_TEMPLATE_E_G_CREATE_A_RELEASE_BRANCH_FROM,
             ),
             wizard_step: 0,
             step_picker_open: false,
-            picker_search_field: TextFieldState::new(cx, "搜索操作"),
+            picker_search_field: TextFieldState::localized(cx, messages::SEARCH_ACTIONS),
         };
         state.ensure_field_capacity();
         state
@@ -1371,6 +1374,7 @@ impl WorkflowEditorState {
                 default_field: None,
                 option_fields: Vec::new(),
                 kind_control: None,
+                kind_control_language: None,
             });
         self.var_fields
             .resize_with(self.data.vars.len(), || WorkflowEditorVarRowState {
@@ -1394,7 +1398,7 @@ impl WorkflowEditorState {
         if !step_state.fields.contains_key(&slot) {
             step_state.fields.insert(
                 slot,
-                TextFieldState::new(cx, slot.placeholder()).with_value(value),
+                TextFieldState::localized(cx, slot.placeholder()).with_value(value),
             );
         }
         step_state.fields.get_mut(&slot)
@@ -1499,21 +1503,21 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) {
         if !as_copy && crate::workflow_view::is_managed_workflow_template_path(&path) {
-            self.notify_error("远端模板请先复制为副本再编辑", cx);
+            self.notify_error(khaslana::ui_i18n::text(messages::DUPLICATE_THE_REMOTE_TEMPLATE_BEFORE_EDITING), cx);
             return;
         }
         self.close_popups();
         let content = match fs::read_to_string(&path) {
             Ok(content) => content,
             Err(err) => {
-                self.notify_error(format!("工作流模板读取失败：{err}"), cx);
+                self.notify_error(khaslana::ui_i18n::format(messages::COULD_NOT_READ_WORKFLOW_TEMPLATE, &[("err", &(err).to_string())]), cx);
                 return;
             }
         };
         let definition = match parse_workflow_json5(&content) {
             Ok(definition) => definition,
             Err(err) => {
-                self.notify_error(format!("无法编辑该模板：{err}"), cx);
+                self.notify_error(khaslana::ui_i18n::format(messages::CANNOT_EDIT_THIS_TEMPLATE, &[("err", &(err).to_string())]), cx);
                 return;
             }
         };
@@ -1901,24 +1905,24 @@ impl RepositoryView {
                 };
                 if row_state.key_field.is_none() {
                     row_state.key_field =
-                        Some(TextFieldState::new(cx, "变量名").with_value(&row.key));
+                        Some(TextFieldState::localized(cx, messages::VARIABLE_NAME).with_value(&row.key));
                 }
                 if row_state.label_field.is_none() {
                     row_state.label_field =
-                        Some(TextFieldState::new(cx, "显示名").with_value(&row.label));
+                        Some(TextFieldState::localized(cx, messages::DISPLAY_NAME).with_value(&row.label));
                 }
                 if row_state.description_field.is_none() {
                     row_state.description_field =
-                        Some(TextFieldState::new(cx, "说明").with_value(&row.description));
+                        Some(TextFieldState::localized(cx, messages::DESCRIPTION).with_value(&row.description));
                 }
                 if row_state.default_field.is_none() {
                     row_state.default_field =
-                        Some(TextFieldState::new(cx, "默认值").with_value(&row.default_value));
+                        Some(TextFieldState::localized(cx, messages::DEFAULT_VALUE).with_value(&row.default_value));
                 }
                 while row_state.option_fields.len() < row.options.len() {
                     let option = &row.options[row_state.option_fields.len()];
-                    row_state.option_fields.push((TextFieldState::new(cx, "显示名称").with_value(&option.label),
-                        TextFieldState::new(cx, "实际值").with_value(&option.value)));
+                    row_state.option_fields.push((TextFieldState::localized(cx, messages::DISPLAY_NAME_2).with_value(&option.label),
+                        TextFieldState::localized(cx, messages::ACTUAL_VALUE).with_value(&option.value)));
                 }
             }
             let vars = state.data.vars.clone();
@@ -1928,11 +1932,11 @@ impl RepositoryView {
                 };
                 if row_state.key_field.is_none() {
                     row_state.key_field =
-                        Some(TextFieldState::new(cx, "变量名").with_value(&row.key));
+                        Some(TextFieldState::localized(cx, messages::VARIABLE_NAME).with_value(&row.key));
                 }
                 if row_state.value_field.is_none() {
                     row_state.value_field =
-                        Some(TextFieldState::new(cx, "值").with_value(&row.value));
+                        Some(TextFieldState::localized(cx, messages::VALUE).with_value(&row.value));
                 }
             }
         }
@@ -2100,7 +2104,7 @@ impl RepositoryView {
     pub(crate) fn handle_ai_workflow_template_failed(&mut self, error: &str) {
         if let Some(state) = self.workflow_editor.as_mut() {
             state.ai_loading = false;
-            state.data.error = Some(format!("AI 生成失败：{error}"));
+            state.data.error = Some(khaslana::ui_i18n::encode(messages::AI_GENERATION_FAILED, &[("error", &(error).to_string())]));
         }
     }
 
@@ -2150,12 +2154,12 @@ impl RepositoryView {
                 if has_vars {
                     state.wizard_step = WIZARD_STEP_VARS;
                 }
-                self.status = "AI 已生成工作流模板，请检查后保存".to_string();
-                self.notify_success("AI 已生成模板，请检查无误后保存", cx);
+                self.status = khaslana::ui_i18n::encode(messages::AI_GENERATED_THE_WORKFLOW_TEMPLATE_REVIEW_IT_BEFORE_SAVING, &[]);
+                self.notify_success(khaslana::ui_i18n::text(messages::AI_GENERATED_THE_TEMPLATE_REVIEW_IT_BEFORE_SAVING), cx);
             }
             Err(err) => {
                 state.data.error = Some(err);
-                self.notify_error("AI 返回的内容无法解析为工作流模板", cx);
+                self.notify_error(khaslana::ui_i18n::text(messages::AI_OUTPUT_COULD_NOT_BE_PARSED_AS_A_WORKFLOW_TEMPLATE), cx);
             }
         }
         cx.notify();
@@ -2175,20 +2179,25 @@ impl RepositoryView {
             return;
         }
         if !self.ai_settings.is_usable() {
-            state.data.error = Some("请先在设置中心的 AI 设置中配置并启用供应商".into());
+            state.data.error = Some(khaslana::ui_i18n::encode(messages::PROVIDER_REQUIRED, &[]));
             cx.notify();
             return;
         }
         state.sync_from_fields();
         let mut request = state.ai_description_field.value.trim().to_string();
         if request.is_empty() {
-            state.data.error = Some("请先在输入框中描述你想要的模板功能，再点击 AI 生成".into());
+            state.data.error = Some(khaslana::ui_i18n::encode(messages::AI_DESCRIPTION_REQUIRED, &[]));
             cx.notify();
             return;
         }
         let version = state.data.version;
+        let languages = khaslana::language::TaskLanguages::new(self.ui_language, self.language_preferences.prompt);
         if version == 2 {
-            request.push_str(&format!("\n当前编辑器为 V2。已安装 Skill：{:?}；已配置 MCP 服务：{:?}，另有内置 browser.edge。只使用实际存在的 Skill、服务与工具。", self.ai_extensions.skills, self.ai_extensions.mcp.servers.keys().collect::<Vec<_>>()));
+            request.push_str(&format!("\n{}\nSkills: {:?}\nMCP: {:?} + browser.edge",
+                khaslana::ai::prompt::text(languages.system,
+                    "当前编辑器为 V2。只使用实际存在的 Skill、服务与工具。",
+                    "The editor uses V2. Use only installed Skills and available services/tools."),
+                self.ai_extensions.skills, self.ai_extensions.mcp.servers.keys().collect::<Vec<_>>()));
         }
         // 编辑模式携带当前模板内容作为上下文；序列化失败按无上下文降级
         // （新建语义从零生成），不阻断生成。
@@ -2204,22 +2213,21 @@ impl RepositoryView {
         // 公共思考弹窗执行器：思维链在弹窗内实时流式展示，完成后弹窗
         // 自动关闭并把 JSON5 回填编辑器表单。
         self.start_ai_thinking_task(
-            "AI 正在生成工作流模板",
+            &khaslana::ui_i18n::encode(messages::GENERATING_WORKFLOW_TEMPLATE, &[]),
             crate::AiThinkingTaskKind::WorkflowTemplate { session_id },
             |task_id, content| crate::UiEvent::AiWorkflowTemplateGenerated { task_id, content },
             move |client, _proxy_url, _tx, on_delta| {
-                let (mut system, user) =
-                    khaslana::workflow_template_prompts(&request, current_json5.as_deref());
-                if version == 2 {
-                    system.content = system.content.replace("version 字段恒为 1", "version 字段恒为 2")
-                        .replace("op 只能使用文档「支持的步骤」章节列出的类型", "op 使用文档支持的 Git 步骤或 invoke；invoke 必须有唯一 id、uses 与对象 with，可选 saveAs；uses 可为 git.*、js.run、skill.run；MCP 是 Skill 或 JS 调用的工具，不新增独立 mcp.call 步骤；仅保留当前模板已有的 mcp.call 兼容步骤；纯 JS 无需 MCP，只有任务或脚本确实需要时才声明 tools，不自动添加工具");
-                }
+                let (system, user) = khaslana::ai::workflow_template_prompts_with_languages(
+                    &request, current_json5.as_deref(),
+                    if version == 2 { khaslana::ai::WorkflowPromptVersion::V2 } else { khaslana::ai::WorkflowPromptVersion::V1 },
+                    languages,
+                );
                 let result =
                     client.request_stream(&[system, user], &mut |delta| on_delta(delta))?;
                 khaslana::ai::validate_generated_content(
                     &result,
-                    "AI 返回的内容为空，请重试或检查模型配置",
-                    "AI 未返回正文（仅返回了思考过程），请重试或更换模型",
+                    khaslana::ai::prompt::text(languages.output, "AI 返回的内容为空，请重试或检查模型配置", "AI returned empty content. Retry or check model configuration."),
+                    khaslana::ai::prompt::text(languages.output, "AI 未返回正文（仅返回了思考过程），请重试或更换模型", "AI returned only reasoning without content. Retry or change models."),
                 )?;
                 Ok(result.content)
             },
@@ -2283,7 +2291,7 @@ impl RepositoryView {
         };
         let Some(dir) = workflow_templates_dir() else {
             if let Some(state) = self.workflow_editor.as_mut() {
-                state.data.error = Some("无法定位工作流模板目录".to_string());
+                state.data.error = Some(khaslana::ui_i18n::encode(messages::CANNOT_LOCATE_THE_WORKFLOW_TEMPLATE_DIRECTORY, &[]));
             }
             cx.notify();
             return;
@@ -2294,7 +2302,7 @@ impl RepositoryView {
             Ok(text) => text,
             Err(err) => {
                 if let Some(state) = self.workflow_editor.as_mut() {
-                    state.data.error = Some(format!("模板序列化失败：{err}"));
+                    state.data.error = Some(khaslana::ui_i18n::encode(messages::TEMPLATE_SERIALIZATION_FAILED, &[("err", &(err).to_string())]));
                 }
                 cx.notify();
                 return;
@@ -2303,7 +2311,7 @@ impl RepositoryView {
         if let Err(err) = parse_workflow_json5(&serialized) {
             tracing::warn!("工作流模板序列化回读校验失败：{err}");
             if let Some(state) = self.workflow_editor.as_mut() {
-                state.data.error = Some("模板序列化结果无法回读，已取消保存".to_string());
+                state.data.error = Some(khaslana::ui_i18n::encode(messages::THE_SERIALIZED_TEMPLATE_COULD_NOT_BE_READ_BACK_SAVE_CANCELLED, &[]));
             }
             cx.notify();
             return;
@@ -2321,7 +2329,7 @@ impl RepositoryView {
         };
         if let Err(err) = fs::write(&path, serialized.as_bytes()) {
             if let Some(state) = self.workflow_editor.as_mut() {
-                state.data.error = Some(format!("模板写入失败：{err}"));
+                state.data.error = Some(khaslana::ui_i18n::encode(messages::COULD_NOT_WRITE_TEMPLATE, &[("err", &(err).to_string())]));
             }
             cx.notify();
             return;
@@ -2330,10 +2338,7 @@ impl RepositoryView {
         // 会再试；列表以新文件为准）。
         if let Some(stale) = &stale_path {
             if let Err(err) = fs::remove_file(stale) {
-                tracing::warn!(
-                    "工作流模板改名后清理旧文件失败（{}）：{err}",
-                    stale.display()
-                );
+                tracing::warn!("工作流模板改名后清理旧文件失败（{}）：{err}", stale.display());
             }
         }
         // 改名保存：快捷键绑定（键位 + 后台执行标志）跟随模板迁移到新文件名；
@@ -2361,11 +2366,11 @@ impl RepositoryView {
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_else(|| file_name.clone());
-        self.status = format!("工作流模板已保存：{saved_label}");
+        self.status = khaslana::ui_i18n::encode(messages::WORKFLOW_TEMPLATE_SAVED, &[("saved_label", &(saved_label).to_string())]);
         if self.repo_path.is_some() {
             self.load_workflow_file(path, cx);
         }
-        self.notify_success(format!("工作流模板已保存：{saved_label}"), cx);
+        self.notify_success(khaslana::ui_i18n::format(messages::WORKFLOW_TEMPLATE_SAVED, &[("saved_label", &(saved_label).to_string())]), cx);
     }
 }
 
@@ -2404,28 +2409,28 @@ impl RepositoryView {
             .as_ref()
             .and_then(|pending| pending.path.file_name())
             .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| "该模板".to_string());
-        self.dialog_panel("编辑工作流模板", cx)
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::THIS_TEMPLATE).to_string());
+        self.dialog_panel(khaslana::ui_i18n::text(messages::EDIT_WORKFLOW_TEMPLATE), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("模板 {file_label} 中包含手工写的注释。")),
+                    .child(khaslana::ui_i18n::format(messages::TEMPLATE_CONTAINS_MANUALLY_WRITTEN_COMMENTS, &[("file_label", &(file_label).to_string())])),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("可视化编辑器保存时会重新生成文件，原文件中的注释与排版将无法保留（内容本身不受影响）。"),
+                    .child(khaslana::ui_i18n::text(messages::SAVING_IN_THE_VISUAL_EDITOR_REGENERATES_THE_FILE_ORIGINAL_COMMENTS)),
             )
             .child(
                 dialog_actions()
-                    .child(self.button("取消", true, |this, _, _| {
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), true, |this, _, _| {
                         this.pending_workflow_edit = None;
                         this.active_dialog = None;
                     }, cx))
                     .child(self.primary_button(
-                        "继续编辑",
+                        khaslana::ui_i18n::text(messages::CONTINUE_EDITING),
                         true,
                         |this, _, cx| this.confirm_workflow_edit_comments(cx),
                         cx,
@@ -2440,24 +2445,24 @@ impl RepositoryView {
         display_name: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("删除工作流模板", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::DELETE_WORKFLOW_TEMPLATE), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("确认删除模板「{display_name}」？")),
+                    .child(khaslana::ui_i18n::format(messages::DELETE_TEMPLATE, &[("display_name", &(display_name).to_string())])),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::COLOR_ERROR_FOREGROUND))
-                    .child("删除后无法恢复，且不会影响仓库或远端。"),
+                    .child(khaslana::ui_i18n::text(messages::DELETION_CANNOT_BE_UNDONE_AND_DOES_NOT_AFFECT_REPOSITORIES_OR)),
             )
             .child(
                 dialog_actions()
-                    .child(self.button("取消", true, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), true, |this, _, _| this.close_dialog(), cx))
                     .child(self.danger_button(
-                        "确认删除",
+                        khaslana::ui_i18n::text(messages::CONFIRM_DELETION),
                         true,
                         move |this, _, cx| {
                             this.active_dialog = None;
@@ -2480,18 +2485,18 @@ impl RepositoryView {
     ) -> gpui::AnyElement {
         let (label, id) = if on_exists {
             (
-                "远端分支已存在时".to_string(),
+                khaslana::ui_i18n::text(messages::WHEN_THE_REMOTE_BRANCH_EXISTS).to_string(),
                 format!("workflow-editor-guard-exists-{index}"),
             )
         } else {
             (
-                "远端分支不存在时".to_string(),
+                khaslana::ui_i18n::text(messages::WHEN_THE_REMOTE_BRANCH_IS_MISSING).to_string(),
                 format!("workflow-editor-guard-missing-{index}"),
             )
         };
         let current_label = match current {
-            RemoteBranchGuardAction::Fail => "停止工作流",
-            RemoteBranchGuardAction::Continue => "继续执行",
+            RemoteBranchGuardAction::Fail => khaslana::ui_i18n::text(messages::STOP_WORKFLOW),
+            RemoteBranchGuardAction::Continue => khaslana::ui_i18n::text(messages::CONTINUE),
         };
         let menu_open = self.workflow_editor_guard_menu_open(index, on_exists);
 
@@ -2561,8 +2566,8 @@ impl RepositoryView {
                     })
                     .children(
                         [
-                            (RemoteBranchGuardAction::Fail, "停止工作流"),
-                            (RemoteBranchGuardAction::Continue, "继续执行"),
+                            (RemoteBranchGuardAction::Fail, khaslana::ui_i18n::text(messages::STOP_WORKFLOW)),
+                            (RemoteBranchGuardAction::Continue, khaslana::ui_i18n::text(messages::CONTINUE)),
                         ]
                         .iter()
                         .map(|(action, action_label)| {
@@ -2695,24 +2700,24 @@ impl RepositoryView {
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
                                     .child(if editor.data.editing_path.is_some() {
-                                        "编辑工作流模板"
+                                        khaslana::ui_i18n::text(messages::EDIT_WORKFLOW_TEMPLATE)
                                     } else {
-                                        "新建工作流模板"
+                                        khaslana::ui_i18n::text(messages::NEW_WORKFLOW_TEMPLATE)
                                     }),
                             )
                             .child(
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                    .child("按引导分步完成，变量随步骤绑定，不会遗漏"),
+                                    .child(khaslana::ui_i18n::text(messages::FOLLOW_THE_GUIDED_STEPS_VARIABLE_BINDINGS_ARE_CHECKED_ALONG_THE)),
                             ),
                     )
                     .when(editor.data.version == 1, |header| header.child(self.button(
-                        "以 V2 编辑副本", !editor.ai_loading,
+                        khaslana::ui_i18n::text(messages::EDIT_A_V2_COPY), !editor.ai_loading,
                         |this, _, cx| this.workflow_editor_copy_as_v2(cx), cx,
                     )))
                     .child(self.button(
-                        "关闭",
+                        khaslana::ui_i18n::text(messages::CLOSE),
                         true,
                         |this, _, _| this.close_workflow_editor(),
                         cx,
@@ -2762,7 +2767,7 @@ impl RepositoryView {
                         .rounded(px(ui_theme::RADIUS_XS))
                         .text_size(px(12.0))
                         .text_color(rgb(ui_theme::FEEDBACK_ERROR_TEXT))
-                        .child(error),
+                        .child(khaslana::ui_i18n::resolve(&error)),
                 )
             })
             // 底部导航
@@ -2826,7 +2831,7 @@ impl RepositoryView {
                                     } else {
                                         ui_theme::CONTENT_SECONDARY
                                     }))
-                                    .child((*label).to_string()),
+                                    .child(khaslana::ui_i18n::text(*label)),
                             )
                     })
                     .collect::<Vec<_>>(),
@@ -2845,7 +2850,7 @@ impl RepositoryView {
             div().into_any_element()
         } else {
             self.button(
-                "← 上一步",
+                khaslana::ui_i18n::text(messages::PREVIOUS),
                 true,
                 |this, _, cx| this.workflow_editor_prev_step(cx),
                 cx,
@@ -2854,7 +2859,7 @@ impl RepositoryView {
         };
         let center: gpui::AnyElement = if last {
             self.primary_button(
-                "保存模板",
+                khaslana::ui_i18n::text(messages::SAVE_TEMPLATE),
                 true,
                 |this, _, cx| this.save_workflow_editor(cx),
                 cx,
@@ -2862,7 +2867,7 @@ impl RepositoryView {
             .into_any_element()
         } else {
             self.primary_button(
-                "下一步 →",
+                khaslana::ui_i18n::text(messages::NEXT),
                 true,
                 |this, _, cx| this.workflow_editor_next_step(cx),
                 cx,
@@ -2884,11 +2889,7 @@ impl RepositoryView {
                 div()
                     .text_size(px(11.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child(format!(
-                        "第 {} 步 / 共 {} 步",
-                        step + 1,
-                        WORKFLOW_WIZARD_STEPS.len()
-                    )),
+                    .child(khaslana::ui_i18n::format(messages::STEP_OF, &[("current", &(step + 1).to_string()), ("total", &WORKFLOW_WIZARD_STEPS.len().to_string())])),
             )
     }
 
@@ -2905,11 +2906,11 @@ impl RepositoryView {
         let ai_ready = self.ai_settings.is_usable();
         let ai_enabled = ai_ready && !editor.ai_loading;
         let ai_label = if editor.ai_loading {
-            "AI 生成中..."
+            khaslana::ui_i18n::text(messages::AI_GENERATING)
         } else if ai_ready {
-            "AI 生成"
+            khaslana::ui_i18n::text(messages::GENERATE_WITH_AI)
         } else {
-            "AI 生成（未配置）"
+            khaslana::ui_i18n::text(messages::GENERATE_WITH_AI_NOT_CONFIGURED)
         };
 
         div()
@@ -2948,7 +2949,7 @@ impl RepositoryView {
                                             .text_size(px(13.0))
                                             .font_weight(gpui::FontWeight::BOLD)
                                             .text_color(rgb(ui_theme::PRIMARY))
-                                            .child("AI 助手"),
+                                            .child(khaslana::ui_i18n::text(messages::AI_ASSISTANT)),
                                     ),
                             )
                             .child(
@@ -2956,8 +2957,8 @@ impl RepositoryView {
                                     .text_size(px(11.0))
                                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
                                     .child(match editor.data.editing_path.is_some() {
-                                        true => "描述修改需求，AI 会基于当前模板内容调整步骤与变量。",
-                                        false => "用一句话描述你想要的工作流，AI 生成步骤与变量并自动填入后续各步，你只需检查和微调。",
+                                        true => khaslana::ui_i18n::text(messages::DESCRIBE_YOUR_CHANGES_AI_WILL_UPDATE_THE_STEPS_AND_VARIABLES),
+                                        false => khaslana::ui_i18n::text(messages::DESCRIBE_YOUR_WORKFLOW_AI_WILL_GENERATE_AND_FILL_IN_THE),
                                     }),
                             )
                             .child(self.document_input(
@@ -2979,7 +2980,7 @@ impl RepositoryView {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(workflow_editor_field_label("模板名称（可选）", false))
+                            .child(workflow_editor_field_label(khaslana::ui_i18n::text(messages::TEMPLATE_NAME_OPTIONAL), false))
                             .child(self.document_input(
                                 WorkflowEditorFieldId::Name,
                                 window,
@@ -2991,7 +2992,7 @@ impl RepositoryView {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(workflow_editor_field_label("保存文件名（.json5）", true))
+                            .child(workflow_editor_field_label(khaslana::ui_i18n::text(messages::SAVE_FILE_NAME_JSON5), true))
                             .child(self.document_input(
                                 WorkflowEditorFieldId::FileName,
                                 window,
@@ -3000,7 +3001,7 @@ impl RepositoryView {
                     )
                     .child(self.toggle_row(
                         "workflow-editor-require-clean",
-                        "运行前要求工作区干净（推荐）",
+                        khaslana::ui_i18n::text(messages::REQUIRE_A_CLEAN_WORKING_TREE_BEFORE_RUNNING_RECOMMENDED),
                         editor.data.require_clean_worktree,
                         |this, _, _| {
                             if let Some(state) = this.workflow_editor.as_mut() {
@@ -3012,8 +3013,8 @@ impl RepositoryView {
                     )),
             )
             .child(workflow_guide_card(
-                "这一步要做什么",
-                "填写模板的显示名称和保存文件名。名称显示在工作流列表里；文件名是保存到模板目录时的名字（不含扩展名）。",
+                khaslana::ui_i18n::text(messages::WHAT_TO_DO_IN_THIS_STEP),
+                khaslana::ui_i18n::text(messages::ENTER_THE_TEMPLATE_DISPLAY_NAME_AND_FILE_NAME_THE_NAME),
             ))
             .into_any_element()
     }
@@ -3060,7 +3061,7 @@ impl RepositoryView {
                     this.workflow_editor_open_step_picker();
                     cx.notify();
                 }))
-                .child("+ 添加步骤"),
+                .child(khaslana::ui_i18n::text(messages::ADD_STEP)),
         );
 
         div()
@@ -3068,8 +3069,8 @@ impl RepositoryView {
             .gap_5()
             .child(list)
             .child(workflow_guide_card(
-                "操作步骤",
-                "每个步骤按顺序执行。参数直接填在卡片里，${变量} 会标出引用情况；用 ↑ ↓ 调整顺序，点 ✕ 删除。",
+                khaslana::ui_i18n::text(messages::ACTION_STEPS),
+                khaslana::ui_i18n::text(messages::STEPS_EXECUTE_IN_ORDER_ENTER_ARGUMENTS_IN_EACH_CARD_REFERENCES),
             ))
             .into_any_element()
     }
@@ -3101,13 +3102,13 @@ impl RepositoryView {
                                 .text_size(px(14.0))
                                 .font_weight(gpui::FontWeight::BOLD)
                                 .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                                .child("添加操作步骤"),
+                                .child(khaslana::ui_i18n::text(messages::ADD_ACTION_STEP)),
                         )
                         .child(
                             div()
                                 .text_size(px(11.0))
                                 .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                .child("选择要加入工作流的 Git 操作，参数稍后在卡片里填写"),
+                                .child(khaslana::ui_i18n::text(messages::CHOOSE_A_GIT_ACTION_TO_ADD_THEN_FILL_IN_ITS)),
                         ),
                 )
                 .child(
@@ -3121,7 +3122,7 @@ impl RepositoryView {
                             cx,
                         )))
                         .child(self.button(
-                            "返回列表",
+                            khaslana::ui_i18n::text(messages::BACK_TO_LIST),
                             true,
                             |this, _, _| this.workflow_editor_close_step_picker(),
                             cx,
@@ -3130,10 +3131,10 @@ impl RepositoryView {
         );
 
         if kinds.is_empty() {
-            panel = panel.child(placeholder_row("没有匹配的操作"));
+            panel = panel.child(placeholder_row(khaslana::ui_i18n::text(messages::NO_MATCHING_ACTIONS)));
         } else {
             let groups: [(&str, &[WorkflowStepKind]); 2] =
-                [("常用", &kinds[..split]), ("高级", &kinds[split..])];
+                [(khaslana::ui_i18n::text(messages::COMMON), &kinds[..split]), (khaslana::ui_i18n::text(messages::ADVANCED), &kinds[split..])];
             for (label, group_kinds) in groups {
                 if group_kinds.is_empty() {
                     continue;
@@ -3161,7 +3162,7 @@ impl RepositoryView {
             div()
                 .text_size(px(11.0))
                 .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                .child("点击某个操作即可添加为工作流步骤，并回到步骤列表"),
+                .child(khaslana::ui_i18n::text(messages::CLICK_AN_ACTION_TO_ADD_IT_AND_RETURN_TO_THE)),
         );
 
         div()
@@ -3169,8 +3170,8 @@ impl RepositoryView {
             .gap_5()
             .child(panel)
             .child(workflow_guide_card(
-                "选择一个操作",
-                "常用操作覆盖日常分支协作；高级操作用于守卫与批量清理。加入后会自动选中新步骤，继续点「+ 添加步骤」可追加多个。",
+                khaslana::ui_i18n::text(messages::CHOOSE_AN_ACTION),
+                khaslana::ui_i18n::text(messages::COMMON_ACTIONS_COVER_EVERYDAY_BRANCH_COLLABORATION_ADVANCED_ACTIONS_PROVIDE_GUARDS),
             ))
             .into_any_element()
     }
@@ -3402,7 +3403,7 @@ impl RepositoryView {
             WorkflowStepKind::CreateBranch => {
                 card = card.child(self.toggle_row(
                     "workflow-editor-create-checkout",
-                    "创建后切换到新分支",
+                    khaslana::ui_i18n::text(messages::SWITCH_TO_THE_NEW_BRANCH_AFTER_CREATION),
                     step.checkout,
                     move |this, _, _| {
                         this.workflow_editor_toggle_step_flag(
@@ -3416,7 +3417,7 @@ impl RepositoryView {
             WorkflowStepKind::Push => {
                 card = card.child(self.toggle_row(
                     "workflow-editor-push-upstream",
-                    "推送时建立上游跟踪",
+                    khaslana::ui_i18n::text(messages::SET_UPSTREAM_TRACKING_WHEN_PUSHING),
                     step.set_upstream,
                     move |this, _, _| {
                         this.workflow_editor_toggle_step_flag(
@@ -3431,7 +3432,7 @@ impl RepositoryView {
                 card = card
                     .child(self.toggle_row(
                         "workflow-editor-guard-fetch",
-                        "检查前先从远端获取（刷新引用）",
+                        khaslana::ui_i18n::text(messages::FETCH_FROM_REMOTE_BEFORE_CHECKING_REFRESH_REFERENCES),
                         step.guard_fetch,
                         move |this, _, _| {
                             this.workflow_editor_toggle_step_flag(
@@ -3457,7 +3458,7 @@ impl RepositoryView {
             WorkflowStepKind::FilterBranches => {
                 card = card.child(self.toggle_row(
                     "workflow-editor-filter-skip-current",
-                    "排除当前分支",
+                    khaslana::ui_i18n::text(messages::EXCLUDE_CURRENT_BRANCH),
                     step.filter_skip_current,
                     move |this, _, _| {
                         this.workflow_editor_toggle_step_flag(
@@ -3472,7 +3473,7 @@ impl RepositoryView {
                 card = card
                     .child(self.toggle_row(
                         "workflow-editor-delete-dry-run",
-                        "试运行（只列出将删除的分支，不真正删除）",
+                        khaslana::ui_i18n::text(messages::DRY_RUN_LIST_BRANCHES_WITHOUT_DELETING_THEM),
                         step.delete_dry_run,
                         move |this, _, _| {
                             this.workflow_editor_toggle_step_flag(
@@ -3484,7 +3485,7 @@ impl RepositoryView {
                     ))
                     .child(self.toggle_row(
                         "workflow-editor-delete-skip-current",
-                        "自动跳过当前分支",
+                        khaslana::ui_i18n::text(messages::AUTOMATICALLY_SKIP_CURRENT_BRANCH),
                         step.delete_skip_current,
                         move |this, _, _| {
                             this.workflow_editor_toggle_step_flag(
@@ -3500,7 +3501,7 @@ impl RepositoryView {
                     div()
                         .text_size(px(11.0))
                         .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                        .child("该步骤无需参数：运行到此步时检查工作区，有未提交改动则停止。"),
+                        .child(khaslana::ui_i18n::text(messages::THIS_STEP_TAKES_NO_ARGUMENTS_IT_CHECKS_THE_WORKING_TREE)),
                 );
             }
             _ => {}
@@ -3573,7 +3574,7 @@ impl RepositoryView {
                                 cx.stop_propagation();
                                 this.workflow_editor_jump_to_vars(cx);
                             }))
-                            .child("去定义"),
+                            .child(khaslana::ui_i18n::text(messages::DEFINE)),
                     )
                 }),
         );
@@ -3587,7 +3588,7 @@ impl RepositoryView {
             .flex()
             .flex_col()
             .gap_2()
-            .child(section_title("从常用预设开始（可选）"))
+            .child(section_title(khaslana::ui_i18n::text(messages::START_FROM_A_PRESET_OPTIONAL)))
             .child(
                 div().flex().flex_wrap().gap_2().children(
                     WORKFLOW_EDITOR_PRESETS
@@ -3633,7 +3634,7 @@ impl RepositoryView {
                 div()
                     .text_size(px(11.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("也可以跳过预设，点下方「+ 添加步骤」从零开始。"),
+                    .child(khaslana::ui_i18n::text(messages::OR_SKIP_PRESETS_AND_CLICK_ADD_STEP_BELOW_TO_START)),
             )
             .into_any_element()
     }
@@ -3655,16 +3656,16 @@ impl RepositoryView {
                     .text_size(px(12.0))
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child("运行前用户填写的变量（inputs）"),
+                    .child(khaslana::ui_i18n::text(messages::USER_PROVIDED_VARIABLES_INPUTS)),
             )
             .child(
                 div()
                     .text_size(px(11.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("运行工作流前在页面填写"),
+                    .child(khaslana::ui_i18n::text(messages::FILL_IN_ON_THE_RUN_PAGE_BEFORE_STARTING_THE_WORKFLOW)),
             );
         if data.inputs.is_empty() {
-            inputs_group = inputs_group.child(placeholder_row("暂无输入变量"));
+            inputs_group = inputs_group.child(placeholder_row(khaslana::ui_i18n::text(messages::NO_INPUT_VARIABLES)));
         } else {
             for index in 0..data.inputs.len() {
                 inputs_group =
@@ -3673,7 +3674,7 @@ impl RepositoryView {
         }
         inputs_group = inputs_group.child(workflow_editor_add_button(
             "workflow-editor-add-input",
-            "+ 添加输入变量",
+            khaslana::ui_i18n::text(messages::ADD_INPUT_VARIABLE),
             |this| this.workflow_editor_add_input_row(),
             cx,
         ));
@@ -3687,16 +3688,16 @@ impl RepositoryView {
                     .text_size(px(12.0))
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child("自定义变量（vars）"),
+                    .child(khaslana::ui_i18n::text(messages::CUSTOM_VARIABLES_VARS)),
             )
             .child(
                 div()
                     .text_size(px(11.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("工作流内部使用的固定值，可写 ${...} 表达式"),
+                    .child(khaslana::ui_i18n::text(messages::FIXED_WORKFLOW_VALUES_EXPRESSIONS_ARE_SUPPORTED)),
             );
         if data.vars.is_empty() {
-            vars_group = vars_group.child(placeholder_row("暂无自定义变量"));
+            vars_group = vars_group.child(placeholder_row(khaslana::ui_i18n::text(messages::NO_CUSTOM_VARIABLES)));
         } else {
             for index in 0..data.vars.len() {
                 vars_group = vars_group.child(self.render_workflow_var_card(index, window, cx));
@@ -3704,7 +3705,7 @@ impl RepositoryView {
         }
         vars_group = vars_group.child(workflow_editor_add_button(
             "workflow-editor-add-var",
-            "+ 添加自定义变量",
+            khaslana::ui_i18n::text(messages::ADD_CUSTOM_VARIABLE),
             |this| this.workflow_editor_add_var_row(),
             cx,
         ));
@@ -3723,8 +3724,8 @@ impl RepositoryView {
                     .child(vars_group),
             )
             .child(workflow_guide_card(
-                "核对变量绑定",
-                "这里统一管理所有 ${变量}。每个变量卡片会标出被哪些步骤引用；步骤卡片里标红的未声明变量，在这里补一个同名变量即可。",
+                khaslana::ui_i18n::text(messages::CHECK_VARIABLE_BINDINGS),
+                khaslana::ui_i18n::text(messages::MANAGE_ALL_DEFINITIONS_HERE_EACH_CARD_SHOWS_REFERENCING_STEPS_ADD),
             ))
             .into_any_element()
     }
@@ -3779,7 +3780,7 @@ impl RepositoryView {
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(rgb(ui_theme::PRIMARY))
                             .child(if trimmed_key.is_empty() {
-                                "(未命名)".to_string()
+                                khaslana::ui_i18n::text(messages::UNNAMED).to_string()
                             } else {
                                 trimmed_key.clone()
                             }),
@@ -3790,14 +3791,7 @@ impl RepositoryView {
                             div()
                                 .text_size(px(10.0))
                                 .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                .child(format!(
-                                    "→ 被步骤 {} 引用",
-                                    referenced
-                                        .iter()
-                                        .map(|step_no| step_no.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join("、")
-                                )),
+                                .child(khaslana::ui_i18n::format(messages::REFERENCED_BY_STEPS, &[("steps", &referenced.iter().map(|step_no| step_no.to_string()).collect::<Vec<_>>().join("、"))])),
                         )
                     })
                     .child(workflow_editor_card_remove_button(
@@ -3815,7 +3809,7 @@ impl RepositoryView {
                     .flex()
                     .gap_2()
                     .child(field_column(
-                        "变量名",
+                        khaslana::ui_i18n::text(messages::VARIABLE_NAME),
                         true,
                         self.document_input(
                             WorkflowEditorFieldId::InputPart {
@@ -3827,7 +3821,7 @@ impl RepositoryView {
                         ),
                     ))
                     .child(field_column(
-                        "显示名（可选）",
+                        khaslana::ui_i18n::text(messages::DISPLAY_NAME_OPTIONAL),
                         false,
                         self.document_input(
                             WorkflowEditorFieldId::InputPart {
@@ -3839,16 +3833,16 @@ impl RepositoryView {
                         ),
                     )),
             )
-            .child(field_column("说明（可选，运行时展示）", false,
+            .child(field_column(khaslana::ui_i18n::text(messages::DESCRIPTION_OPTIONAL_SHOWN_AT_RUN_TIME), false,
                 self.document_input(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Description }, window, cx)))
             .child(div().flex().flex_wrap().items_center().gap_3()
-                .child(workflow_editor_field_label("输入类型", false))
+                .child(workflow_editor_field_label(khaslana::ui_i18n::text(messages::INPUT_TYPE), false))
                 .child(div().w(px(140.0)).child(self.render_workflow_editor_input_type(index)))
                 .child(div().flex().items_center().gap_2().child(self.toggle_switch(
                 format!("workflow-editor-input-required-{index}"), row.required, false,
                 move |this, next, _, _| { if let Some(row) = this.workflow_editor.as_mut().and_then(|editor| editor.data.inputs.get_mut(index)) { row.required = next; } }, cx,
-                )).child(document::hint("必填"))))
-            .child(field_column("默认值（可选）", false,
+                )).child(document::hint(khaslana::ui_i18n::text(messages::REQUIRED)))))
+            .child(field_column(khaslana::ui_i18n::text(messages::DEFAULT_VALUE_OPTIONAL), false,
                 self.document_input(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Default }, window, cx)))
             .child(self.render_workflow_editor_options(index, window, cx))
             .into_any_element()
@@ -3900,7 +3894,7 @@ impl RepositoryView {
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(rgb(ui_theme::PRIMARY))
                             .child(if trimmed_key.is_empty() {
-                                "(未命名)".to_string()
+                                khaslana::ui_i18n::text(messages::UNNAMED).to_string()
                             } else {
                                 trimmed_key.clone()
                             }),
@@ -3911,14 +3905,7 @@ impl RepositoryView {
                             div()
                                 .text_size(px(10.0))
                                 .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                .child(format!(
-                                    "→ 被步骤 {} 引用",
-                                    referenced
-                                        .iter()
-                                        .map(|step_no| step_no.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join("、")
-                                )),
+                                .child(khaslana::ui_i18n::format(messages::REFERENCED_BY_STEPS, &[("steps", &referenced.iter().map(|step_no| step_no.to_string()).collect::<Vec<_>>().join("、"))])),
                         )
                     })
                     .child(workflow_editor_card_remove_button(
@@ -3935,7 +3922,7 @@ impl RepositoryView {
                     .flex()
                     .gap_2()
                     .child(field_column(
-                        "变量名",
+                        khaslana::ui_i18n::text(messages::VARIABLE_NAME),
                         true,
                         self.document_input(
                             WorkflowEditorFieldId::VarPart {
@@ -3947,7 +3934,7 @@ impl RepositoryView {
                         ),
                     ))
                     .child(field_column(
-                        "值",
+                        khaslana::ui_i18n::text(messages::VALUE),
                         false,
                         self.document_input(
                             WorkflowEditorFieldId::VarPart {
@@ -3977,9 +3964,9 @@ impl RepositoryView {
             .map(|step| step.kind.display_name().to_string())
             .collect::<Vec<_>>();
         let steps_value = if data.steps.is_empty() {
-            "尚未添加步骤".to_string()
+            khaslana::ui_i18n::text(messages::NO_STEPS_ADDED_YET).to_string()
         } else {
-            format!("共 {} 步（{}）", data.steps.len(), op_names.join("、"))
+            khaslana::ui_i18n::format(messages::STEPS, &[("arg0", &(data.steps.len()).to_string()), ("arg1", &(op_names.join("、")).to_string())])
         };
         let input_names = data
             .inputs
@@ -3994,14 +3981,14 @@ impl RepositoryView {
             .filter(|key| !key.is_empty())
             .collect::<Vec<_>>();
         let inputs_value = if input_names.is_empty() {
-            "无".to_string()
+            khaslana::ui_i18n::text(messages::NONE).to_string()
         } else {
-            format!("{} 个（{}）", input_names.len(), input_names.join("、"))
+            khaslana::ui_i18n::format(messages::MESSAGE, &[("arg0", &(input_names.len()).to_string()), ("arg1", &(input_names.join("、")).to_string())])
         };
         let vars_value = if var_names.is_empty() {
-            "无".to_string()
+            khaslana::ui_i18n::text(messages::NONE).to_string()
         } else {
-            format!("{} 个（{}）", var_names.len(), var_names.join("、"))
+            khaslana::ui_i18n::format(messages::MESSAGE, &[("arg0", &(var_names.len()).to_string()), ("arg1", &(var_names.join("、")).to_string())])
         };
         let save_label = data
             .editing_path
@@ -4015,28 +4002,28 @@ impl RepositoryView {
             .ok()
             .and_then(|definition| serde_json::to_string_pretty(&definition).ok())
             .unwrap_or_else(|| {
-                "// 当前表单还缺必填内容，暂不能生成完整模板。\n// 保存时会给出具体提示。"
+                khaslana::ui_i18n::text(messages::M_2E7E840210)
                     .to_string()
             });
 
         let summary_rows = [
             (
-                "模板名称",
+                khaslana::ui_i18n::text(messages::TEMPLATE_NAME),
                 if name.is_empty() {
-                    "(未填写)".to_string()
+                    khaslana::ui_i18n::text(messages::NOT_FILLED).to_string()
                 } else {
                     name.to_string()
                 },
             ),
-            ("步骤数", steps_value),
-            ("输入变量", inputs_value),
-            ("自定义变量", vars_value),
+            (khaslana::ui_i18n::text(messages::STEP_COUNT), steps_value),
+            (khaslana::ui_i18n::text(messages::INPUT_VARIABLES), inputs_value),
+            (khaslana::ui_i18n::text(messages::CUSTOM_VARIABLES), vars_value),
             (
-                "运行要求",
+                khaslana::ui_i18n::text(messages::RUN_REQUIREMENTS),
                 if data.require_clean_worktree {
-                    "工作区干净".to_string()
+                    khaslana::ui_i18n::text(messages::CLEAN_WORKING_TREE).to_string()
                 } else {
-                    "允许脏工作区".to_string()
+                    khaslana::ui_i18n::text(messages::ALLOW_DIRTY_WORKING_TREE).to_string()
                 },
             ),
         ];
@@ -4065,7 +4052,7 @@ impl RepositoryView {
                                     .text_size(px(13.0))
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                                    .child("模板摘要"),
+                                    .child(khaslana::ui_i18n::text(messages::TEMPLATE_SUMMARY)),
                             )
                             .children(summary_rows.into_iter().map(|(label, value)| {
                                 div()
@@ -4116,7 +4103,7 @@ impl RepositoryView {
                                     .min_w_0()
                                     .text_size(px(11.0))
                                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                    .child(format!("将保存到工作流模板目录：{save_label}")),
+                                    .child(khaslana::ui_i18n::format(messages::WILL_SAVE_TO_THE_WORKFLOW_TEMPLATE_DIRECTORY, &[("save_label", &(save_label).to_string())])),
                             ),
                     ),
             )
@@ -4132,13 +4119,13 @@ impl RepositoryView {
                             .text_size(px(12.0))
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                            .child("生成的工作流（JSON5 预览）"),
+                            .child(khaslana::ui_i18n::text(messages::GENERATED_WORKFLOW_JSON5_PREVIEW)),
                     )
                     .child(
                         div()
                             .text_size(px(11.0))
                             .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                            .child("确认无误后点「保存模板」，文件写入模板目录并出现在左侧列表"),
+                            .child(khaslana::ui_i18n::text(messages::REVIEW_AND_CLICK_SAVE_TEMPLATE_TO_WRITE_THE_FILE_TO)),
                     )
                     .child(
                         div()
@@ -4207,7 +4194,7 @@ fn workflow_editor_card_remove_button(
     on_click: impl Fn(&mut RepositoryView, &mut Context<RepositoryView>) + 'static,
     cx: &mut Context<RepositoryView>,
 ) -> gpui::AnyElement {
-    visual::icon_button(id, "删除此项", gpui_kit::assets::IconName::Trash, true)
+    visual::icon_button(id, khaslana::ui_i18n::text(messages::DELETE_THIS_ITEM), gpui_kit::assets::IconName::Trash, true)
         .icon(visual::icon(gpui_kit::assets::IconName::Trash, ui_theme::DESTRUCTIVE))
         .on_click(cx.listener(move |this, _event, _window, cx| {
             on_click(this, cx);
@@ -4308,7 +4295,7 @@ fn render_workflow_kind_menu_items(
     let all_kinds = WorkflowStepKind::all();
     let split = WorkflowStepKind::COMMON_COUNT;
     let groups: [(&str, &[WorkflowStepKind]); 2] =
-        [("常用", &all_kinds[..split]), ("高级", &all_kinds[split..])];
+        [(khaslana::ui_i18n::text(messages::COMMON), &all_kinds[..split]), (khaslana::ui_i18n::text(messages::ADVANCED), &all_kinds[split..])];
     for (group_label, kinds) in groups {
         items.push(
             div()
@@ -4363,7 +4350,7 @@ fn render_workflow_kind_menu_items(
                     .into_any_element(),
             );
         }
-        if group_label == "常用" {
+        if group_label == khaslana::ui_i18n::text(messages::COMMON) {
             items.push(menu_separator().into_any_element());
         }
     }

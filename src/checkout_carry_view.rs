@@ -1,5 +1,8 @@
 //! 切换被未提交修改阻止时的确认弹窗：贮藏后切换。
 
+#[path = "ui_resources/checkout_carry_view_messages.rs"]
+mod messages;
+
 use crate::*;
 
 impl RepositoryView {
@@ -9,32 +12,30 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let target_label = target.label();
-        self.dialog_panel("切换被阻止", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::CHECKOUT_BLOCKED), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!(
-                        "{target_label} 包含与当前未提交修改冲突的更改，直接切换会被 Git 拒绝。"
-                    )),
+                    .child(khaslana::ui_i18n::format(messages::TARGET_LABEL_CONTAINS_CHANGES_THAT_CONFLICT_WITH_YOUR_UNCOMMITTED_CHANGES, &[("target_label", &(target_label).to_string())])),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("是否贮藏当前修改（含未跟踪文件）后再切换？"),
+                    .child(khaslana::ui_i18n::text(messages::STASH_THE_CURRENT_CHANGES_INCLUDING_UNTRACKED_FILES_BEFORE_CHECKING_OUT)),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("贮藏并切换：修改留在贮藏中，稍后从左侧「贮藏」手动应用"),
+                    .child(khaslana::ui_i18n::text(messages::STASH_AND_CHECKOUT_CHANGES_REMAIN_IN_THE_STASH_APPLY_THEM)),
             )
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.primary_button(
-                        "贮藏并切换",
+                        khaslana::ui_i18n::text(messages::STASH_AND_CHECKOUT),
                         !self.busy,
                         {
                             let target = target.clone();

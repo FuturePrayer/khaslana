@@ -1,3 +1,6 @@
+#[path = "../ui_resources/recovery_view_state_messages.rs"]
+mod messages;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{
@@ -24,8 +27,8 @@ pub(crate) enum RecoverySide {
 impl RecoverySide {
     pub(super) fn label(self) -> &'static str {
         match self {
-            Self::Before => "操作前",
-            Self::After => "操作后",
+            Self::Before => khaslana::ui_i18n::text(messages::BEFORE_OPERATION),
+            Self::After => khaslana::ui_i18n::text(messages::AFTER_OPERATION),
         }
     }
 
@@ -106,9 +109,9 @@ pub(crate) struct RecoveryState {
 impl RecoveryState {
     pub(crate) fn new(seed: &TextFieldState) -> Self {
         let mut search = seed.empty_sibling();
-        search.placeholder = "搜索操作、引用、操作者或 OID".into();
+        search.set_placeholder_message(messages::SEARCH_OPERATIONS_REFERENCES_ACTORS_OR_OIDS);
         let mut branch_name = seed.empty_sibling();
-        branch_name.placeholder = "恢复分支名称".into();
+        branch_name.set_placeholder_message(messages::RECOVERY_BRANCH_NAME);
         Self {
             show_recovery: false,
             list_focus: seed.focus.clone(),

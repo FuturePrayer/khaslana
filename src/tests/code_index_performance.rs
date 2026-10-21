@@ -235,7 +235,7 @@ fn growing_file_is_excluded_before_parsing_and_retried_after_shrinking() {
     assert!(search_symbols(&db, "oversized", 10).unwrap().is_empty());
     let report = check_coverage(&db, None, &["lib.rs".into()], &[], 0, 10).unwrap();
     assert_eq!(report["results"][0]["status"], "excluded");
-    assert_eq!(report["results"][0]["reason"], "超过单文件解析上限");
+    assert_eq!(report["results"][0]["reason"], "parse_size_limit");
     write_file(dir.path(), "lib.rs", "fn recovered_after_growth() {}\n");
     run_index(dir.path(), &db, false, &mut options()).unwrap();
     assert_eq!(search_symbols(&db, "recovered_after_growth", 10).unwrap().len(), 1);

@@ -273,40 +273,40 @@ fn settings_page_header_style() -> StyleRefinement {
 pub(crate) fn settings_pane_meta(category: SettingsCategory) -> SettingsPaneMeta {
     match category {
         SettingsCategory::Credentials => SettingsPaneMeta {
-            title: "凭据管理",
-            description: "各远端的用户名与访问令牌；密文保存在系统密钥库。",
+            title: khaslana::ui_i18n::text(crate::main_ui_resources::CREDENTIALS),
+            description: khaslana::ui_i18n::text(crate::main_ui_resources::CREDENTIALS_DESCRIPTION),
         },
         SettingsCategory::Proxy => SettingsPaneMeta {
-            title: "网络代理",
-            description: "Git 网络操作走哪条代理链路。配置错误会直接报错，不会静默改走直连。",
+            title: khaslana::ui_i18n::text(crate::main_ui_resources::PROXY),
+            description: khaslana::ui_i18n::text(crate::main_ui_resources::PROXY_DESCRIPTION),
         },
         SettingsCategory::Ai => SettingsPaneMeta {
-            title: "AI 设置",
-            description: "配置 AI 服务连接、Skill、MCP 与浏览器运行环境。",
+            title: khaslana::ui_i18n::text(crate::main_ui_resources::AI),
+            description: khaslana::ui_i18n::text(crate::main_ui_resources::AI_DESCRIPTION),
         },
         SettingsCategory::ExternalMerge => SettingsPaneMeta {
-            title: "合并工具",
-            description: "把冲突文件交给外部合并工具处理，并选择需要处理的文件范围。",
+            title: khaslana::ui_i18n::text(crate::main_ui_resources::MERGE),
+            description: khaslana::ui_i18n::text(crate::main_ui_resources::MERGE_DESCRIPTION),
         },
         SettingsCategory::CodeIndex => SettingsPaneMeta {
-            title: "代码索引",
-            description: "为每个仓库建立本机代码知识图谱，供 AI 与 MCP 工具使用。",
+            title: khaslana::ui_i18n::text(crate::main_ui_resources::INDEX),
+            description: khaslana::ui_i18n::text(crate::main_ui_resources::INDEX_DESCRIPTION),
         },
         SettingsCategory::Theme => SettingsPaneMeta {
-            title: "外观",
-            description: "主题与界面显示偏好。改动即时生效。",
+            title: khaslana::ui_i18n::text(crate::main_ui_resources::APPEARANCE),
+            description: khaslana::ui_i18n::text(crate::main_ui_resources::APPEARANCE_DESCRIPTION),
         },
         SettingsCategory::Update => SettingsPaneMeta {
-            title: "更新设置",
-            description: "检查新版本与发布渠道；迁移、移动应用数据目录也在这里。",
+            title: khaslana::ui_i18n::text(crate::main_ui_resources::UPDATE),
+            description: khaslana::ui_i18n::text(crate::main_ui_resources::UPDATE_DESCRIPTION),
         },
         SettingsCategory::Shortcuts => SettingsPaneMeta {
-            title: "快捷键",
-            description: "点击「重新绑定」后按下组合键录入；按 Esc 取消录制。",
+            title: khaslana::ui_i18n::text(crate::main_ui_resources::SHORTCUTS),
+            description: khaslana::ui_i18n::text(crate::main_ui_resources::SHORTCUTS_DESCRIPTION),
         },
         SettingsCategory::About => SettingsPaneMeta {
-            title: "关于",
-            description: "版本号、发布渠道与版本说明。",
+            title: khaslana::ui_i18n::text(crate::main_ui_resources::ABOUT),
+            description: khaslana::ui_i18n::text(crate::main_ui_resources::ABOUT_DESCRIPTION),
         },
     }
 }
@@ -410,13 +410,13 @@ impl RepositoryView {
             SettingsCategory::Proxy => self.settings_proxy_groups(window, cx),
             SettingsCategory::Ai => {
                 let view = cx.entity();
-                vec![SettingGroup::new().p_0().border_0().rounded(px(0.0))
+                vec![self.language_settings_group(true, cx), SettingGroup::new().p_0().border_0().rounded(px(0.0))
                     .bg(rgb(ui_theme::WB_PANEL))
                     .item(SettingItem::render(move |_, window, cx| {
                         view.update(cx, |this, cx| {
                             this.render_ai_settings_page(window, cx).into_any_element()
                         })
-                    }).keywords(["AI 设置", "连接配置", "接口地址", "API Key", "模型", "Skill", "MCP", "运行环境", "Node"]))]
+                    }).keywords(["AI settings", "Connection", "Base URL", "API Key", "Model", "Skills", "MCP", "Runtime", "Node", "AI 设置", "连接配置", "接口地址", "模型", "运行环境"]))]
             },
             SettingsCategory::ExternalMerge => self.settings_external_merge_groups(window, cx),
             SettingsCategory::CodeIndex => self.settings_code_index_groups(window, cx),

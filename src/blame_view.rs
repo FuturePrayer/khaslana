@@ -1,3 +1,6 @@
+#[path = "ui_resources/blame_view_messages.rs"]
+mod messages;
+
 // 文件追溯（blame）视图 UI 模块。
 //
 // 实现 RepositoryView 的 render_blame_view：IDE 风格的分组注释栏
@@ -111,7 +114,7 @@ impl RepositoryView {
             .blame
             .path
             .clone()
-            .unwrap_or_else(|| "未选择文件".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::NO_FILE_SELECTED).to_string());
         let tooltip_path = path.clone();
         let encoding_label = self
             .blame
@@ -120,7 +123,7 @@ impl RepositoryView {
             .map(|view| view.encoding.label())
             .unwrap_or_else(|| self.current_diff_encoding_choice().label());
 
-        page_header("文件追溯", Some("提交归属与工作区变更")).child(
+        page_header(khaslana::ui_i18n::text(messages::FILE_ATTRIBUTION), Some(khaslana::ui_i18n::text(messages::COMMIT_OWNERSHIP_AND_WORKING_TREE_CHANGES))).child(
             command_group()
                 .child(
                     div()
@@ -138,7 +141,7 @@ impl RepositoryView {
                         div()
                             .text_size(px(ui_theme::TYPE_META))
                             .text_color(rgb(ui_theme::CONTENT_TERTIARY))
-                            .child("加载中..."),
+                            .child(khaslana::ui_i18n::text(messages::LOADING)),
                     )
                 })
                 .child(
@@ -164,9 +167,9 @@ impl RepositoryView {
                                 cx.notify();
                             }),
                         )
-                        .child(format!("编码：{encoding_label}")),
+                        .child(khaslana::ui_i18n::format(messages::ENCODING_ENCODING_LABEL, &[("encoding_label", &(encoding_label).to_string())])),
                 )
-                .child(self.button("关闭", !self.busy, |this, _, _| this.close_blame(), cx)),
+                .child(self.button(khaslana::ui_i18n::text(messages::CLOSE), !self.busy, |this, _, _| this.close_blame(), cx)),
         )
     }
 
@@ -205,9 +208,9 @@ impl RepositoryView {
                             .map(|index| {
                                 let Some(view) = view.as_ref() else {
                                     return placeholder_row(if this.blame.loading {
-                                        "正在加载文件追溯..."
+                                        khaslana::ui_i18n::text(messages::LOADING_FILE_ATTRIBUTION)
                                     } else {
-                                        "请选择一个文件查看追溯"
+                                        khaslana::ui_i18n::text(messages::SELECT_A_FILE_TO_VIEW_ITS_ATTRIBUTION)
                                     })
                                     .into_any_element();
                                 };
@@ -398,7 +401,7 @@ impl RepositoryView {
                         .border_color(rgb(ui_theme::FEEDBACK_WARNING_TEXT))
                         .text_size(px(10.0))
                         .text_color(rgb(ui_theme::FEEDBACK_WARNING_TEXT))
-                        .child("未提交"),
+                        .child(khaslana::ui_i18n::text(messages::UNCOMMITTED)),
                 )
             })
     }

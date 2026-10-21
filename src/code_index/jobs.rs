@@ -1,5 +1,6 @@
 //! GUI TaskExecutor 与 MCP 共用索引专用任务池，仓库任务独立排队和退避。
 
+use crate::types::domain_ui_resources;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -65,10 +66,10 @@ pub(super) fn database_process_lock(path: &std::path::Path) -> crate::types::Res
     let mut name = absolute.file_name().unwrap_or_default().to_os_string();
     name.push(".lock");
     let file = std::fs::File::options().read(true).write(true).create(true).truncate(false)
-        .open(absolute.with_file_name(name)).map_err(|error| super::err(format!("打开索引写锁失败：{error}")))?;
+        .open(absolute.with_file_name(name)).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_OPEN_THE_INDEX_WRITE_LOCK, &[("error", &format!("{}", error))])))?;
     file.try_lock().map_err(|error| match error {
-        std::fs::TryLockError::WouldBlock => super::err("该仓库正在被其他进程索引，请稍后重试"),
-        std::fs::TryLockError::Error(error) => super::err(format!("获取索引写锁失败：{error}")),
+        std::fs::TryLockError::WouldBlock => crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_REPOSITORY_IS_BEING_INDEXED_BY_ANOTHER_PROCESS_RETRY_LATER, &[])),
+        std::fs::TryLockError::Error(error) => crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_ACQUIRE_THE_INDEX_WRITE_LOCK, &[("error", &format!("{}", error))])),
     })?;
     Ok(file)
 }
@@ -125,7 +126,7 @@ impl IndexCoordinator {
             }
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if cancel.load(Ordering::Relaxed) || coordinator.stopped.load(Ordering::Relaxed) {
-                    return Err("索引任务已取消".into());
+                    return Err(crate::ui_i18n::text(domain_ui_resources::INDEXING_TASK_CANCELLED).into());
                 }
                 task(cancel)
             }))
@@ -138,7 +139,7 @@ impl IndexCoordinator {
                             .downcast_ref::<&str>()
                             .map(|message| message.to_string())
                     })
-                    .unwrap_or_else(|| "索引任务异常退出".into()))
+                    .unwrap_or_else(|| crate::ui_i18n::text(domain_ui_resources::INDEXING_TASK_TERMINATED_UNEXPECTEDLY).into()))
             });
             let mut states = coordinator
                 .states

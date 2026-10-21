@@ -1,5 +1,6 @@
 //! 恢复只新增一个引用；对象读取和写后核验都不依赖历史图谱或工作区快照。
 
+use crate::types::domain_ui_resources;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,11 +20,11 @@ const HEAD_SYMBOLIC_DEPTH_LIMIT: usize = 32;
 impl GitService {
     pub fn recovery_repo_identity(&self, repo: &Repository) -> Result<RecoveryRepoIdentity> {
         if repo.is_bare() {
-            return Err(GitError::Message("本地恢复暂不支持裸仓库".into()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::LOCAL_RECOVERY_DOES_NOT_SUPPORT_BARE_REPOSITORIES, &[])));
         }
         let workdir = repo
             .workdir()
-            .ok_or_else(|| GitError::Message("本地恢复暂不支持没有工作树的仓库".into()))?;
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::LOCAL_RECOVERY_DOES_NOT_SUPPORT_REPOSITORIES_WITHOUT_A_WORKING_TREE, &[])))?;
         Ok(RecoveryRepoIdentity {
             worktree_path: fs::canonicalize(workdir)?,
             git_dir: fs::canonicalize(repo.path())?,
@@ -64,7 +65,7 @@ impl GitService {
                 details.state = if details.commit.is_some() {
                     RecoveryObjectState::Available
                 } else {
-                    RecoveryObjectState::Unreadable("提交详情为空".into())
+                    RecoveryObjectState::Unreadable(crate::ui_i18n::text(domain_ui_resources::COMMIT_DETAILS_ARE_EMPTY).into())
                 };
             }
             Err(GitError::Git(error)) => {
@@ -100,24 +101,22 @@ impl GitService {
         let write_lock = recovery_write_lock(&identity.common_dir);
         let _guard = write_lock
             .lock()
-            .map_err(|_| GitError::Message("恢复写入锁异常，请重新打开仓库后重试".into()))?;
+            .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_RECOVERY_WRITE_LOCK_IS_INVALID_REOPEN_THE_REPOSITORY_AND_RETRY, &[])))?;
 
         // 等待同仓库其它恢复写入后重新检查，不能信任弹窗打开时的身份和对象状态。
         let identity = self.recovery_repo_identity(repo)?;
         if identity != request.identity {
-            return Err(GitError::Message(
-                "恢复请求的仓库身份已变化，请重新选择仓库与提交".into(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_REPOSITORY_IDENTITY_HAS_CHANGED_SINCE_THE_RECOVERY_REQUEST_SELECT_THE_REPOSITORY, &[])));
         }
         let oid = parse_full_recovery_oid(&request.target_oid)?;
         if oid.is_zero() {
-            return Err(GitError::Message("零 OID 不是可恢复的提交对象".into()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::A_ZERO_OID_IS_NOT_A_RECOVERABLE_COMMIT_OBJECT, &[])));
         }
         let object = repo
             .find_object(oid, None)
-            .map_err(|error| GitError::Message(format!("无法读取恢复目标提交：{error}")))?;
+            .map_err(|error| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_READ_THE_RECOVERY_TARGET_COMMIT, &[("error", &format!("{}", error))])))?;
         if object.kind() != Some(ObjectType::Commit) {
-            return Err(GitError::Message("恢复目标不是提交对象".into()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_RECOVERY_TARGET_IS_NOT_A_COMMIT_OBJECT, &[])));
         }
         self.validate_recovery_branch_name(&request.branch_name)?;
         let fullname = format!("refs/heads/{}", request.branch_name);
@@ -139,12 +138,10 @@ impl GitService {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read_back(repo, &fullname)));
         let verification_warning = match verification {
             Ok(Ok(Some(actual))) if actual == oid => None,
-            Ok(Ok(Some(actual))) => Some(format!(
-                "分支已创建，但读回目标为 {actual}，与请求的 {oid} 不一致，请检查引用"
-            )),
-            Ok(Ok(None)) => Some("分支已创建，但读回的引用不是直接引用，请检查引用".into()),
-            Ok(Err(error)) => Some(format!("分支已创建，但无法读回验证：{error}")),
-            Err(_) => Some("分支已创建，但读回验证意外中断，请检查引用".into()),
+            Ok(Ok(Some(actual))) => Some(crate::ui_i18n::format(domain_ui_resources::THE_BRANCH_WAS_CREATED_BUT_ITS_TARGET_IS_INSTEAD_OF_THE_REQUESTED_CHECK_THE_REFERENCE, &[("actual", &format!("{}", actual)), ("oid", &format!("{}", oid))])),
+            Ok(Ok(None)) => Some(crate::ui_i18n::text(domain_ui_resources::THE_BRANCH_WAS_CREATED_BUT_THE_REFERENCE_READ_BACK_IS_NOT_DIRECT_CHECK_THE_REFERENCE).into()),
+            Ok(Err(error)) => Some(crate::ui_i18n::format(domain_ui_resources::THE_BRANCH_WAS_CREATED_BUT_READ_BACK_VERIFICATION_FAILED, &[("error", &format!("{}", error))])),
+            Err(_) => Some(crate::ui_i18n::text(domain_ui_resources::THE_BRANCH_WAS_CREATED_BUT_READ_BACK_VERIFICATION_WAS_INTERRUPTED_CHECK_THE_REFERENCE).into()),
         };
         Ok(CreateRecoveryBranchOutcome {
             branch_name: request.branch_name.clone(),
@@ -157,9 +154,7 @@ impl GitService {
 fn parse_full_recovery_oid(value: &str) -> Result<Oid> {
     // 不 trim、不 revparse，也不接受前缀；日志中的完整对象身份才是恢复目标。
     if value.len() != FULL_OID_HEX_LEN || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(GitError::Message(
-            "恢复目标必须是完整的 40 位十六进制 OID".into(),
-        ));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_RECOVERY_TARGET_MUST_BE_A_FULL_40_DIGIT_HEXADECIMAL_OID, &[])));
     }
     Ok(Oid::from_str(value)?)
 }
@@ -228,10 +223,7 @@ fn guard_recovery_heads(
 
 fn guard_other_recovery_head(git_dir: &Path, fullname: &str) -> Result<()> {
     let other = Repository::open(git_dir).map_err(|error| {
-        GitError::Message(format!(
-            "无法检查已知工作树的 HEAD（{}）：{error}",
-            git_dir.display()
-        ))
+        GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_INSPECT_HEAD_OF_A_KNOWN_WORKING_TREE, &[("value0", &format!("{}", git_dir.display())), ("error", &format!("{}", error))]))
     })?;
     guard_recovery_head_chain(&other, fullname)
 }
@@ -241,14 +233,10 @@ fn guard_recovery_head_chain(repo: &Repository, fullname: &str) -> Result<()> {
     let mut visited = HashSet::new();
     for _ in 0..HEAD_SYMBOLIC_DEPTH_LIMIT {
         if name == fullname {
-            return Err(GitError::Message(
-                "该分支正由当前或其他工作树的 HEAD 指向，创建会改变 HEAD 解析，已拒绝恢复".into(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::HEAD_OF_THIS_OR_ANOTHER_WORKING_TREE_POINTS_TO_THIS_BRANCH_RECOVERY_WAS_REFUSED_BECAU, &[])));
         }
         if !visited.insert(name.clone()) {
-            return Err(GitError::Message(
-                "HEAD 符号引用存在循环，无法安全创建恢复分支".into(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_HEAD_SYMBOLIC_REFERENCE_CHAIN_CONTAINS_A_CYCLE_CANNOT_SAFELY_CREATE_THE_RECOVERY, &[])));
         }
         let reference = match repo.find_reference(&name) {
             Ok(reference) => reference,
@@ -256,7 +244,7 @@ fn guard_recovery_head_chain(repo: &Repository, fullname: &str) -> Result<()> {
                 return Ok(());
             }
             Err(error) => {
-                return Err(GitError::Message(format!("无法检查工作树 HEAD：{error}")));
+                return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_INSPECT_WORKING_TREE_HEAD, &[("error", &format!("{}", error))])));
             }
         };
         match reference.symbolic_target()? {
@@ -264,9 +252,7 @@ fn guard_recovery_head_chain(repo: &Repository, fullname: &str) -> Result<()> {
             None => return Ok(()),
         }
     }
-    Err(GitError::Message(
-        "HEAD 符号引用链过长，无法安全创建恢复分支".into(),
-    ))
+    Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_HEAD_SYMBOLIC_REFERENCE_CHAIN_IS_TOO_LONG_CANNOT_SAFELY_CREATE_THE_RECOVERY_BRANC, &[])))
 }
 
 #[cfg(test)]

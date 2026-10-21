@@ -1,3 +1,4 @@
+use crate::types::domain_ui_resources;
 use git2::{FetchOptions, ProxyOptions, PushOptions};
 use serde::{Deserialize, Serialize};
 
@@ -115,13 +116,13 @@ impl NetworkProxySettings {
 
     pub fn describe_for_remote(&self, remote_url: Option<&str>) -> String {
         match self.mode {
-            NetworkProxyMode::Disabled => "不使用代理".into(),
-            NetworkProxyMode::System => "使用 Git 配置或环境变量代理".into(),
+            NetworkProxyMode::Disabled => crate::ui_i18n::text(domain_ui_resources::NO_PROXY).into(),
+            NetworkProxyMode::System => crate::ui_i18n::text(domain_ui_resources::USING_A_PROXY_FROM_GIT_CONFIGURATION_OR_ENVIRONMENT_VARIABLES).into(),
             NetworkProxyMode::Custom => self
                 .custom
                 .proxy_for_remote(remote_url)
-                .map(|url| format!("使用自定义代理 {url}"))
-                .unwrap_or_else(|| "未匹配到自定义代理，直连".into()),
+                .map(|url| crate::ui_i18n::format(domain_ui_resources::USING_CUSTOM_PROXY, &[("url", &format!("{}", url))]))
+                .unwrap_or_else(|| crate::ui_i18n::text(domain_ui_resources::NO_MATCHING_CUSTOM_PROXY_CONNECTING_DIRECTLY).into()),
         }
     }
 }
@@ -210,7 +211,7 @@ fn validate_proxy_url(value: &str, kind: ProxyFieldKind) -> Result<()> {
         .chars()
         .any(|ch| ch.is_control() || ch.is_whitespace())
     {
-        return Err(GitError::Message("代理地址不能包含控制字符或空白".into()));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::PROXY_URLS_CANNOT_CONTAIN_CONTROL_CHARACTERS_OR_WHITESPACE, &[])));
     }
     let lower = value.trim().to_ascii_lowercase();
     let valid = match kind {
@@ -228,9 +229,7 @@ fn validate_proxy_url(value: &str, kind: ProxyFieldKind) -> Result<()> {
     if valid {
         Ok(())
     } else {
-        Err(GitError::Message(
-            "代理地址协议不支持，请使用 http://、https://、socks5:// 或 socks5h://".into(),
-        ))
+        Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::UNSUPPORTED_PROXY_URL_SCHEME_USE_HTTP_HTTPS_SOCKS5_OR_SOCKS5H, &[])))
     }
 }
 

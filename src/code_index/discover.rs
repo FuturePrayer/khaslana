@@ -5,6 +5,7 @@
 //! 参考项目的 ALWAYS_SKIP_DIRS / 后缀黑名单——这些目录即使不在 gitignore 里
 //! （未提交的构建产物等）也必须剪枝。
 
+use crate::types::domain_ui_resources;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,7 +13,7 @@ use std::time::UNIX_EPOCH;
 
 use ignore::{WalkBuilder, WalkState};
 
-use super::{MAX_INDEX_FILES, err};
+use super::{MAX_INDEX_FILES};
 use crate::types::Result;
 
 /// 单条发现的文件记录。
@@ -156,7 +157,7 @@ pub fn discover_files(repo_root: &Path) -> Result<DiscoverOutcome> {
 
 pub(super) fn discover_files_cancellable(repo_root: &Path, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<DiscoverOutcome> {
     // 根目录不可读不能当作空仓库，否则刷新会清空上一代有效索引。
-    std::fs::read_dir(repo_root).map_err(|error| err(format!("无法扫描仓库目录：{error}")))?;
+    std::fs::read_dir(repo_root).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_SCAN_THE_REPOSITORY_DIRECTORY, &[("error", &format!("{}", error))])))?;
     let outcomes = Mutex::new(DiscoverOutcome::default());
     let count = AtomicUsize::new(0);
     let root = repo_root.to_path_buf();
@@ -188,7 +189,7 @@ pub(super) fn discover_files_cancellable(repo_root: &Path, cancel: Option<&std::
                 pruned_dirs_in_filter.fetch_add(1, Ordering::Relaxed);
                 let rel = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
                 directory_issues.lock().unwrap_or_else(|e| e.into_inner()).push(super::coverage::FileCoverage::new(
-                    &rel, "excluded", "目录剪枝或独立子仓库"));
+                    &rel, "excluded", "pruned_directory"));
             }
             !prune
         })
@@ -229,7 +230,7 @@ pub(super) fn discover_files_cancellable(repo_root: &Path, cancel: Option<&std::
 
             if is_ignored_suffix(name) || is_ignored_filename(name) || name.starts_with(".git") {
                 outcome.excluded_count += 1;
-                outcome.issues.push(super::coverage::FileCoverage::new(&rel_path, "excluded", "文件名或生成产物过滤"));
+                outcome.issues.push(super::coverage::FileCoverage::new(&rel_path, "excluded", "filtered_file"));
                 return;
             }
 
@@ -255,12 +256,12 @@ pub(super) fn discover_files_cancellable(repo_root: &Path, cancel: Option<&std::
         if count.load(Ordering::Relaxed) > MAX_INDEX_FILES { WalkState::Quit } else { WalkState::Continue }
     }));
     if count.load(Ordering::Relaxed) > MAX_INDEX_FILES {
-        return Err(err(format!("仓库文件数超过索引上限 {} 个，已终止索引", MAX_INDEX_FILES)));
+        return Err(crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::REPOSITORY_FILE_COUNT_EXCEEDS_THE_INDEXING_LIMIT_OF_INDEXING_STOPPED, &[("value0", &format!("{}", MAX_INDEX_FILES))])));
     }
     let mut outcome = outcomes.into_inner().unwrap_or_else(|error| error.into_inner());
     // 遍历失败时无法区分“文件已删除”和“目录未扫描到”，不能提交不完整的发现域。
     if let Some(issue) = outcome.issues.iter().find(|issue| issue.path == "." && issue.status == "read_failed") {
-        return Err(err(format!("扫描仓库失败，已保留原有索引：{}", issue.reason)));
+        return Err(crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_SCAN_THE_REPOSITORY_THE_PREVIOUS_INDEX_WAS_RETAINED, &[("value0", &format!("{}", issue.reason))])));
     }
 
     outcome.excluded_count += pruned_dirs.load(Ordering::Relaxed);

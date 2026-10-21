@@ -1,5 +1,8 @@
 //! RepositoryView 的凭据、仓库、分支、历史与工作区动作。
 
+#[path = "repository_actions_resources.rs"]
+mod messages;
+
 use crate::*;
 
 impl RepositoryView {
@@ -627,7 +630,7 @@ impl RepositoryView {
     /// 选中提交与已预加载的文件/差异在四象限直接就位。
     pub(crate) fn close_commit_graph(&mut self) {
         self.set_main_mode(MainMode::History);
-        self.status = "已返回提交记录页".to_string();
+        self.status = khaslana::ui_i18n::encode(messages::RETURNED_TO_COMMIT_HISTORY, &[]);
     }
 
     /// 图谱页分支高亮下拉的展开/收起（与编码菜单同一套防重开模式）。
@@ -666,12 +669,12 @@ impl RepositoryView {
         self.commit_graph.trace = None;
         match branch {
             Some(branch) => {
-                self.status = format!("正在计算分支谱系：{branch}");
+                self.status = khaslana::ui_i18n::encode(messages::CALCULATING_BRANCH_ANCESTRY, &[("branch", &(branch).to_string())]);
                 self.refresh_commit_graph_trace();
             }
             None => {
                 self.commit_graph.trace_loading = false;
-                self.status = "已关闭分支高亮".to_string();
+                self.status = khaslana::ui_i18n::encode(messages::BRANCH_HIGHLIGHT_CLEARED, &[]);
             }
         }
     }
@@ -761,7 +764,7 @@ impl RepositoryView {
         self.browse.reset();
         self.browse.list_mode = BrowseListMode::Tree;
         self.main_mode = MainMode::Browse;
-        self.status = format!("正在解析分支 {branch}");
+        self.status = khaslana::ui_i18n::encode(messages::RESOLVING_BRANCH, &[("branch", &(branch).to_string())]);
         self.open_browse_resolve(repo_path, tab_id, branch, ref_kind);
     }
 
@@ -784,7 +787,7 @@ impl RepositoryView {
         // 切换比较目标时作废旧评审。
         self.reset_ai_review_state();
         self.main_mode = MainMode::Browse;
-        self.status = format!("正在准备分支比较 {branch}");
+        self.status = khaslana::ui_i18n::encode(messages::PREPARING_BRANCH_COMPARISON, &[("branch", &(branch).to_string())]);
         self.open_browse_resolve(repo_path, tab_id, branch, ref_kind);
     }
 
@@ -800,7 +803,7 @@ impl RepositoryView {
         self.browse.reset();
         self.browse.list_mode = BrowseListMode::Tree;
         self.main_mode = MainMode::Browse;
-        self.status = format!("正在解析标签 {tag}");
+        self.status = khaslana::ui_i18n::encode(messages::RESOLVING_TAG, &[("tag", &(tag).to_string())]);
         self.open_browse_resolve(repo_path, tab_id, tag, BrowseRefKind::Tag);
     }
 
@@ -904,7 +907,7 @@ impl RepositoryView {
         self.browse.content = None;
         self.browse.diff = None;
         self.browse.diff_headers_expanded = false;
-        self.status = "正在加载分支差异".to_string();
+        self.status = khaslana::ui_i18n::encode(messages::LOADING_BRANCH_DIFF, &[]);
 
         let service = self.service_for_tab(tab_id);
         let tx = self.tx.clone();
@@ -1041,18 +1044,18 @@ impl RepositoryView {
                 .is_some_and(|file| file.status == ChangeState::Deleted)
         {
             self.browse.loading_content = false;
-            self.status = "目标分支中不存在该文件".to_string();
+            self.status = khaslana::ui_i18n::encode(messages::THE_FILE_DOES_NOT_EXIST_IN_THE_TARGET_BRANCH, &[]);
             return;
         }
 
         match mode {
             BrowseViewMode::Content => {
                 self.browse.loading_content = true;
-                self.status = "正在加载文件内容".to_string();
+                self.status = khaslana::ui_i18n::encode(messages::LOADING_FILE_CONTENT, &[]);
             }
             BrowseViewMode::Diff => {
                 self.browse.loading_diff = true;
-                self.status = "正在加载文件差异".to_string();
+                self.status = khaslana::ui_i18n::encode(messages::LOADING_FILE_DIFF, &[]);
             }
         }
 
@@ -1097,7 +1100,7 @@ impl RepositoryView {
                     &tx,
                     UiEvent::OperationFailed {
                         tab_id: Some(tab_id),
-                        error: err.to_string(),
+                        error: crate::diff_view::diff_task_error(err),
                     },
                 ),
             }
@@ -1110,7 +1113,7 @@ impl RepositoryView {
         // 评审针对具体比较目标，退出浏览时整体作废，避免下次进入比较模式
         // 时残留旧评审直接占满右侧区域。
         self.reset_ai_review_state();
-        self.status = "已退出分支浏览".to_string();
+        self.status = khaslana::ui_i18n::encode(messages::BRANCH_BROWSER_CLOSED, &[]);
     }
 
     /// 分离当前评审展示（**不终止在途任务**）：切目标/退出浏览时调用。
@@ -1137,7 +1140,7 @@ impl RepositoryView {
             flag.store(true, Ordering::Relaxed);
         }
         self.reset_ai_review_state();
-        self.status = "已取消 AI 评审".into();
+        self.status = khaslana::ui_i18n::encode(messages::AI_REVIEW_CANCELLED, &[]);
     }
 
     /// 打开评审历史弹窗并后台加载当前仓库的最近记录。
@@ -1146,11 +1149,11 @@ impl RepositoryView {
             return;
         }
         let Some(repo_path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         let Some(data_dir) = khaslana::storage::active_data_dir() else {
-            self.last_error = Some("无法定位数据目录".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::CANNOT_LOCATE_THE_DATA_DIRECTORY, &[]));
             return;
         };
         self.ai_review_history = Some(AiReviewHistoryState {
@@ -1158,7 +1161,7 @@ impl RepositoryView {
             records: Vec::new(),
             error: None,
         });
-        self.status = "正在加载评审记录".into();
+        self.status = khaslana::ui_i18n::encode(messages::LOADING_REVIEW_HISTORY, &[]);
         let tx = self.tx.clone();
         self.tasks.spawn(crate::TaskKind::Short, move || {
             let repo_path_string = repo_path.display().to_string();
@@ -1201,13 +1204,13 @@ impl RepositoryView {
                         .format("%m-%d %H:%M")
                         .to_string()
                 })
-                .unwrap_or_else(|| "时间未知".to_string());
+                .unwrap_or_else(|| khaslana::ui_i18n::text(messages::UNKNOWN_TIME).to_string());
         self.ai_review_loaded_label =
-            Some(format!("历史 · {date} · {}", record.target_display_name));
+            Some(khaslana::ui_i18n::encode(messages::HISTORY, &[("date", &(date).to_string()), ("arg0", &(record.target_display_name).to_string())]));
         self.ai_review = Some(Arc::new(record.result.clone()));
         self.ai_review_steps = record.result.steps;
         self.ai_review_expanded = true;
-        self.status = "已打开历史评审记录".into();
+        self.status = khaslana::ui_i18n::encode(messages::HISTORICAL_REVIEW_OPENED, &[]);
         self.last_error = None;
     }
 
@@ -1244,7 +1247,7 @@ impl RepositoryView {
         self.blame.path = Some(path.clone());
         self.blame.loading = true;
         self.main_mode = MainMode::Blame;
-        self.status = format!("正在加载文件追溯：{path}");
+        self.status = khaslana::ui_i18n::encode(messages::LOADING_FILE_ATTRIBUTION, &[("path", &(path).to_string())]);
         let service = self.service_for_tab(tab_id);
         let tx = self.tx.clone();
         self.tasks.spawn(TaskKind::Short, move || {
@@ -1277,7 +1280,7 @@ impl RepositoryView {
     pub(crate) fn close_blame(&mut self) {
         self.blame.reset();
         self.main_mode = MainMode::Worktree;
-        self.status = "已退出文件追溯".to_string();
+        self.status = khaslana::ui_i18n::encode(messages::FILE_ATTRIBUTION_CLOSED, &[]);
     }
 
     /// 编码切换时重新加载当前追溯文件。
@@ -1498,7 +1501,7 @@ impl RepositoryView {
         self.history_scope = scope;
         // 过滤器是用户意图：切 scope 保留，仅显式清除（chip 的 ×）。
         self.clear_history();
-        self.status = format!("提交记录范围已切换为{}", scope.label());
+        self.status = khaslana::ui_i18n::encode(messages::COMMIT_HISTORY_SCOPE_CHANGED_TO, &[("arg0", &(scope.label()).to_string())]);
         self.load_history_page(false);
     }
 
@@ -1513,8 +1516,8 @@ impl RepositoryView {
         }
         let label = path
             .as_deref()
-            .map(|path| format!("提交记录已按文件 {path} 过滤"))
-            .unwrap_or_else(|| "已清除文件过滤".to_string());
+            .map(|path| khaslana::ui_i18n::format(messages::COMMIT_HISTORY_FILTERED_BY_FILE, &[("path", &(path).to_string())]))
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::FILE_FILTER_CLEARED).to_string());
         self.history_file_filter = path;
         self.clear_history();
         self.status = label;
@@ -1553,11 +1556,11 @@ impl RepositoryView {
 
     fn load_history_page(&mut self, append: bool) {
         let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         let Some(repo_path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         if self.history_loading.commits {
@@ -1586,9 +1589,9 @@ impl RepositoryView {
         let seq = self.history_load_seq;
         self.history_loading.commits = true;
         self.status = if append {
-            "正在加载更多提交记录".to_string()
+            khaslana::ui_i18n::text(messages::LOADING_MORE_COMMITS).to_string()
         } else {
-            "正在加载提交记录".to_string()
+            khaslana::ui_i18n::text(messages::LOADING_COMMITS).to_string()
         };
         self.last_error = None;
 
@@ -1698,7 +1701,7 @@ impl RepositoryView {
         // 加载标志与状态文字在守卫之后设置：守卫早退时不应挂起
         // “提交文件加载中...”（文件区会永久显示加载占位）。
         self.history_loading.files = true;
-        self.status = "正在加载提交文件".to_string();
+        self.status = khaslana::ui_i18n::encode(messages::LOADING_COMMIT_FILES, &[]);
         let service = self.service_for_tab(tab_id);
         let tx = self.tx.clone();
         let load_id = self.repository_load_id;
@@ -1759,7 +1762,7 @@ impl RepositoryView {
         self.history_diff_headers_expanded = false;
         self.reset_uniform_scroll("history-diff-scroll");
         self.history_loading.diff = true;
-        self.status = "正在加载提交差异".to_string();
+        self.status = khaslana::ui_i18n::encode(messages::LOADING_COMMIT_DIFF, &[]);
 
         let Some(tab_id) = self.active_tab_id() else {
             return;
@@ -1781,7 +1784,7 @@ impl RepositoryView {
             self.history_diff_syntax = None;
             self.history_diff = Some(diff);
             self.history_diff_headers_expanded = false;
-            self.status = "提交差异已加载".to_string();
+            self.status = khaslana::ui_i18n::encode(messages::COMMIT_DIFF_LOADED, &[]);
             // 缓存命中不走事件落位，语法高亮在此手动调度
             self.schedule_syntax_highlight(SyntaxSlot::HistoryDiff);
             return;
@@ -1824,7 +1827,7 @@ impl RepositoryView {
                         &tx,
                         UiEvent::HistoryLoadFailed {
                             tab_id,
-                            error: err.to_string(),
+                            error: crate::diff_view::diff_task_error(err),
                             load_id,
                         },
                     );
@@ -1836,22 +1839,22 @@ impl RepositoryView {
     pub(crate) fn stage_selected(&mut self) {
         let paths = self.selected_change_paths(DiffScope::Unstaged);
         if paths.is_empty() {
-            self.last_error = Some("请先在修改区选择文件".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::SELECT_FILES_IN_THE_CHANGES_LIST_FIRST, &[]));
             return;
         }
-        self.stage_paths(paths, "已暂存选定文件");
+        self.stage_paths(paths, crate::operation_ui_resources::STAGED_FILES);
     }
 
     pub(crate) fn stage_all(&mut self) {
         let paths = self.change_paths(DiffScope::Unstaged);
         if paths.is_empty() {
-            self.last_error = Some("修改区没有可暂存文件".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::THERE_ARE_NO_FILES_TO_STAGE, &[]));
             return;
         }
-        self.stage_paths(paths, "已暂存所有文件");
+        self.stage_paths(paths, crate::operation_ui_resources::STAGED_ALL);
     }
 
-    pub(crate) fn stage_paths(&mut self, paths: Vec<String>, label: &'static str) {
+    pub(crate) fn stage_paths(&mut self, paths: Vec<String>, label: khaslana::ui_i18n::UiMessage) {
         self.with_repo(label, move |service, repo| {
             let path_bufs = paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
             service.stage_paths(repo, path_bufs.iter().map(|path| path.as_path()))
@@ -1861,22 +1864,22 @@ impl RepositoryView {
     pub(crate) fn unstage_selected(&mut self) {
         let paths = self.selected_change_paths(DiffScope::Staged);
         if paths.is_empty() {
-            self.last_error = Some("请先在暂存区选择文件".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::SELECT_FILES_IN_THE_STAGED_LIST_FIRST, &[]));
             return;
         }
-        self.unstage_paths(paths, "已取消暂存选定文件");
+        self.unstage_paths(paths, crate::operation_ui_resources::UNSTAGED_FILES);
     }
 
     pub(crate) fn unstage_all(&mut self) {
         let paths = self.change_paths(DiffScope::Staged);
         if paths.is_empty() {
-            self.last_error = Some("暂存区没有可取消暂存文件".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::THERE_ARE_NO_FILES_TO_UNSTAGE, &[]));
             return;
         }
-        self.unstage_paths(paths, "已取消暂存所有文件");
+        self.unstage_paths(paths, crate::operation_ui_resources::UNSTAGED_ALL);
     }
 
-    pub(crate) fn unstage_paths(&mut self, paths: Vec<String>, label: &'static str) {
+    pub(crate) fn unstage_paths(&mut self, paths: Vec<String>, label: khaslana::ui_i18n::UiMessage) {
         self.with_repo(label, move |service, repo| {
             let path_bufs = paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
             service.unstage_paths(repo, path_bufs.iter().map(|path| path.as_path()))
@@ -1890,20 +1893,20 @@ impl RepositoryView {
         }
         let message = self.commit_message.value.trim().to_string();
         if message.is_empty() {
-            self.last_error = Some("需要填写提交信息".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::ENTER_A_COMMIT_MESSAGE, &[]));
             return;
         }
         // 同步预检在清空输入框之前拦截，保住用户已输入的提交信息；
         // 豁免修补模式：Ctrl+Enter 提交链在修补模式下也走本函数，
         // 修补允许空暂存（只改信息），真正的权威拦截在 GitService::commit。
         if !self.amend_mode && self.change_paths(DiffScope::Staged).is_empty() {
-            self.last_error = Some("暂存区没有变更，无法提交".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::THERE_ARE_NO_STAGED_CHANGES_TO_COMMIT, &[]));
             return;
         }
         self.commit_message.clear();
         self.scroll_handle("commit-message-input-scroll")
             .set_offset(point(px(0.0), px(0.0)));
-        self.with_repo_blocking("提交完成", move |service, repo| {
+        self.with_repo_blocking(crate::operation_ui_resources::COMMITTED, move |service, repo| {
             service.commit(repo, &CommitMessage::new(message))
         });
     }
@@ -1911,7 +1914,7 @@ impl RepositoryView {
     /// 修补最后一次提交：以当前暂存区为树重写 HEAD。
     /// 输入框为空时保留原提交信息（只补文件不改信息的场景）。
     pub(crate) fn amend(&mut self) {
-        if !self.ensure_no_merge_in_progress("修补提交") {
+        if !self.ensure_no_merge_in_progress(khaslana::ui_i18n::text(messages::AMEND_ACTION)) {
             return;
         }
         if self.amend_needs_push_warning() {
@@ -1924,11 +1927,11 @@ impl RepositoryView {
 
     /// 修补最后一次提交并推送当前分支。
     pub(crate) fn amend_and_push(&mut self) {
-        if !self.ensure_no_merge_in_progress("修补提交并推送") {
+        if !self.ensure_no_merge_in_progress(khaslana::ui_i18n::text(messages::AMEND_PUSH_ACTION)) {
             return;
         }
         let Some(remote) = self.current_remote() else {
-            self.last_error = Some("当前仓库没有远端".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::THE_REPOSITORY_HAS_NO_REMOTES, &[]));
             return;
         };
         if self.amend_needs_push_warning() {
@@ -1946,7 +1949,7 @@ impl RepositoryView {
         self.amend_prefill = None;
         self.scroll_handle("commit-message-input-scroll")
             .set_offset(point(px(0.0), px(0.0)));
-        self.with_repo_blocking("修补提交完成", move |service, repo| {
+        self.with_repo_blocking(crate::operation_ui_resources::AMENDED, move |service, repo| {
             service.amend_commit(repo, message.as_ref())
         });
     }
@@ -1955,11 +1958,11 @@ impl RepositoryView {
     /// 失败时保留修补结果并给出组合提示。
     pub(crate) fn perform_amend_and_push(&mut self, message: String, remote: String) {
         let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         let Some(path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         let message = (!message.is_empty()).then(|| CommitMessage::new(message));
@@ -1971,7 +1974,7 @@ impl RepositoryView {
         let service = self.service_for_tab(tab_id);
         self.spawn_operation_for_tab_with_blocker(
             Some(tab_id),
-            "正在修补提交并推送",
+            khaslana::ui_i18n::encode(messages::AMENDING_COMMIT_AND_PUSHING, &[]),
             OperationBlocker::Modal,
             move || {
                 let mut repo = Repository::open(path)?;
@@ -1979,13 +1982,13 @@ impl RepositoryView {
                 match service.push(&mut repo, &RemoteName::new(remote)) {
                     Ok(snapshot) => Ok(UiEvent::OperationFinished {
                         tab_id: Some(tab_id),
-                        message: "修补提交并推送完成".to_string(),
+                        message: khaslana::ui_i18n::encode(crate::operation_ui_resources::AMENDED_PUSHED, &[]),
                         snapshot: Some(snapshot),
                         diff: None,
                     }),
                     Err(err) => Ok(UiEvent::OperationFinished {
                         tab_id: Some(tab_id),
-                        message: format!("修补已完成，但推送失败：{err}"),
+                        message: khaslana::ui_i18n::encode(messages::COMMIT_AMENDED_BUT_PUSH_FAILED, &[("err", &(err).to_string())]),
                         snapshot: Some(snapshot),
                         diff: None,
                     }),
@@ -2058,7 +2061,7 @@ impl RepositoryView {
 
     /// 拣选提交到当前分支（历史页右键菜单入口）。
     pub(crate) fn cherry_pick_commit(&mut self, oid: String) {
-        if !self.ensure_no_merge_in_progress("拣选提交") {
+        if !self.ensure_no_merge_in_progress(khaslana::ui_i18n::text(messages::CHERRY_PICK_ACTION)) {
             return;
         }
         // 工作区脏时提前拦截，避免后台任务失败后才反馈。
@@ -2067,39 +2070,39 @@ impl RepositoryView {
             .as_ref()
             .is_some_and(|snapshot| !snapshot.changes.is_empty())
         {
-            self.last_error = Some("工作区有未提交修改，请先提交、暂存或丢弃后再拣选".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::THE_WORKING_TREE_HAS_UNCOMMITTED_CHANGES_COMMIT_STASH_OR_DISCARD, &[]));
             return;
         }
-        self.with_repo_blocking("拣选提交完成", move |service, repo| {
+        self.with_repo_blocking(crate::operation_ui_resources::CHERRY_PICKED, move |service, repo| {
             service.cherry_pick_commit(repo, &oid)
         });
     }
 
     pub(crate) fn commit_and_push(&mut self) {
-        if !self.ensure_no_merge_in_progress("提交并推送") {
+        if !self.ensure_no_merge_in_progress(khaslana::ui_i18n::text(messages::COMMIT_PUSH_ACTION)) {
             return;
         }
         let message = self.commit_message.value.trim().to_string();
         if message.is_empty() {
-            self.last_error = Some("需要填写提交信息".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::ENTER_A_COMMIT_MESSAGE, &[]));
             return;
         }
         // 与 commit() 一致：空暂存在清空输入框之前同步拦截；本入口
         // （主按钮「提交并推送」）不存在修补模式，无需豁免。
         if self.change_paths(DiffScope::Staged).is_empty() {
-            self.last_error = Some("暂存区没有变更，无法提交".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::THERE_ARE_NO_STAGED_CHANGES_TO_COMMIT, &[]));
             return;
         }
         let Some(remote) = self.current_remote() else {
-            self.last_error = Some("当前仓库没有远端".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::THE_REPOSITORY_HAS_NO_REMOTES, &[]));
             return;
         };
         let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         let Some(path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         self.commit_message.clear();
@@ -2108,7 +2111,7 @@ impl RepositoryView {
         let service = self.service_for_tab(tab_id);
         self.spawn_operation_for_tab_with_blocker(
             Some(tab_id),
-            "正在提交并推送",
+            khaslana::ui_i18n::encode(messages::COMMITTING_AND_PUSHING, &[]),
             OperationBlocker::Modal,
             move || {
                 let mut repo = Repository::open(path)?;
@@ -2119,13 +2122,13 @@ impl RepositoryView {
                 )? {
                     Ok(snapshot) => Ok(UiEvent::OperationFinished {
                         tab_id: Some(tab_id),
-                        message: "提交并推送完成".to_string(),
+                        message: khaslana::ui_i18n::encode(crate::operation_ui_resources::COMMITTED_PUSHED, &[]),
                         snapshot: Some(snapshot),
                         diff: None,
                     }),
                     Err((snapshot, err)) => Ok(UiEvent::OperationFinished {
                         tab_id: Some(tab_id),
-                        message: format!("提交已完成，但推送失败：{err}"),
+                        message: khaslana::ui_i18n::encode(messages::COMMIT_COMPLETED_BUT_PUSH_FAILED, &[("err", &(err).to_string())]),
                         snapshot: Some(snapshot),
                         diff: None,
                     }),
@@ -2158,7 +2161,7 @@ impl RepositoryView {
             self.diff = Some(diff);
             self.diff_headers_expanded = false;
             self.diff_syntax = None;
-            self.status = "差异已加载".to_string();
+            self.status = khaslana::ui_i18n::encode(crate::operation_ui_resources::DIFF_LOADED, &[]);
             // 缓存命中不走事件落位，语法高亮在此手动调度
             self.schedule_syntax_highlight(SyntaxSlot::WorktreeDiff);
             return;
@@ -2168,15 +2171,15 @@ impl RepositoryView {
             .as_ref()
             .is_some_and(|snapshot| snapshot.conflicts.iter().any(|conflict| conflict == &path));
         let service = self.service_for_tab(tab_id);
-        self.spawn_operation_for_tab(Some(tab_id), "正在加载差异", move || {
+        self.spawn_operation_for_tab(Some(tab_id), khaslana::ui_i18n::encode(messages::LOADING_DIFF, &[]), move || {
             let started = Instant::now();
             let repo = Repository::open(repo_path)?;
             let diff = service
                 .diff_for_path(&repo, Path::new(&path), scope, full_context, encoding)
                 .map_err(|err| {
-                    if is_conflicted_path {
+                    if is_conflicted_path && !err.is_message("domain.full_file_too_large") {
                         khaslana::GitError::Message(
-                            "该文件存在冲突，请选择版本或手动编辑后标记解决".into(),
+                            khaslana::ui_i18n::text(messages::THIS_FILE_HAS_CONFLICTS_SELECT_A_VERSION_OR_EDIT_IT).into(),
                         )
                     } else {
                         err
@@ -2189,7 +2192,7 @@ impl RepositoryView {
             );
             Ok(UiEvent::OperationFinished {
                 tab_id: Some(tab_id),
-                message: "差异已加载".to_string(),
+                message: khaslana::ui_i18n::encode(crate::operation_ui_resources::DIFF_LOADED, &[]),
                 snapshot: None,
                 diff: Some(diff),
             })
@@ -2299,15 +2302,15 @@ impl RepositoryView {
             return;
         };
         if diff.is_binary {
-            self.last_error = Some("二进制文件不支持部分暂存".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::BINARY_FILES_DO_NOT_SUPPORT_PARTIAL_STAGING, &[]));
             return;
         }
         let path = diff.path.clone();
         let is_stage = diff.scope == DiffScope::Unstaged;
-        let label: &'static str = if is_stage {
-            "已暂存选中改动"
+        let label = if is_stage {
+            crate::operation_ui_resources::STAGED_LINES
         } else {
-            "已取消暂存选中改动"
+            crate::operation_ui_resources::UNSTAGED_LINES
         };
         // 选区随差异刷新清空（load_diff 开头统一处理，这里立即清掉按钮态）。
         self.diff_line_selection.clear();
@@ -2324,7 +2327,7 @@ impl RepositoryView {
     /// 工具栏按钮：暂存/取消暂存当前选中的行。
     pub(crate) fn apply_selected_partial_stage(&mut self) {
         let Some(selection) = self.selected_diff_lines_selection() else {
-            self.last_error = Some("请先点击差异中的 +/- 行选择要暂存的改动".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::CLICK_LINES_IN_THE_DIFF_TO_SELECT_CHANGES_TO_STAGE, &[]));
             return;
         };
         self.apply_partial_stage(selection);
@@ -2333,7 +2336,7 @@ impl RepositoryView {
     /// hunk 头按钮：暂存/取消暂存整块。
     pub(crate) fn apply_hunk_partial_stage(&mut self, hunk_index: usize) {
         let Some(selection) = self.diff_hunk_selection(hunk_index) else {
-            self.last_error = Some("该块没有可暂存的改动".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::THIS_HUNK_HAS_NO_CHANGES_TO_STAGE, &[]));
             return;
         };
         self.apply_partial_stage(selection);
@@ -2385,15 +2388,15 @@ impl RepositoryView {
         };
 
         if !send_credential_response(&pending, Ok(Some(credential))) {
-            self.last_error = Some("凭据请求已失效".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::THE_CREDENTIAL_REQUEST_HAS_EXPIRED, &[]));
             return;
         }
         self.show_next_credential_request();
         self.apply_status_event(pending.tab_id, |this| {
-            this.status = "凭据已提交，正在继续操作".into();
+            this.status = khaslana::ui_i18n::encode(messages::CREDENTIALS_SUBMITTED_RESUMING_OPERATION, &[]);
             this.last_error = None;
         });
-        self.reload_credential_records("凭据已提交");
+        self.reload_credential_records(khaslana::ui_i18n::encode(messages::CREDENTIALS_SUBMITTED, &[]));
         self.save_remote_credential_bindings();
     }
 
@@ -2403,12 +2406,12 @@ impl RepositoryView {
         };
         let _ = send_credential_response(
             &pending,
-            Err(khaslana::GitError::Credential("已取消凭据输入".into())),
+            Err(khaslana::GitError::Credential(khaslana::ui_i18n::text(messages::CREDENTIAL_INPUT_CANCELLED).into())),
         );
         self.show_next_credential_request();
         self.request_overlay_focus_restore();
         self.apply_status_event(pending.tab_id, |this| {
-            this.status = "凭据输入已取消".into();
+            this.status = khaslana::ui_i18n::encode(messages::CREDENTIAL_INPUT_CANCELLED_2, &[]);
             this.last_error = None;
         });
     }
@@ -2416,7 +2419,7 @@ impl RepositoryView {
     pub(crate) fn spawn_operation_for_tab<F>(
         &mut self,
         tab_id: Option<RepoTabId>,
-        started: &'static str,
+        started: impl Into<String>,
         f: F,
     ) where
         F: FnOnce() -> khaslana::Result<UiEvent> + Send + 'static,
@@ -2427,12 +2430,13 @@ impl RepositoryView {
     pub(crate) fn spawn_operation_for_tab_with_blocker<F>(
         &mut self,
         tab_id: Option<RepoTabId>,
-        started: &'static str,
+        started: impl Into<String>,
         blocker: OperationBlocker,
         f: F,
     ) where
         F: FnOnce() -> khaslana::Result<UiEvent> + Send + 'static,
     {
+        let started = started.into();
         if let Some(tab_id) = tab_id
             && self.tab(tab_id).is_none()
         {
@@ -2443,7 +2447,7 @@ impl RepositoryView {
             .unwrap_or(self.busy);
         if busy {
             self.apply_status_event(tab_id, |this| {
-                this.last_error = Some("已有操作正在运行".into());
+                this.last_error = Some(khaslana::ui_i18n::encode(messages::AN_OPERATION_IS_ALREADY_RUNNING, &[]));
             });
             return;
         }
@@ -2458,7 +2462,7 @@ impl RepositoryView {
             } else {
                 None
             };
-            this.operation_kind = OperationKind::from_message(started);
+            this.operation_kind = OperationKind::from_message(&started);
             this.status = started.to_string();
             this.last_error = None;
         });
@@ -2479,7 +2483,7 @@ impl RepositoryView {
                     &tx,
                     UiEvent::OperationFailed {
                         tab_id,
-                        error: err.to_string(),
+                        error: crate::diff_view::diff_task_error(err),
                     },
                 );
             }

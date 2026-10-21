@@ -6,6 +6,10 @@
 //! 有界外层必须是 flex 容器，让 scrollable_frame_when 的 flex_1 真正生效；
 //! 滚动视口裁切内容，避免长文案画到保存栏上。
 
+use khaslana::ui_i18n::{text, format as message, encode, resolve};
+#[path = "ai_settings_ui_resources.rs"]
+mod messages;
+
 use gpui::{Context, Div, FontWeight, IntoElement, Window, div, prelude::*, px};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
@@ -51,8 +55,8 @@ fn row_menu<F>(id: impl Into<gpui::ElementId>, build: F, cx: &gpui::App) -> impl
 where
     F: Fn(PopupMenu) -> PopupMenu + 'static,
 {
-    settings_command_button(id, "更多", SettingsButtonTone::Secondary, true, cx)
-        .h(px(28.0)).min_w(px(64.0)).px(px(10.0)).accessibility_label("更多操作")
+    settings_command_button(id, text(messages::MORE), SettingsButtonTone::Secondary, true, cx)
+        .h(px(28.0)).min_w(px(64.0)).px(px(10.0)).accessibility_label(text(messages::MORE_ACTIONS))
         .dropdown_menu(move |menu, _window, _cx| build(menu))
 }
 
@@ -162,8 +166,8 @@ impl RepositoryView {
             .child(v_flex().flex_none().w_full().gap_3().px(px(8.0))
                 .child(v_flex().gap_1()
                     .child(div().text_size(px(20.0)).font_weight(FontWeight::BOLD)
-                        .text_color(rgb(ui_theme::CONTENT_PRIMARY)).child("AI 设置"))
-                    .child(caption("配置模型连接，管理工作流扩展")))
+                        .text_color(rgb(ui_theme::CONTENT_PRIMARY)).child(text(messages::TITLE)))
+                    .child(caption(text(messages::DESCRIPTION))))
                 .child(self.render_ai_enable_card(cx))
                 .child(self.render_ai_page_tabs(cx)))
             // 有界外层直接包滚动 helper，内容 div 不设置 flex_1 / min_h。
@@ -177,25 +181,25 @@ impl RepositoryView {
         let view = cx.entity();
         let changed = state::form_is_dirty(&self.ai_form_settings(), &self.ai_settings);
         let status = if let Some(error) = &self.ai_extensions.save_error {
-            error_text(error.clone())
+            error_text(resolve(error))
         } else if changed {
-            caption("连接配置有未保存的更改")
+            caption(text(messages::DIRTY))
                 .text_color(rgb(ui_theme::FEEDBACK_WARNING_TEXT))
         } else {
-            caption("AI 连接设置已保存")
+            caption(text(messages::SAVED))
         };
         h_flex().flex_none().w_full().min_h(px(64.0)).px(px(8.0)).py_3().gap_3()
             .border_t_1().border_color(rgb(ui_theme::BORDER_MUTED)).bg(rgb(ui_theme::WB_PANEL))
             .child(v_flex().flex_1().min_w(px(0.0)).gap_1()
                 .child(status)
-                .child(caption("保存仅应用于总开关和连接配置")))
-            .child(settings_command_button("ai-save-settings", "保存设置", SettingsButtonTone::Primary, changed, cx)
+                .child(caption(text(messages::SAVE_SCOPE))))
+            .child(settings_command_button("ai-save-settings", text(messages::SAVE), SettingsButtonTone::Primary, changed, cx)
                 .w(px(96.0))
-                .tooltip(if changed { "保存总开关和连接配置" } else { "没有未保存的更改" })
+                .tooltip(if changed { text(messages::SAVE_HINT) } else { text(messages::UNCHANGED) })
                 .on_click(move |_, _, cx| {
                     view.update(cx, |this, cx| {
                         if this.save_ai_provider_settings_from_form() {
-                            this.notify_settings_save("AI 设置已保存", cx);
+                            this.notify_settings_save(encode(messages::SAVE_SUCCESS, &[]), cx);
                         }
                         cx.notify();
                     });
@@ -206,8 +210,8 @@ impl RepositoryView {
         card().flex_row().items_center().justify_between().gap_3().min_h(px(48.0)).py_2()
             .child(card_icon(IconName::Sparkles))
             .child(v_flex().flex_1().min_w(px(0.0)).gap_1()
-                .child(body("启用 AI 功能").font_weight(FontWeight::SEMIBOLD))
-                .child(caption("用于提交信息、代码评审与工作流")))
+                .child(body(text(messages::ENABLE)).font_weight(FontWeight::SEMIBOLD))
+                .child(caption(text(messages::ENABLE_DESCRIPTION))))
             .child(self.toggle_switch("ai-enabled", self.ai_enabled_form, false,
                 |this, enabled, _, _| this.set_ai_enabled_form(enabled), cx))
     }
@@ -234,14 +238,14 @@ impl RepositoryView {
                 cx.stop_propagation();
                 cx.notify();
             }))
-            .children(["连接配置", "Skill", "MCP", "运行环境"].into_iter().enumerate()
+            .children([text(messages::CONNECTION), "Skill", "MCP", text(messages::RUNTIME)].into_iter().enumerate()
                 .map(|(index, label)| {
                     let selected = self.ai_extensions.tab.index() == index;
                     let view = view.clone();
                     settings_command_button(format!("ai-settings-tab-{index}"), label,
                         if selected { SettingsButtonTone::SelectedTab } else { SettingsButtonTone::Quiet },
                         self.ai_settings.enabled, cx)
-                        .accessibility_label(format!("{label}页签")).toggled(selected)
+                        .accessibility_label(message(messages::TAB_LABEL, &[("label", label)])).toggled(selected)
                         .h(px(36.0)).min_w(px(0.0))
                         .on_click(move |_, _, cx| {
                             view.update(cx, |this, cx| {
@@ -256,10 +260,10 @@ impl RepositoryView {
         let view = cx.entity();
         card().items_center().gap_3().py_8()
             .child(card_icon(IconName::Lock))
-            .child(heading("启用 AI 后配置扩展能力"))
-            .child(caption("Skill、MCP 与 Node 运行环境均在 AI 设置中管理。"))
-            .child(caption("打开上方开关并保存设置，即可进入各配置页面。"))
-            .child(settings_command_button("ai-enable-from-locked", "打开 AI 开关", SettingsButtonTone::Primary, true, cx).on_click(move |_, _, cx| {
+            .child(heading(text(messages::LOCKED)))
+            .child(caption(text(messages::LOCKED_DESCRIPTION)))
+            .child(caption(text(messages::LOCKED_HINT)))
+            .child(settings_command_button("ai-enable-from-locked", text(messages::TURN_ON), SettingsButtonTone::Primary, true, cx).on_click(move |_, _, cx| {
                     view.update(cx, |this, cx| {
                         this.set_ai_enabled_form(true);
                         cx.notify();
@@ -278,34 +282,34 @@ impl RepositoryView {
         let outcome = settings.as_ref().ok().map(|settings| test_state.outcome_for(settings))
             .unwrap_or(&state::ConnectionTestOutcome::Idle);
         let feedback = match outcome {
-            state::ConnectionTestOutcome::Idle if test_state.is_running() => caption("正在测试先前填写的配置…"),
-            state::ConnectionTestOutcome::Idle => caption("尚未测试当前配置"),
-            state::ConnectionTestOutcome::Running => caption("正在测试当前配置…"),
-            state::ConnectionTestOutcome::Passed(message) => caption(message.clone())
+            state::ConnectionTestOutcome::Idle if test_state.is_running() => caption(text(messages::TEST_OLD)),
+            state::ConnectionTestOutcome::Idle => caption(text(messages::TEST_IDLE)),
+            state::ConnectionTestOutcome::Running => caption(text(messages::TEST_RUNNING)),
+            state::ConnectionTestOutcome::Passed(message) => caption(resolve(message))
                 .text_color(rgb(ui_theme::FEEDBACK_SUCCESS_TEXT)),
-            state::ConnectionTestOutcome::Failed(error) => error_text(error.clone()),
+            state::ConnectionTestOutcome::Failed(error) => error_text(resolve(error)),
         };
         let blocked = self.busy || self.global_busy_tab.is_some();
         let protocol = self.ai_api_type_select.as_ref().map(|state| {
             gpui_kit::component::select::Select::new(state)
-                .accessibility_label("接口类型").w_full().h(px(34.0))
+                .accessibility_label(text(messages::API_TYPE)).w_full().h(px(34.0))
                 .text_size(px(ui_theme::TYPE_BODY))
                 .bg(rgb(ui_theme::WB_INPUT_SURFACE)).border_color(rgb(ui_theme::BORDER_MUTED))
                 .rounded(px(ui_theme::RADIUS_SM)).into_any_element()
         }).unwrap_or_else(|| div().into_any_element());
         let view = cx.entity();
         v_flex().w_full().min_w(px(0.0)).gap_3()
-            .child(form_row("接口类型", protocol, compact))
+            .child(form_row(text(messages::API_TYPE), protocol, compact))
             .when(self.ai_api_type_form == khaslana::AiApiType::AnthropicMessages, |this|
-                this.child(caption("部分 Claude 模型仅支持温度 1，请按模型要求调整；思考强度由服务端校验")))
-            .child(form_row("接口地址", field(FieldId::AiBaseUrl,
-                caption(format!("Base URL · 填写服务地址，无需添加 {}", self.ai_api_type_form.endpoint_path())), cx), compact))
-            .child(form_row("API Key（可选）", field(FieldId::AiApiKey,
-                caption("明文保存在本地数据库，请勿在共享环境使用")
+                this.child(caption(text(messages::CLAUDE_HINT))))
+            .child(form_row(text(messages::BASE_URL), field(FieldId::AiBaseUrl,
+                caption(message(messages::BASE_URL_HINT, &[("endpoint", self.ai_api_type_form.endpoint_path())])), cx), compact))
+            .child(form_row(text(messages::API_KEY), field(FieldId::AiApiKey,
+                caption(text(messages::KEY_WARNING))
                     .text_color(rgb(ui_theme::FEEDBACK_WARNING_TEXT)), cx), compact))
-            .child(form_row("模型", field(FieldId::AiModel,
-                caption("填写服务支持的模型名称，例如服务端提供的模型 ID"), cx), compact))
-            .child(settings_command_button("ai-advanced-settings", "高级设置",
+            .child(form_row(text(messages::MODEL), field(FieldId::AiModel,
+                caption(text(messages::MODEL_HINT)), cx), compact))
+            .child(settings_command_button("ai-advanced-settings", text(messages::ADVANCED),
                 SettingsButtonTone::Quiet, true, cx)
                 .toggled(self.ai_advanced_expanded)
                 .on_click(cx.listener(|this, _, window, cx| {
@@ -321,21 +325,21 @@ impl RepositoryView {
                     cx.notify();
                 })))
             .when(self.ai_advanced_expanded, |this| this.child(v_flex().w_full().gap_3()
-                .child(form_row("温度", field(FieldId::AiTemperature, caption(if self.ai_api_type_form == khaslana::AiApiType::AnthropicMessages { "0–1 之间的有限数值，默认 0.3" } else { "0–2 之间的有限数值，默认 0.3" }), cx), compact))
-                .child(form_row("最大输出", field(FieldId::AiMaxTokens, caption("默认 16384 tokens，所有场景每次请求／每轮共用；大文件合并可提高，过低会截断"), cx), compact))
-                .child(form_row("请求超时", field(FieldId::AiRequestTimeout, caption("大于 0 的整数秒数，默认 60；流式读取空闲超时，非流式整体超时"), cx), compact))
-                .child(form_row("思考强度（可选）", field(FieldId::AiReasoningEffort, caption("自由文本，由服务端校验；留空不发送，不会自动启用思考"), cx), compact))))
-            .when_some(settings.as_ref().err(), |this, error| this.child(error_text(error.clone())))
+                .child(form_row(text(messages::TEMPERATURE), field(FieldId::AiTemperature, caption(if self.ai_api_type_form == khaslana::AiApiType::AnthropicMessages { text(messages::TEMPERATURE_ONE) } else { text(messages::TEMPERATURE_TWO) }), cx), compact))
+                .child(form_row(text(messages::MAX_OUTPUT), field(FieldId::AiMaxTokens, caption(text(messages::MAX_OUTPUT_HINT)), cx), compact))
+                .child(form_row(text(messages::TIMEOUT), field(FieldId::AiRequestTimeout, caption(text(messages::TIMEOUT_HINT)), cx), compact))
+                .child(form_row(text(messages::REASONING), field(FieldId::AiReasoningEffort, caption(text(messages::REASONING_HINT)), cx), compact))))
+            .when_some(settings.as_ref().err(), |this, error| this.child(error_text(resolve(error))))
             .child(card().flex_row().items_center().gap_3().min_h(px(56.0)).py_2()
                 .child(v_flex().flex_1().min_w(px(0.0)).gap_1()
                     .child(feedback)
                     .child(caption(if blocked && !test_state.is_running() {
-                        "已有操作正在运行，完成后可测试连接"
+                        text(messages::TEST_BLOCKED)
                     } else {
-                        "使用上方填写的参数；测试不会保存配置"
+                        text(messages::TEST_HINT)
                     })))
                 .child(settings_command_button("ai-test-connection",
-                    if test_state.is_running() { "测试中…" } else { "测试连接" },
+                    if test_state.is_running() { text(messages::TESTING) } else { text(messages::TEST) },
                     SettingsButtonTone::Secondary, !blocked && !test_state.is_running(), cx)
                     .on_click(move |_, _, cx| {
                         view.update(cx, |this, cx| {
@@ -352,17 +356,17 @@ impl RepositoryView {
         let mut content = v_flex().w_full().min_w(px(0.0)).gap_0()
             .child(h_flex().w_full().items_center().justify_between().gap_3().pb_4()
                 .child(v_flex().flex_1().min_w(px(0.0)).gap_1()
-                    .child(heading("已安装的 Skill"))
-                    .child(caption(format!("{count} 个已安装 · 在工作流中按名称引用"))))
+                    .child(heading(text(messages::SKILLS)))
+                    .child(caption(message(messages::SKILL_COUNT, &[("count", &count.to_string())]))))
                 .child(h_flex().flex_none().gap_2()
-                    .child(settings_command_button("ai-skill-open-folder", "打开目录", SettingsButtonTone::Quiet, !self.ai_extensions.loading, cx)
+                    .child(settings_command_button("ai-skill-open-folder", text(messages::OPEN_FOLDER), SettingsButtonTone::Quiet, !self.ai_extensions.loading, cx)
                         .on_click({ let view = view.clone(); move |_, _, cx| {
                             view.update(cx, |this, cx| {
                                 this.open_ai_skill_folder(cx);
                                 cx.notify();
                             });
                         }}))
-                    .child(settings_command_button("ai-skill-import", "导入 Skill", SettingsButtonTone::Primary, !self.ai_extensions.loading, cx)
+                    .child(settings_command_button("ai-skill-import", text(messages::IMPORT_SKILL), SettingsButtonTone::Primary, !self.ai_extensions.loading, cx)
                         .on_click({ let view = view.clone(); move |_, _, cx| {
                             view.update(cx, |this, cx| {
                                 this.open_ai_skill_import();
@@ -370,17 +374,17 @@ impl RepositoryView {
                             });
                         }}))));
         if let Some(error) = &self.ai_extensions.error {
-            content = content.child(error_text(error.clone()));
+            content = content.child(error_text(resolve(error)));
         }
         if self.ai_extensions.loading {
-            content = content.child(card().child(caption("正在读取 Skill 列表…")));
+            content = content.child(card().child(caption(text(messages::LOADING_SKILLS))));
         } else if self.ai_extensions.skills.is_empty() {
             content = content.child(card()
                 .flex_row().items_center().gap_3()
                 .child(list_row_icon(IconName::Package))
                 .child(v_flex().flex_1().min_w(px(0.0)).gap_1()
-                    .child(heading("尚未安装 Skill"))
-                    .child(caption("选择包含 SKILL.md 的文件夹，检查内容后再安装。"))));
+                    .child(heading(text(messages::NO_SKILLS)))
+                    .child(caption(text(messages::INSTALL_SKILL_HINT)))));
         } else {
             content = content.child(div().w_full().border_t_1()
                 .border_color(rgb(ui_theme::BORDER_MUTED)));
@@ -392,7 +396,7 @@ impl RepositoryView {
                     let details = details_name.clone();
                     let remove = remove_name.clone();
                     let view = menu_view.clone();
-                    menu.item(PopupMenuItem::new("查看详情").on_click(move |_, _, cx| {
+                    menu.item(PopupMenuItem::new(text(messages::DETAILS)).on_click(move |_, _, cx| {
                         view.update(cx, |this, cx| {
                             this.open_ai_skill_details(details.clone());
                             cx.notify();
@@ -400,7 +404,7 @@ impl RepositoryView {
                     }))
                     .item({
                         let view = menu_view.clone();
-                        PopupMenuItem::new("移除").on_click(move |_, _, cx| {
+                        PopupMenuItem::new(text(messages::REMOVE)).on_click(move |_, _, cx| {
                             view.update(cx, |this, cx| {
                                 this.active_dialog = Some(DialogState::AiSkillRemove { name: remove.clone() });
                                 cx.notify();
@@ -415,13 +419,13 @@ impl RepositoryView {
                     .child(v_flex().flex_1().min_w(px(0.0)).gap_1()
                         .child(body(name.clone()).font_weight(FontWeight::SEMIBOLD).truncate())
                         .child(caption(description.clone()).truncate()))
-                    .child(status_text("已安装", true))
+                    .child(status_text(text(messages::INSTALLED), true))
                     .child(row_menu(format!("ai-skill-menu-{name}"), build_menu, cx)));
             }
         }
         content.child(div().w_full().border_t_1().border_color(rgb(ui_theme::BORDER_MUTED)).pt_3()
-            .child(caption("选择包含 SKILL.md 的文件夹，预览内容后导入。"))
-            .child(caption("导入与移除立即生效，无需点击保存设置。")))
+            .child(caption(text(messages::IMPORT_SKILL_HINT)))
+            .child(caption(text(messages::SKILL_IMMEDIATE))))
     }
 
     fn render_ai_mcp_content(&self, cx: &mut Context<Self>) -> Div {
@@ -432,9 +436,9 @@ impl RepositoryView {
         let mut content = v_flex().w_full().min_w(px(0.0)).gap_0()
             .child(h_flex().w_full().items_center().justify_between().gap_3().pb_4()
                 .child(v_flex().flex_1().min_w(px(0.0)).gap_1()
-                    .child(heading("MCP 服务"))
-                    .child(caption(format!("1 个内置 · {custom_count} 个自定义 · 按需连接"))))
-                .child(settings_command_button("ai-mcp-add", "添加服务", SettingsButtonTone::Primary, !self.ai_extensions.loading, cx)
+                    .child(heading(text(messages::MCP)))
+                    .child(caption(message(messages::MCP_COUNT, &[("count", &custom_count.to_string())]))))
+                .child(settings_command_button("ai-mcp-add", text(messages::ADD_SERVER), SettingsButtonTone::Primary, !self.ai_extensions.loading, cx)
                     .on_click({ let view = view.clone(); move |_, _, cx| {
                         view.update(cx, |this, cx| {
                             this.open_ai_mcp_form(None);
@@ -442,10 +446,10 @@ impl RepositoryView {
                         });
                     }})));
         if let Some(error) = &self.ai_extensions.error {
-            content = content.child(error_text(error.clone()));
+            content = content.child(error_text(resolve(error)));
         }
         if self.ai_extensions.loading {
-            content = content.child(card().child(caption("正在读取 MCP 配置…")));
+            content = content.child(card().child(caption(text(messages::LOADING_MCP))));
         } else {
             // 内置 browser.edge 与自定义服务同列表展示，靠描述前缀和图标区分。
             content = content.child(div().w_full().border_t_1()
@@ -459,14 +463,14 @@ impl RepositoryView {
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(rgb(ui_theme::CONTENT_PRIMARY))
                                 .child("browser.edge"))
-                            .child(caption("内置 · Microsoft Edge 浏览器 · 应用管理的本地服务").truncate())))
+                            .child(caption(text(messages::BUILTIN_BROWSER)).truncate())))
                     .child(h_flex().flex_none().items_center().gap_2()
-                        .child(status_text(if ready { "已就绪" } else { "未安装" }, ready))
+                        .child(status_text(if ready { text(messages::READY) } else { text(messages::NOT_INSTALLED) }, ready))
                         .child(row_menu("ai-mcp-menu-builtin", {
                             let view = view.clone();
                             move |menu: PopupMenu| {
                                 let view = view.clone();
-                                menu.item(PopupMenuItem::new("查看详情").on_click(
+                                menu.item(PopupMenuItem::new(text(messages::DETAILS)).on_click(
                                     move |_, _, cx| {
                                         view.update(cx, |this, cx| {
                                             this.active_dialog =
@@ -486,7 +490,7 @@ impl RepositoryView {
                     let edit = edit_name.clone();
                     let remove = remove_name.clone();
                     let view = menu_view.clone();
-                    menu.item(PopupMenuItem::new("编辑").on_click(move |_, _, cx| {
+                    menu.item(PopupMenuItem::new(text(messages::EDIT)).on_click(move |_, _, cx| {
                         view.update(cx, |this, cx| {
                             this.open_ai_mcp_form(Some(edit.clone()));
                             cx.notify();
@@ -494,7 +498,7 @@ impl RepositoryView {
                     }))
                     .item({
                         let view = menu_view.clone();
-                        PopupMenuItem::new("移除").on_click(move |_, _, cx| {
+                        PopupMenuItem::new(text(messages::REMOVE)).on_click(move |_, _, cx| {
                             view.update(cx, |this, cx| {
                                 if !this.ai_extensions.action_busy {
                                     this.ai_extensions.error = None;
@@ -519,11 +523,11 @@ impl RepositoryView {
                                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
                                     .truncate().child(name.clone()))
                                 .child(caption(format!("{} · {}", server.command,
-                                    if server.auto_discover { "自动发现工具".into() }
-                                    else { format!("白名单 {} 个工具", server.tools.len()) }
+                                    if server.auto_discover { text(messages::DISCOVER).into() }
+                                    else { message(messages::ALLOWLIST, &[("count", &server.tools.len().to_string())]) }
                                 )).truncate())))
                         .child(h_flex().flex_none().items_center().gap_2()
-                            .child(status_text(if server.enabled { "已配置 · 待连接" } else { "已禁用" }, server.enabled))
+                            .child(status_text(if server.enabled { text(messages::CONFIGURED) } else { text(messages::DISABLED) }, server.enabled))
                             .child(self.toggle_switch(format!("ai-mcp-enabled-{name}"), server.enabled,
                                 self.ai_extensions.action_busy, move |this, checked, _, _| {
                                     this.set_ai_mcp_server_enabled(toggle_name.clone(), checked);
@@ -540,15 +544,15 @@ impl RepositoryView {
                     .flex_row().items_center().gap_3()
                     .child(list_row_icon(IconName::Plug))
                     .child(v_flex().flex_1().min_w(px(0.0)).gap_1()
-                        .child(heading("还没有自定义 MCP 服务"))
-                        .child(caption("填写启动命令与参数即可保存，无需先安装或测试连接。"))));
+                        .child(heading(text(messages::NO_MCP)))
+                        .child(caption(text(messages::MCP_SAVE_HINT)))));
             }
         }
         content = content.child(div().w_full().border_t_1()
             .border_color(rgb(ui_theme::BORDER_MUTED))
             .pt_3()
-            .child(caption("在“更多”中查看、编辑或移除服务。"))
-            .child(caption("工具权限在服务详情中配置；运行前确认外部读写。")));
+            .child(caption(text(messages::MCP_MORE_HINT)))
+            .child(caption(text(messages::MCP_PERMISSIONS))));
         content
     }
 
@@ -558,60 +562,60 @@ impl RepositoryView {
         let node_status = runtime.and_then(|info| info.node_version.as_ref()
             .zip(info.node_source)).map(|(version, source)| format!("v{version} · {source}"))
             .unwrap_or_else(|| if runtime.is_some_and(|info| info.system_checked) {
-                "未检测到 Node.js 20 或更新版本".into()
-            } else { "尚未主动检测本机 Node.js".into() });
+                text(messages::NODE_MISSING).into()
+            } else { text(messages::NODE_UNCHECKED).into() });
         let ready = runtime.is_some_and(|info| info.mcp_ready);
         let node_found = runtime.is_some_and(|info| info.node_version.is_some());
         let downloading = self.browser_runtime_downloading;
         let mut content = v_flex().w_full().min_w(px(0.0)).gap_4()
             .child(v_flex().gap_1()
-                .child(heading("浏览器 MCP 运行环境"))
-                .child(caption("浏览器 MCP 使用 Node.js；下载会优先复用本机兼容版本。")))
+                .child(heading(text(messages::BROWSER_RUNTIME)))
+                .child(caption(text(messages::RUNTIME_DESCRIPTION))))
             .child(card()
                 .child(h_flex().w_full().items_center().justify_between().gap_3()
                     .child(h_flex().flex_1().min_w(px(0.0)).items_center().gap_3()
                         .child(card_icon(IconName::Cpu))
                         .child(v_flex().flex_1().min_w(px(0.0)).gap_1()
-                            .child(heading("Node.js 20+ 环境"))
+                            .child(heading(text(messages::NODE_RUNTIME)))
                             .child(caption(node_status))))
-                    .child(status_text(if node_found { "已就绪" }
-                        else if runtime.is_some_and(|info| info.system_checked) { "未检测到" }
-                        else { "待检测" },
+                    .child(status_text(if node_found { text(messages::READY) }
+                        else if runtime.is_some_and(|info| info.system_checked) { text(messages::NOT_FOUND) }
+                        else { text(messages::UNCHECKED) },
                         node_found)))
                 // 来源行：设计稿把「来源」标签与取值、重新检测并排放在卡片底部。
                 .child(h_flex().w_full().items_center().justify_between().gap_3()
                     .child(h_flex().flex_1().min_w(px(0.0)).items_center().gap_3()
-                        .child(body("来源"))
+                        .child(body(text(messages::SOURCE)))
                         .child(caption(
                             // 来源取值在 `browser_runtime` 里已是中文文案；
                             // 未检测到时按设计稿显示回退方向。
                             runtime.and_then(|info| info.node_source)
                                 .map(|source| source.to_string())
-                                .unwrap_or_else(|| "本机 PATH → 应用数据目录".to_string()),
+                                .unwrap_or_else(|| text(messages::SOURCE_FALLBACK).to_string()),
                         )))
-                    .child(settings_command_button("ai-node-recheck", "重新检测", SettingsButtonTone::Secondary, !self.ai_extensions.loading && !downloading, cx)
+                    .child(settings_command_button("ai-node-recheck", text(messages::RECHECK), SettingsButtonTone::Secondary, !self.ai_extensions.loading && !downloading, cx)
                         .on_click({ let view = view.clone(); move |_, _, cx| {
                             view.update(cx, |this, cx| {
                                 this.inspect_ai_runtime();
                                 cx.notify();
                             });
                         }})))
-                .child(caption("缺少兼容版本时，可通过下方下载操作补齐环境。"))
+                .child(caption(text(messages::RUNTIME_MISSING_HINT)))
                 .when_some(runtime.and_then(|info| info.node_path.as_ref()), |this, path| {
                     this.child(caption(path.display().to_string()))
                 }))
             .child(card()
                 .child(h_flex().w_full().justify_between().gap_3()
-                    .child(heading("浏览器 MCP 运行组件"))
-                    .child(status_text(if ready { "已就绪" } else { "未安装" }, ready)))
-                .child(caption(if ready { "已就绪，可由工作流调用" } else {
-                    "尚未安装；点击后按需下载到应用数据目录"
+                    .child(heading(text(messages::BROWSER_COMPONENT)))
+                    .child(status_text(if ready { text(messages::READY) } else { text(messages::NOT_INSTALLED) }, ready)))
+                .child(caption(if ready { text(messages::RUNTIME_READY) } else {
+                    text(messages::RUNTIME_INSTALL_HINT)
                 }))
                 .child(h_flex().w_full().justify_end()
                     .child(settings_command_button("ai-runtime-download",
-                        if downloading { "下载中…" } else { "下载并启用" },
+                        if downloading { text(messages::DOWNLOADING) } else { text(messages::DOWNLOAD) },
                         SettingsButtonTone::Primary, !downloading && !ready, cx)
-                        .tooltip(if ready { "运行组件已就绪" } else if downloading { "正在下载运行组件" } else { "下载浏览器 MCP 运行组件" })
+                        .tooltip(if ready { text(messages::COMPONENT_READY) } else if downloading { text(messages::COMPONENT_DOWNLOADING) } else { text(messages::COMPONENT_DOWNLOAD) })
                         .on_click({ let view = view.clone(); move |_, _, cx| {
                             view.update(cx, |this, cx| {
                                 this.start_ai_runtime_download();
@@ -619,11 +623,11 @@ impl RepositoryView {
                             });
                         }}))));
         if let Some(notice) = &self.browser_runtime_notice {
-            content = content.child(caption(notice.clone()));
+            content = content.child(caption(resolve(notice)));
         }
         if let Some(error) = &self.ai_extensions.error {
-            content = content.child(error_text(error.clone()));
+            content = content.child(error_text(resolve(error)));
         }
-        content.child(caption("下载失败时可重试；无需手工安装 npm 或 npx。"))
+        content.child(caption(text(messages::RETRY_HINT)))
     }
 }

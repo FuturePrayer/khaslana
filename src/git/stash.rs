@@ -1,3 +1,4 @@
+use crate::types::domain_ui_resources;
 use std::path::Path;
 
 use git2::{DiffOptions, Repository, StashApplyOptions, StashFlags};
@@ -20,7 +21,7 @@ impl GitService {
     ) -> Result<RepositorySnapshot> {
         let changes = self.status_full(repo)?;
         if !self.conflicts(repo)?.is_empty() {
-            return Err(GitError::Message("存在冲突，无法创建贮藏".into()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_CREATE_A_STASH_WHILE_CONFLICTS_EXIST, &[])));
         }
         let has_stashable_change = changes.iter().any(|change| {
             change.staged.is_some()
@@ -33,15 +34,13 @@ impl GitService {
                 .iter()
                 .any(|change| matches!(change.unstaged, Some(ChangeState::Untracked)))
             {
-                return Err(GitError::Message(
-                    "当前只有未跟踪文件；如需贮藏请勾选“包含未跟踪文件”".into(),
-                ));
+                return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::ONLY_UNTRACKED_FILES_EXIST_SELECT_INCLUDE_UNTRACKED_FILES_TO_STASH_THEM, &[])));
             }
-            return Err(GitError::Message("当前没有可贮藏的更改".into()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THERE_ARE_NO_CHANGES_TO_STASH, &[])));
         }
 
         self.progress
-            .emit(OperationEvent::Started("正在贮藏当前修改".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::STASHING_CURRENT_CHANGES).into()));
         let signature = super::signature(repo)?;
         let mut flags = StashFlags::empty();
         if include_untracked {
@@ -60,19 +59,15 @@ impl GitService {
             repo, &signature, message, flags,
         )?;
         self.progress
-            .emit(OperationEvent::Finished("已贮藏当前修改".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::CURRENT_CHANGES_STASHED).into()));
         self.snapshot_after_operation(repo)
     }
 
     pub fn drop_stash(&self, repo: &mut Repository, index: usize) -> Result<RepositorySnapshot> {
         self.ensure_stash_index(repo, index)?;
-        self.progress.emit(OperationEvent::Started(format!(
-            "正在删除贮藏 stash@{{{index}}}"
-        )));
+        self.progress.emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::DELETING_STASH, &[("stash_ref", &format!("{}", format!("stash@{{{}}}", index)))])));
         repo.stash_drop(index)?;
-        self.progress.emit(OperationEvent::Finished(format!(
-            "已删除贮藏 stash@{{{index}}}"
-        )));
+        self.progress.emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::DELETED_STASH, &[("stash_ref", &format!("{}", format!("stash@{{{}}}", index)))])));
         self.snapshot_after_operation(repo)
     }
 
@@ -94,9 +89,7 @@ impl GitService {
         reinstate_index: bool,
     ) -> Result<RepositorySnapshot> {
         self.ensure_stash_index(repo, index)?;
-        self.progress.emit(OperationEvent::Started(format!(
-            "正在应用贮藏 stash@{{{index}}}"
-        )));
+        self.progress.emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::APPLYING_STASH, &[("stash_ref", &format!("{}", format!("stash@{{{}}}", index)))])));
         let mut options = StashApplyOptions::new();
         let apply_result = super::worktree_compat::apply_stash_preserving_locked_directories(
             repo,
@@ -111,17 +104,13 @@ impl GitService {
         {
             return Err(err.into());
         }
-        self.progress.emit(OperationEvent::Finished(format!(
-            "已应用贮藏 stash@{{{index}}}"
-        )));
+        self.progress.emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::APPLIED_STASH, &[("stash_ref", &format!("{}", format!("stash@{{{}}}", index)))])));
         Ok(snapshot)
     }
 
     pub fn pop_stash(&self, repo: &mut Repository, index: usize) -> Result<RepositorySnapshot> {
         self.ensure_stash_index(repo, index)?;
-        self.progress.emit(OperationEvent::Started(format!(
-            "正在弹出贮藏 stash@{{{index}}}"
-        )));
+        self.progress.emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::POPPING_STASH, &[("stash_ref", &format!("{}", format!("stash@{{{}}}", index)))])));
         // 不用 git_stash_pop：libgit2 的 pop 在恢复冲突时也会删除贮藏条目
         // （与 git 命令行“失败保留条目”不同），用户的兜底拷贝会丢。改为
         // 先 apply，仅在没有任何冲突时才删除条目。
@@ -130,9 +119,7 @@ impl GitService {
             // 有冲突：保留条目，交还用户在冲突工作台处理。
             return Ok(snapshot);
         }
-        self.progress.emit(OperationEvent::Finished(format!(
-            "已弹出贮藏 stash@{{{index}}}"
-        )));
+        self.progress.emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::POPPED_STASH, &[("stash_ref", &format!("{}", format!("stash@{{{}}}", index)))])));
         self.drop_stash(repo, index)
     }
 
@@ -248,7 +235,7 @@ impl GitService {
         if self.stashes(repo)?.iter().any(|stash| stash.index == index) {
             Ok(())
         } else {
-            Err(GitError::Message(format!("贮藏不存在：stash@{{{index}}}")))
+            Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::STASH_DOES_NOT_EXIST_STASH, &[("stash_ref", &format!("{}", format!("stash@{{{}}}", index)))])))
         }
     }
 

@@ -1,4 +1,7 @@
 //! 表单控件是字符串真值的投影；事件必须匹配仓库及字段 uid。
+#[path = "inputs_resources.rs"]
+mod deep_messages;
+
 use chrono::NaiveDate;
 use gpui::{Context, Entity, Focusable, IntoElement, SharedString, Window, prelude::*};
 use gpui_kit::component::{
@@ -97,9 +100,9 @@ impl RepositoryView {
         let input = &self.workflow_state.inputs[index];
         match &input.control {
             Some(WorkflowInputControl::Select(state)) => Select::new(state).w_full()
-                .placeholder("请选择").accessibility_label(input.label.clone()).cleanable(true).disabled(self.busy).into_any_element(),
+                .placeholder(khaslana::ui_i18n::text(deep_messages::SELECT_AN_OPTION)).accessibility_label(input.label.clone()).cleanable(true).disabled(self.busy).into_any_element(),
             Some(WorkflowInputControl::Date(state)) => DatePicker::new(state).w_full()
-                .placeholder("请选择日期").cleanable(true).disabled(self.busy).into_any_element(),
+                .placeholder(khaslana::ui_i18n::text(deep_messages::SELECT_A_DATE)).cleanable(true).disabled(self.busy).into_any_element(),
             _ => self.input(FieldId::WorkflowInput(index), false, window, cx).into_any_element(),
         }
     }

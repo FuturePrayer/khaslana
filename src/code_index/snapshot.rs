@@ -1,5 +1,6 @@
 //! 从目标提交的 Git 对象构建独立索引，不 checkout，也不读取工作区源码。
 
+use crate::types::domain_ui_resources;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -12,11 +13,11 @@ use super::pipeline::{
     GraphMerger, ParseOutput, PipelineOptions, build_structure_pass, parse_content,
 };
 use super::store::{CodeIndexMeta, CodeIndexStore, open_read_only_if_exists};
-use super::{Extractor, MAX_INDEX_FILES, PARSE_MAX_BYTES, err};
+use super::{Extractor, MAX_INDEX_FILES, PARSE_MAX_BYTES};
 use crate::types::Result;
 
 pub fn commit_index_path(data_dir: &Path, repo_path: &Path, commit: &str) -> Result<PathBuf> {
-    let oid = git2::Oid::from_str(commit).map_err(|error| err(format!("评审提交无效：{error}")))?;
+    let oid = git2::Oid::from_str(commit).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INVALID_REVIEW_COMMIT, &[("error", &format!("{}", error))])))?;
     let path = data_dir
         .join("code-index-snapshots")
         .join(crate::ai::review_store::repo_key(
@@ -25,7 +26,7 @@ pub fn commit_index_path(data_dir: &Path, repo_path: &Path, commit: &str) -> Res
         .join(oid.to_string())
         .join("index.db");
     std::fs::create_dir_all(path.parent().unwrap())
-        .map_err(|error| err(format!("创建评审索引目录失败：{error}")))?;
+        .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CREATE_THE_REVIEW_INDEX_DIRECTORY, &[("error", &format!("{}", error))])))?;
     Ok(path)
 }
 
@@ -44,7 +45,7 @@ pub fn ensure_commit_index(
         let _guard = match lock.try_lock() {
             Ok(guard) => guard,
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return Err(err("该提交的评审索引正在构建，请稍后重试")),
+            Err(std::sync::TryLockError::WouldBlock) => return Err(crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_REVIEW_INDEX_FOR_THIS_COMMIT_IS_BEING_BUILT_RETRY_LATER, &[]))),
         };
         if cancelled.load(Ordering::Relaxed) {
             return Ok(false);
@@ -94,7 +95,7 @@ fn build_commit_index(
     cancelled: &AtomicBool,
 ) -> Result<bool> {
     let repo = git2::Repository::open(repo_path)?;
-    let oid = git2::Oid::from_str(commit).map_err(|error| err(format!("评审提交无效：{error}")))?;
+    let oid = git2::Oid::from_str(commit).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INVALID_REVIEW_COMMIT, &[("error", &format!("{}", error))])))?;
     let tree = repo.find_commit(oid)?.tree()?;
     let mut files = Vec::new();
     let mut parsed = Vec::new();
@@ -106,7 +107,7 @@ fn build_commit_index(
             return TreeWalkResult::Abort;
         }
         let Ok(name) = entry.name() else {
-            issues.push(FileCoverage::new(prefix, "excluded", "非 UTF-8 路径"));
+            issues.push(FileCoverage::new(prefix, "excluded", "non_utf8_path"));
             return TreeWalkResult::Skip;
         };
         let path = format!("{prefix}{name}");
@@ -118,7 +119,7 @@ fn build_commit_index(
             issues.push(FileCoverage::new(
                 &path,
                 "excluded",
-                "目录或产物过滤、符号链接、子模块",
+                "filtered_snapshot_entry",
             ));
             return if directory {
                 TreeWalkResult::Skip
@@ -175,7 +176,7 @@ fn build_commit_index(
         return Ok(false);
     }
     if limit_hit {
-        return Err(err(format!("评审索引文件数超过 {MAX_INDEX_FILES} 个")));
+        return Err(crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_REVIEW_INDEX_EXCEEDS_THE_LIMIT_OF_FILES, &[("MAX_INDEX_FILES", &format!("{}", MAX_INDEX_FILES))])));
     }
     walked?;
     let project = repo_path

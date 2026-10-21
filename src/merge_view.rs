@@ -1,5 +1,8 @@
 //! IDEA 风格的普通合并状态条、完成和中止交互。
 
+#[path = "ui_resources/merge_view_messages.rs"]
+mod messages;
+
 use gpui::{Context, IntoElement, div, prelude::*, px};
 use khaslana::CommitMessage;
 
@@ -8,7 +11,7 @@ use crate::ui::theme::rgb;
 use crate::{DialogState, RepoTabState, RepositoryView, ui::theme as ui_theme};
 
 pub(crate) fn merge_banner_message(conflict_count: usize) -> Option<String> {
-    (conflict_count > 0).then(|| format!("合并进行中 · {conflict_count} 个冲突待解决"))
+    (conflict_count > 0).then(|| khaslana::ui_i18n::format(messages::MERGE_IN_PROGRESS_CONFLICT_COUNT_CONFLICTS_TO_RESOLVE, &[("conflict_count", &(conflict_count).to_string())]))
 }
 
 pub(crate) fn merge_can_finish(
@@ -22,9 +25,9 @@ pub(crate) fn merge_can_finish(
 
 pub(crate) fn merge_commit_button_label(merge_in_progress: bool) -> &'static str {
     if merge_in_progress {
-        "完成合并"
+        khaslana::ui_i18n::text(messages::COMPLETE_MERGE)
     } else {
-        "提交"
+        khaslana::ui_i18n::text(messages::COMMIT)
     }
 }
 
@@ -90,9 +93,7 @@ impl RepositoryView {
         if merge_allows_disruptive_action(self.merge_in_progress()) {
             return true;
         }
-        self.last_error = Some(format!(
-            "合并正在进行，不能{action}；请先完成合并或中止合并"
-        ));
+        self.last_error = Some(khaslana::ui_i18n::encode(messages::A_MERGE_IS_IN_PROGRESS_CANNOT_ACTION_COMPLETE_OR_ABORT, &[("action", &(action).to_string())]));
         false
     }
 
@@ -114,7 +115,7 @@ impl RepositoryView {
     pub(crate) fn finish_merge(&mut self) {
         let message = self.commit_message.value.trim().to_string();
         if message.is_empty() {
-            self.last_error = Some("需要填写合并提交信息".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::ENTER_A_MERGE_COMMIT_MESSAGE, &[]));
             return;
         }
         if self
@@ -122,10 +123,10 @@ impl RepositoryView {
             .as_ref()
             .is_some_and(|snapshot| !snapshot.conflicts.is_empty())
         {
-            self.last_error = Some("仍有冲突文件未解决，不能完成合并".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::UNRESOLVED_CONFLICT_FILES_REMAIN_CANNOT_COMPLETE_THE_MERGE, &[]));
             return;
         }
-        self.with_repo_blocking("合并已完成", move |service, repo| {
+        self.with_repo_blocking(crate::operation_ui_resources::MERGE_COMPLETED, move |service, repo| {
             service.finish_merge(repo, &CommitMessage::new(message))
         });
     }
@@ -138,7 +139,7 @@ impl RepositoryView {
 
     pub(crate) fn confirm_abort_merge(&mut self) {
         self.close_dialog();
-        self.with_repo_blocking("合并已中止", move |service, repo| {
+        self.with_repo_blocking(crate::operation_ui_resources::MERGE_ABORTED, move |service, repo| {
             service.abort_merge(repo)
         });
     }
@@ -172,7 +173,7 @@ impl RepositoryView {
                         .child(message),
                 )
                 .child(self.primary_button(
-                    "使用 IDEA 解决冲突",
+                    khaslana::ui_i18n::text(messages::RESOLVE_CONFLICTS_WITH_IDEA),
                     !self.busy,
                     |this, _, _| this.resolve_selected_conflict_with_intellij_idea(),
                     cx,
@@ -184,25 +185,25 @@ impl RepositoryView {
         &self,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("中止合并", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::ABORT_MERGE), cx)
             .w(px(520.0))
             .child(
                 div()
                     .text_size(px(13.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child("确定要中止当前合并吗？"),
+                    .child(khaslana::ui_i18n::text(messages::ABORT_THE_CURRENT_MERGE)),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::COLOR_ERROR_FOREGROUND))
-                    .child("本次合并产生的内容以及已经完成的冲突解决结果都会被丢弃。"),
+                    .child(khaslana::ui_i18n::text(messages::ALL_CHANGES_FROM_THIS_MERGE_INCLUDING_COMPLETED_CONFLICT_RESOLUTIONS_WILL)),
             )
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.danger_button(
-                        "中止合并",
+                        khaslana::ui_i18n::text(messages::ABORT_MERGE),
                         !self.busy,
                         |this, _, _| this.confirm_abort_merge(),
                         cx,

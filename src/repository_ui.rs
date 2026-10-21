@@ -1,5 +1,8 @@
 //! RepositoryView 的通用输入、菜单、差异与状态渲染。
 
+#[path = "repository_ui_resources.rs"]
+mod messages;
+
 use crate::*;
 use crate::ui::components::icon_button;
 use gpui_kit::base::{Button as BaseButton, FocusTrapElement};
@@ -173,7 +176,7 @@ impl RepositoryView {
         };
         BaseButton::new("repo-switcher-trigger")
             .disabled(!enabled)
-            .accessibility_label("切换仓库")
+            .accessibility_label(khaslana::ui_i18n::text(messages::SWITCH_REPOSITORY))
             .focus_visible(|this| this.border_1().border_color(rgb(ui_theme::PRIMARY)))
             .relative()
             .flex()
@@ -325,7 +328,7 @@ impl RepositoryView {
             .track_scroll(&switcher_handle)
             // ── 打开项目区 ──
             .when(!sections.open.is_empty(), |this| {
-                this.child(self.repo_switcher_section_header("打开项目"))
+                this.child(self.repo_switcher_section_header(khaslana::ui_i18n::text(messages::OPEN_PROJECTS)))
                     .children(sections.open.iter().map(|repo| {
                         self.repo_switcher_repo_item(repo.clone(), cx)
                             .into_any_element()
@@ -333,7 +336,7 @@ impl RepositoryView {
             })
             // ── 最近项目区 ──
             .when(!sections.recent.is_empty(), |this| {
-                this.child(self.repo_switcher_section_header("最近的项目"))
+                this.child(self.repo_switcher_section_header(khaslana::ui_i18n::text(messages::RECENT_PROJECTS)))
                     .children(sections.recent.iter().map(|repo| {
                         self.repo_switcher_repo_item(repo.clone(), cx)
                             .into_any_element()
@@ -349,7 +352,7 @@ impl RepositoryView {
                             .py_4()
                             .text_size(px(12.0))
                             .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                            .child("没有匹配的仓库"),
+                            .child(khaslana::ui_i18n::text(messages::NO_MATCHING_REPOSITORIES)),
                     )
                 },
             )
@@ -369,7 +372,7 @@ impl RepositoryView {
             .child(self.repo_switcher_action_item(
                 "repo-switcher-clone",
                 ToolbarIcon::Clone,
-                "克隆仓库…",
+                khaslana::ui_i18n::text(messages::CLONE_REPOSITORY),
                 |this, window, cx| {
                     this.close_repo_switcher();
                     this.open_clone_dialog(window, cx);
@@ -379,7 +382,7 @@ impl RepositoryView {
             .child(self.repo_switcher_action_item(
                 "repo-switcher-open",
                 ToolbarIcon::Open,
-                "打开仓库…",
+                khaslana::ui_i18n::text(messages::OPEN_REPOSITORY),
                 |this, _, _| {
                     this.close_repo_switcher();
                     this.browse_open();
@@ -405,7 +408,7 @@ impl RepositoryView {
                             icon_button(
                                 "repo-switcher-search-clear".into(),
                                 ToolbarIcon::Close,
-                                "清空仓库搜索",
+                                khaslana::ui_i18n::text(messages::CLEAR_REPOSITORY_SEARCH),
                                 true,
                             )
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -624,7 +627,7 @@ impl RepositoryView {
                                     .text_size(px(ui_theme::TYPE_PAGE_TITLE))
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                                    .child("设置中心"),
+                                    .child(khaslana::ui_i18n::text(messages::SETTINGS)),
                             )
                             .child(
                                 // 关闭按钮用 Kit 基础按钮：可 Tab 聚焦、
@@ -689,7 +692,7 @@ impl RepositoryView {
                 self,
                 "tag-menu",
                 "checkout-tag",
-                "检出标签",
+                khaslana::ui_i18n::text(messages::CHECK_OUT_TAG),
                 !self.busy && !self.merge_in_progress(),
                 {
                     let tag = menu.tag.clone();
@@ -701,7 +704,7 @@ impl RepositoryView {
                 self,
                 "tag-menu",
                 "browse-tag",
-                "浏览此标签",
+                khaslana::ui_i18n::text(messages::BROWSE_THIS_TAG),
                 !self.busy,
                 {
                     let tag = menu.tag.clone();
@@ -713,7 +716,7 @@ impl RepositoryView {
                 self,
                 "tag-menu",
                 "copy-name",
-                "复制标签名",
+                khaslana::ui_i18n::text(messages::COPY_TAG_NAME),
                 !self.busy,
                 {
                     let tag = menu.tag.clone();
@@ -726,7 +729,7 @@ impl RepositoryView {
                 self,
                 "tag-menu",
                 "push-tag",
-                "推送到远端...",
+                khaslana::ui_i18n::text(messages::PUSH_TO_REMOTE),
                 !self.busy && has_remotes,
                 {
                     let tag = menu.tag.clone();
@@ -738,7 +741,7 @@ impl RepositoryView {
                 self,
                 "tag-menu",
                 "delete-tag",
-                "删除标签",
+                khaslana::ui_i18n::text(messages::DELETE_TAG),
                 !self.busy,
                 {
                     let tag = menu.tag.clone();
@@ -750,7 +753,7 @@ impl RepositoryView {
                 self,
                 "tag-menu",
                 "delete-remote-tag",
-                "删除远端标签...",
+                khaslana::ui_i18n::text(messages::DELETE_REMOTE_TAG),
                 !self.busy && has_remotes,
                 {
                     let tag = menu.tag.clone();
@@ -796,7 +799,7 @@ impl RepositoryView {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .map(ToOwned::to_owned)
-            .unwrap_or_else(|| "该模板".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::THIS_TEMPLATE).to_string());
 
         glass_menu()
             .id("workflow-template-menu")
@@ -812,7 +815,7 @@ impl RepositoryView {
                 self,
                 "workflow-template-menu",
                 "edit-template",
-                "编辑此模板",
+                khaslana::ui_i18n::text(messages::EDIT_THIS_TEMPLATE),
                 !self.busy,
                 move |this, cx| {
                     this.workflow_template_context_menu = None;
@@ -825,7 +828,7 @@ impl RepositoryView {
                 self,
                 "workflow-template-menu",
                 "duplicate-template",
-                "复制为副本",
+                khaslana::ui_i18n::text(messages::DUPLICATE),
                 !self.busy,
                 move |this, cx| {
                     this.workflow_template_context_menu = None;
@@ -838,7 +841,7 @@ impl RepositoryView {
                 self,
                 "workflow-template-menu",
                 "bind-shortcut",
-                "绑定快捷键...",
+                khaslana::ui_i18n::text(messages::BIND_SHORTCUT),
                 !self.busy,
                 move |this, _cx| {
                     this.workflow_template_context_menu = None;
@@ -852,7 +855,7 @@ impl RepositoryView {
                 self,
                 "workflow-template-menu",
                 "delete-template",
-                "删除模板...",
+                khaslana::ui_i18n::text(messages::DELETE_TEMPLATE),
                 !self.busy,
                 move |this, _cx| {
                     this.workflow_template_context_menu = None;
@@ -880,7 +883,7 @@ impl RepositoryView {
     /// 工作流则同时清空详情区，避免残留失效引用。
     pub(crate) fn delete_workflow_template(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if crate::workflow_view::is_managed_workflow_template_path(&path) {
-            self.notify_error("远端模板不可直接删除，请在模板目录管理本地副本", cx);
+            self.notify_error(khaslana::ui_i18n::text(messages::REMOTE_TEMPLATES_CANNOT_BE_DELETED_DIRECTLY_MANAGE_LOCAL_COPIES_IN), cx);
             return;
         }
         match fs::remove_file(&path) {
@@ -896,11 +899,11 @@ impl RepositoryView {
                 // 模板删除后同步移除其快捷键绑定，键位当场释放。
                 self.remove_workflow_shortcut_binding(&file_name, cx);
                 self.refresh_workflow_templates();
-                self.status = format!("工作流模板已删除：{file_name}");
-                self.notify_success(format!("工作流模板已删除：{file_name}"), cx);
+                self.status = khaslana::ui_i18n::encode(messages::WORKFLOW_TEMPLATE_DELETED, &[("file_name", &(file_name).to_string())]);
+                self.notify_success(khaslana::ui_i18n::format(messages::WORKFLOW_TEMPLATE_DELETED, &[("file_name", &(file_name).to_string())]), cx);
             }
             Err(err) => {
-                self.last_error = Some(format!("工作流模板删除失败：{err}"));
+                self.last_error = Some(khaslana::ui_i18n::encode(messages::COULD_NOT_DELETE_WORKFLOW_TEMPLATE, &[("err", &(err).to_string())]));
             }
         }
     }
@@ -988,7 +991,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "copy-absolute-path",
-                    "复制绝对路径",
+                    khaslana::ui_i18n::text(messages::COPY_ABSOLUTE_PATH),
                     true,
                     {
                         let path = menu.path.clone();
@@ -1000,7 +1003,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "open-parent-directory",
-                    "打开文件所在目录",
+                    khaslana::ui_i18n::text(messages::OPEN_CONTAINING_FOLDER),
                     true,
                     {
                         let path = menu.path.clone();
@@ -1012,7 +1015,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "view-file-history",
-                    "查看文件历史",
+                    khaslana::ui_i18n::text(messages::VIEW_FILE_HISTORY),
                     true,
                     {
                         let path = menu.path.clone();
@@ -1024,7 +1027,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "blame-file",
-                    "追溯此文件",
+                    khaslana::ui_i18n::text(messages::VIEW_FILE_ATTRIBUTION),
                     true,
                     {
                         let path = menu.path.clone();
@@ -1037,7 +1040,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "unstage-selected",
-                    "取消暂存选定文件",
+                    khaslana::ui_i18n::text(messages::UNSTAGE_SELECTED_FILES),
                     selected_count > 0 && !self.busy,
                     |this| this.unstage_selected(),
                     cx,
@@ -1046,7 +1049,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "unstage-all",
-                    "取消暂存所有文件",
+                    khaslana::ui_i18n::text(messages::UNSTAGE_ALL_FILES),
                     all_count > 0 && !self.busy,
                     |this| this.unstage_all(),
                     cx,
@@ -1056,7 +1059,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "discard-single",
-                    "回滚更改...",
+                    khaslana::ui_i18n::text(messages::DISCARD_CHANGES),
                     can_discard,
                     {
                         let path = menu.path.clone();
@@ -1075,7 +1078,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "discard-selected",
-                    "回滚指定更改...",
+                    khaslana::ui_i18n::text(messages::DISCARD_SELECTED_CHANGES),
                     selected_count > 0 && can_discard,
                     {
                         let paths = selected_paths.clone();
@@ -1094,7 +1097,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "discard-all",
-                    "回滚全部更改...",
+                    khaslana::ui_i18n::text(messages::DISCARD_ALL_CHANGES),
                     all_count > 0 && can_discard,
                     {
                         let paths = all_paths.clone();
@@ -1114,7 +1117,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "view-file-history",
-                    "查看文件历史",
+                    khaslana::ui_i18n::text(messages::VIEW_FILE_HISTORY),
                     true,
                     {
                         let path = menu.path.clone();
@@ -1126,7 +1129,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "blame-file",
-                    "追溯此文件",
+                    khaslana::ui_i18n::text(messages::VIEW_FILE_ATTRIBUTION),
                     true,
                     {
                         let path = menu.path.clone();
@@ -1139,7 +1142,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "stage-selected",
-                    "暂存选定文件",
+                    khaslana::ui_i18n::text(messages::STAGE_SELECTED_FILES),
                     selected_count > 0 && !self.busy,
                     |this| this.stage_selected(),
                     cx,
@@ -1148,7 +1151,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "stage-all",
-                    "暂存所有文件",
+                    khaslana::ui_i18n::text(messages::STAGE_ALL_FILES),
                     all_count > 0 && !self.busy,
                     |this| this.stage_all(),
                     cx,
@@ -1158,7 +1161,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "discard-single",
-                    "回滚更改...",
+                    khaslana::ui_i18n::text(messages::DISCARD_CHANGES),
                     can_discard,
                     {
                         let path = menu.path.clone();
@@ -1177,7 +1180,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "discard-selected",
-                    "回滚指定更改...",
+                    khaslana::ui_i18n::text(messages::DISCARD_SELECTED_CHANGES),
                     selected_count > 0 && can_discard,
                     {
                         let paths = selected_paths;
@@ -1196,7 +1199,7 @@ impl RepositoryView {
                     self,
                     "change-menu",
                     "discard-all",
-                    "回滚全部更改...",
+                    khaslana::ui_i18n::text(messages::DISCARD_ALL_CHANGES),
                     all_count > 0 && can_discard,
                     {
                         let paths = all_paths;
@@ -1238,7 +1241,7 @@ impl RepositoryView {
                 self,
                 "file-path-menu",
                 "copy-absolute-path",
-                "复制绝对路径",
+                khaslana::ui_i18n::text(messages::COPY_ABSOLUTE_PATH),
                 true,
                 {
                     let path = menu.path.clone();
@@ -1250,7 +1253,7 @@ impl RepositoryView {
                 self,
                 "file-path-menu",
                 "open-parent-directory",
-                "打开文件所在目录",
+                khaslana::ui_i18n::text(messages::OPEN_CONTAINING_FOLDER),
                 true,
                 {
                     let path = menu.path.clone();
@@ -1263,7 +1266,7 @@ impl RepositoryView {
                 self,
                 "file-path-menu",
                 "view-file-history",
-                "查看文件历史",
+                khaslana::ui_i18n::text(messages::VIEW_FILE_HISTORY),
                 true,
                 {
                     let path = menu.path.clone();
@@ -1275,7 +1278,7 @@ impl RepositoryView {
                 self,
                 "file-path-menu",
                 "blame-file",
-                "追溯此文件",
+                khaslana::ui_i18n::text(messages::VIEW_FILE_ATTRIBUTION),
                 true,
                 {
                     let path = menu.path.clone();
@@ -1292,9 +1295,9 @@ impl RepositoryView {
         };
         let is_merge_commit = menu.parent_count > 1;
         let revert_label = if is_merge_commit {
-            "撤销合并提交..."
+            khaslana::ui_i18n::text(messages::REVERT_MERGE_COMMIT)
         } else {
-            "回滚提交"
+            khaslana::ui_i18n::text(messages::REVERT_COMMIT)
         };
         let can_change_repository = !self.busy && !self.merge_in_progress();
 
@@ -1324,15 +1327,15 @@ impl RepositoryView {
                     .py_1()
                     .text_size(px(11.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child(format!("提交 {}", menu.short_oid)),
+                    .child(khaslana::ui_i18n::format(messages::COMMIT, &[("arg0", &(menu.short_oid).to_string())])),
             )
             .child(menu_separator())
             .when(menu.is_unpushed, |this| {
                 let can_uncommit = can_change_repository && menu.is_head;
                 let label = if menu.is_head {
-                    "还原到暂存区..."
+                    khaslana::ui_i18n::text(messages::RESTORE_TO_STAGING_AREA)
                 } else {
-                    "还原到暂存区（仅支持最新提交）"
+                    khaslana::ui_i18n::text(messages::RESTORE_TO_STAGING_AREA_LATEST_COMMIT_ONLY)
                 };
                 this.child(context_menu_item(
                     self,
@@ -1358,7 +1361,7 @@ impl RepositoryView {
                 self,
                 "commit-menu",
                 "reset-soft",
-                "软重置分支到此次提交",
+                khaslana::ui_i18n::text(messages::SOFT_RESET_BRANCH_TO_THIS_COMMIT),
                 can_change_repository,
                 {
                     let oid = menu.oid.clone();
@@ -1377,7 +1380,7 @@ impl RepositoryView {
                 self,
                 "commit-menu",
                 "reset-mixed",
-                "混合重置分支到此次提交",
+                khaslana::ui_i18n::text(messages::MIXED_RESET_BRANCH_TO_THIS_COMMIT),
                 can_change_repository,
                 {
                     let oid = menu.oid.clone();
@@ -1396,7 +1399,7 @@ impl RepositoryView {
                 self,
                 "commit-menu",
                 "reset-hard",
-                "强制重置分支到此次提交",
+                khaslana::ui_i18n::text(messages::HARD_RESET_BRANCH_TO_THIS_COMMIT),
                 can_change_repository,
                 {
                     let oid = menu.oid.clone();
@@ -1437,9 +1440,9 @@ impl RepositoryView {
                 "commit-menu",
                 "cherry-pick",
                 if is_merge_commit {
-                    "拣选提交（暂不支持合并提交）"
+                    khaslana::ui_i18n::text(messages::CHERRY_PICK_COMMIT_MERGE_COMMITS_ARE_NOT_SUPPORTED)
                 } else {
-                    "拣选提交到当前分支"
+                    khaslana::ui_i18n::text(messages::CHERRY_PICK_COMMIT_ONTO_CURRENT_BRANCH)
                 },
                 can_change_repository && !is_merge_commit,
                 {
@@ -1453,7 +1456,7 @@ impl RepositoryView {
                 self,
                 "commit-menu",
                 "create-tag",
-                "在此提交上创建标签...",
+                khaslana::ui_i18n::text(messages::CREATE_TAG_AT_THIS_COMMIT),
                 can_change_repository,
                 {
                     let oid = menu.oid.clone();
@@ -1503,33 +1506,33 @@ impl RepositoryView {
             .child(self.credential_copy_menu_item(
                 "credential-menu",
                 "copy-name",
-                "复制名称",
+                khaslana::ui_i18n::text(messages::COPY_NAME),
                 name,
-                "凭据名称",
+                khaslana::ui_i18n::text(messages::CREDENTIAL_NAME),
                 cx,
             ))
             .child(self.credential_copy_menu_item(
                 "credential-menu",
                 "copy-target",
-                "复制站点/远端",
+                khaslana::ui_i18n::text(messages::COPY_HOST_REMOTE),
                 target,
-                "站点/远端",
+                khaslana::ui_i18n::text(messages::HOST_REMOTE),
                 cx,
             ))
             .child(self.credential_copy_menu_item(
                 "credential-menu",
                 "copy-username",
-                "复制用户名",
+                khaslana::ui_i18n::text(messages::COPY_USERNAME),
                 username,
-                "用户名",
+                khaslana::ui_i18n::text(messages::USERNAME),
                 cx,
             ))
             .child(self.credential_copy_menu_item(
                 "credential-menu",
                 "copy-key-path",
-                "复制 SSH Key 路径",
+                khaslana::ui_i18n::text(messages::COPY_SSH_KEY_PATH),
                 key_path,
-                "SSH Key 路径",
+                khaslana::ui_i18n::text(messages::SSH_KEY_PATH),
                 cx,
             ))
             .into_any_element()
@@ -1580,7 +1583,7 @@ impl RepositoryView {
             ) as Rc<dyn Fn(&mut RepositoryView, &mut Context<RepositoryView>)>
         };
         let selected = self.register_context_menu_action("commit-menu", "copy-sha", true, on_click);
-        context_menu_row("copy-sha", "复制 SHA 到剪贴板", true, selected)
+        context_menu_row("copy-sha", khaslana::ui_i18n::text(messages::COPY_SHA_TO_CLIPBOARD), true, selected)
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 cx.stop_propagation();
                 this.copy_commit_sha(oid.clone(), cx);
@@ -1809,12 +1812,12 @@ impl RepositoryView {
     }
 
     pub(crate) fn render_status(&self) -> impl IntoElement {
-        let status_label = if self.busy { "运行中" } else { "就绪" };
+        let status_label = if self.busy { khaslana::ui_i18n::text(messages::RUNNING) } else { khaslana::ui_i18n::text(messages::READY) };
         let branch = self
             .snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.head.as_deref())
-            .unwrap_or("未打开仓库");
+            .unwrap_or(khaslana::ui_i18n::text(messages::NO_REPOSITORY_OPEN));
         let staged_count = self.change_indexes.staged.len();
         let unstaged_count = self.change_indexes.unstaged.len();
         // 状态栏用 Kit StatusBar 的三区结构（left 固定左、center 伸缩、right 固定右）。
@@ -1869,9 +1872,9 @@ impl RepositoryView {
                         rgb(ui_theme::CONTENT_SECONDARY)
                     })
                     .child(if self.busy {
-                        format!("{}...", self.status)
+                        format!("{}...", khaslana::ui_i18n::resolve(&self.status))
                     } else {
-                        self.status.clone()
+                        khaslana::ui_i18n::resolve(&self.status)
                     }),
             )
             .when_some(self.last_error.clone(), |this, error| {
@@ -1880,14 +1883,14 @@ impl RepositoryView {
                         .max_w(px(360.0))
                         .truncate()
                         .text_color(rgb(ui_theme::FEEDBACK_ERROR_TEXT))
-                        .child(format!("错误：{error}")),
+                        .child(khaslana::ui_i18n::format(messages::ERROR, &[("error", &khaslana::ui_i18n::resolve(&error))])),
                 )
             })
             .right(
                 div()
                     .flex_none()
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child(format!("{unstaged_count} 未暂存 · {staged_count} 已暂存")),
+                    .child(khaslana::ui_i18n::format(messages::UNSTAGED_STAGED, &[("unstaged_count", &(unstaged_count).to_string()), ("staged_count", &(staged_count).to_string())])),
             )
             .right(
                 div()
@@ -1958,13 +1961,13 @@ impl RepositoryView {
                     .text_size(px(13.0))
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child("需要凭据"),
+                    .child(khaslana::ui_i18n::text(messages::CREDENTIALS_REQUIRED)),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child(format!("远端：{}", pending.request.url)),
+                    .child(khaslana::ui_i18n::format(messages::REMOTE, &[("arg0", &(pending.request.url).to_string())])),
             )
             .child(self.input(FieldId::CredentialUsername, true, window, cx))
             .when(
@@ -1976,7 +1979,7 @@ impl RepositoryView {
                 |this| {
                     this.child(self.toggle_row(
                         "credential-use-ssh-agent",
-                        "使用 SSH agent",
+                        khaslana::ui_i18n::text(messages::USE_SSH_AGENT),
                         self.credential_use_ssh_agent,
                         |this, _, _| this.credential_use_ssh_agent = !this.credential_use_ssh_agent,
                         cx,
@@ -1994,7 +1997,7 @@ impl RepositoryView {
             )
             .child(self.toggle_row(
                 "save-credential",
-                "保存到系统凭据管理器",
+                khaslana::ui_i18n::text(messages::SAVE_TO_SYSTEM_CREDENTIAL_MANAGER),
                 self.save_credential,
                 |this, _, _| this.save_credential = !this.save_credential,
                 cx,
@@ -2012,16 +2015,16 @@ impl RepositoryView {
                         div()
                             .text_size(px(12.0))
                             .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                            .child("复用范围"),
+                            .child(khaslana::ui_i18n::text(messages::REUSE_SCOPE)),
                     )
                     .child(self.credential_scope_button(
-                        "仅此远端",
+                        khaslana::ui_i18n::text(messages::THIS_REMOTE_ONLY),
                         CredentialScope::RemoteUrl,
                         self.save_credential,
                         cx,
                     ))
                     .child(self.credential_scope_button(
-                        "同站点",
+                        khaslana::ui_i18n::text(messages::SAME_HOST),
                         CredentialScope::Host,
                         self.save_credential,
                         cx,
@@ -2033,13 +2036,13 @@ impl RepositoryView {
                     .gap_2()
                     .justify_end()
                     .child(self.primary_button(
-                        "使用凭据",
+                        khaslana::ui_i18n::text(messages::USE_CREDENTIALS),
                         true,
                         |this, _, _| this.use_credentials(),
                         cx,
                     ))
                     .child(self.button(
-                        "取消",
+                        khaslana::ui_i18n::text(messages::CANCEL),
                         true,
                         |this, _, _| this.cancel_credential_request(),
                         cx,

@@ -1,0 +1,78 @@
+//! UI 事件状态与反馈的稳定资源。
+use khaslana::ui_i18n::UiMessage;
+pub const CONFLICT_APPLIED_RESOLVED: UiMessage = UiMessage::new("operation.conflict_applied_resolved", "冲突结果已应用并标记解决", "Conflict result applied and marked as resolved");
+pub const CONFLICT_DRAFT_APPLIED: UiMessage = UiMessage::new("operation.conflict_draft_applied", "冲突草稿已应用到工作区", "Conflict draft applied to worktree");
+pub const LOAD_FAILED: UiMessage = UiMessage::new("repository.background.failed", "仓库已打开，后台加载失败", "Repository opened, but background loading failed");
+pub const STATUS_COMPLETED: UiMessage = UiMessage::new("repository.status.completed", "变更已补全", "Changes fully loaded");
+pub const REFRESH_BRANCH_STARTED: UiMessage = UiMessage::new("operation.branch_status.started", "正在刷新分支状态", "Refreshing branch status");
+pub const REFRESH_BRANCH_COMPLETED: UiMessage = UiMessage::new("operation.branch_status.completed", "分支状态已刷新", "Branch status refreshed");
+pub const SSH_DISCOVERED: UiMessage = UiMessage::new("credentials.ssh.discovered", "已发现 {keys} 个 SSH 私钥，Agent 中有 {agents} 个身份", "Found {keys} SSH private keys and {agents} agent identities");
+pub const SSH_FAILED: UiMessage = UiMessage::new("credentials.ssh.failed", "本机 SSH 检测失败", "Local SSH detection failed");
+pub const LOGIN_BROWSER: UiMessage = UiMessage::new("credentials.login.browser", "请在浏览器中完成{provider}登录", "Complete {provider} sign-in in your browser");
+pub const GITHUB_SUCCESS: UiMessage = UiMessage::new("credentials.github.completed", "GitHub 登录成功，凭据已保存", "Signed in to GitHub; credentials saved");
+pub const GITEE_SUCCESS: UiMessage = UiMessage::new("credentials.gitee.completed", "Gitee 登录成功，凭据已保存（令牌将自动续期）", "Signed in to Gitee; credentials saved (token renews automatically)");
+pub const GITEE_EXPIRING: UiMessage = UiMessage::new("credentials.gitee.expiring", "Gitee 登录成功，凭据已保存（令牌约 1 天过期，过期后重新登录）", "Signed in to Gitee; credentials saved (token expires in about a day; sign in again afterward)");
+pub const GITEE_RENEWAL_FAILED: UiMessage = UiMessage::new("credentials.gitee.renewal_failed", "Gitee 令牌已保存，但自动续期材料写入失败，令牌过期后需重新登录", "Gitee token saved, but renewal data could not be saved. Sign in again when the token expires.");
+pub const LOGIN_FAILED: UiMessage = UiMessage::new("credentials.login.failed", "{provider} 登录失败：{error}", "{provider} sign-in failed: {error}");
+pub const SSH_CANCELLED: UiMessage = UiMessage::new("credentials.ssh.cancelled", "已取消选择 SSH 私钥", "SSH private key selection cancelled");
+pub const HISTORY_EMPTY: UiMessage = UiMessage::new("history.empty", "当前分支暂无提交记录", "The current branch has no commits");
+pub const HISTORY_LOADED: UiMessage = UiMessage::new("history.loaded", "提交记录已加载", "Commit history loaded");
+pub const COMMIT_FILES_EMPTY: UiMessage = UiMessage::new("history.files.empty", "该提交没有文件变更", "This commit has no file changes");
+pub const COMMIT_DIFF_LOADED: UiMessage = UiMessage::new("history.diff.loaded", "提交差异已加载", "Commit diff loaded");
+pub const STASH_FILES_EMPTY: UiMessage = UiMessage::new("stash.files.empty", "该贮藏没有文件变更", "This stash has no file changes");
+pub const STASH_DIFF_LOADED: UiMessage = UiMessage::new("stash.diff.loaded", "贮藏差异已加载", "Stash diff loaded");
+pub const STASH_FAILED: UiMessage = UiMessage::new("stash.preview.failed", "贮藏预览加载失败", "Could not load stash preview");
+pub const HISTORY_FAILED: UiMessage = UiMessage::new("history.failed", "提交记录加载失败", "Could not load commit history");
+pub const AHEAD_HEAD: UiMessage = UiMessage::new("history.highlight.ahead", "仅领先 HEAD", "Ahead of HEAD only");
+pub const ALL_ANCESTRY: UiMessage = UiMessage::new("history.highlight.ancestry", "全谱系", "Full ancestry");
+pub const HIGHLIGHTED: UiMessage = UiMessage::new("history.highlight.completed", "已高亮分支 {branch}（{mode}）", "Highlighted branch {branch} ({mode})");
+pub const ANCESTRY_FAILED: UiMessage = UiMessage::new("history.ancestry.failed", "分支谱系计算失败", "Could not calculate branch ancestry");
+pub const SUBMODULE_LOADED: UiMessage = UiMessage::new("submodule.list.loaded", "子模块列表已加载", "Submodule list loaded");
+pub const SUBMODULE_FAILED: UiMessage = UiMessage::new("submodule.list.failed", "子模块列表加载失败", "Could not load submodules");
+pub const SUBMODULE_CHECKED: UiMessage = UiMessage::new("submodule.remote.checked", "子模块远端状态已检查", "Submodule remote status checked");
+pub const SUBMODULE_CHECK_FAILED: UiMessage = UiMessage::new("submodule.remote.failed", "子模块远端状态检查失败", "Could not check submodule remote status");
+pub const BLAME_LOADED: UiMessage = UiMessage::new("blame.loaded", "文件追溯已加载", "File blame loaded");
+pub const BLAME_FAILED: UiMessage = UiMessage::new("blame.failed", "文件追溯加载失败", "Could not load file blame");
+pub const DIFF_FILES_LOADED: UiMessage = UiMessage::new("browse.files.loaded", "已加载 {count} 个差异文件", "Loaded {count} changed files");
+pub const NO_BRANCH_DIFF: UiMessage = UiMessage::new("browse.diff.empty", "该分支与当前分支没有差异", "This branch has no differences from the current branch");
+pub const FILE_LOADED: UiMessage = UiMessage::new("browse.file.loaded", "文件内容已加载", "File content loaded");
+pub const DIFF_LOADED: UiMessage = UiMessage::new("browse.diff.loaded", "文件差异已加载", "File diff loaded");
+pub const OPERATION_FAILED: UiMessage = UiMessage::new("operation.failed", "操作失败", "Operation failed");
+pub const CHECKOUT_BLOCKED: UiMessage = UiMessage::new("operation.checkout.blocked", "切换已被阻止", "Checkout blocked");
+pub const CREDENTIAL_REQUIRED: UiMessage = UiMessage::new("credentials.required", "需要凭据", "Credentials required");
+pub const CREDENTIAL_HINT: UiMessage = UiMessage::new("credentials.required_hint", "远端操作需要凭据，请在右上角填写", "This remote operation requires credentials. Enter them in the top-right corner.");
+pub const PREVIOUS_WORKFLOW: UiMessage = UiMessage::new("workflow.previous.completed", "此前加载的工作流已完成", "The previously loaded workflow completed");
+pub const WORKFLOW_CANCELLED: UiMessage = UiMessage::new("workflow.cancelled", "工作流已取消", "Workflow cancelled");
+pub const WORKFLOW_FAILED: UiMessage = UiMessage::new("workflow.failed", "工作流失败", "Workflow failed");
+pub const FOLDER_CANCELLED: UiMessage = UiMessage::new("repository.folder.cancelled", "已取消选择仓库文件夹", "Repository folder selection cancelled");
+pub const CLONE_FOLDER_CANCELLED: UiMessage = UiMessage::new("repository.clone_folder.cancelled", "已取消选择克隆父文件夹", "Clone parent folder selection cancelled");
+pub const IDEA_SELECTED: UiMessage = UiMessage::new("merge.idea.selected", "已选择 IntelliJ IDEA：{path}", "Selected IntelliJ IDEA: {path}");
+pub const IDEA_CANCELLED: UiMessage = UiMessage::new("merge.idea.cancelled", "已取消选择 IntelliJ IDEA 程序", "IntelliJ IDEA selection cancelled");
+pub const AI_SESSION_CHANGED: UiMessage = UiMessage::new("ai.workflow.session_changed", "AI 生成已结束，原编辑会话已关闭或更换，未覆盖当前模板", "AI generation finished, but the original editing session was closed or replaced. The current template was not overwritten.");
+pub const AI_NO_COMMIT: UiMessage = UiMessage::new("ai.commit.empty", "AI 未返回提交信息", "AI returned no commit message");
+pub const AI_EMPTY_COMMIT: UiMessage = UiMessage::new("ai.commit.empty_error", "AI 返回的提交信息为空", "The AI-generated commit message is empty");
+pub const AI_COMMIT_COMPLETED: UiMessage = UiMessage::new("ai.commit.completed", "AI 已生成提交信息", "AI commit message generated");
+pub const REVIEW_SAVED: UiMessage = UiMessage::new("ai.review.saved", "AI 评审已生成并保存到评审记录", "AI review generated and saved to review history");
+pub const REVIEW_UNSAVED: UiMessage = UiMessage::new("ai.review.unsaved", "AI 评审已生成（保存记录失败）", "AI review generated (could not save the record)");
+pub const BACKGROUND_REVIEW_SAVED: UiMessage = UiMessage::new("ai.review.background.saved", "后台 AI 评审完成，已保存到评审记录", "Background AI review completed and saved to review history");
+pub const BACKGROUND_REVIEW_UNSAVED: UiMessage = UiMessage::new("ai.review.background.unsaved", "后台 AI 评审完成（保存记录失败，历史弹窗中将看不到本次记录）", "Background AI review completed (could not save the record; it will not appear in history)");
+pub const AI_FAILED: UiMessage = UiMessage::new("ai.request.failed", "AI 请求失败", "AI request failed");
+pub const AI_FAILED_ERROR: UiMessage = UiMessage::new("ai.request.failed_error", "AI 请求失败：{error}", "AI request failed: {error}");
+pub const BACKGROUND_REVIEW_FAILED: UiMessage = UiMessage::new("ai.review.background.failed", "后台 AI 评审失败：{error}", "Background AI review failed: {error}");
+pub const AI_MERGE_GENERATING: UiMessage = UiMessage::new("ai.merge.generating", "正在生成 AI 合并建议（第 {segment}/{total} 段）", "Generating AI merge suggestions (segment {segment}/{total})");
+pub const AI_MERGE_CHANGED: UiMessage = UiMessage::new("ai.merge.changed", "AI 建议已返回，结果已变化；更多菜单可复制保留的建议", "AI suggestions returned, but the result has changed. Copy the retained suggestions from More.");
+pub const AI_MERGE_APPLIED: UiMessage = UiMessage::new("ai.merge.applied", "已填入 AI 合并建议，请检查后应用", "AI merge suggestions inserted. Review them before applying.");
+pub const AI_MERGE_STALE: UiMessage = UiMessage::new("ai.merge.stale", "AI 合并建议已返回，但该文件已不在冲突列表", "AI merge suggestions returned, but this file is no longer in the conflict list");
+pub const UPDATE_FOUND: UiMessage = UiMessage::new("update.found", "发现新版本 v{version}", "New version v{version} available");
+pub const UPDATE_READY: UiMessage = UiMessage::new("update.ready", "更新 v{version} 已准备就绪", "Update v{version} is ready");
+pub const UPDATE_FAILED: UiMessage = UiMessage::new("update.failed", "更新失败", "Update failed");
+pub const UPDATE_FAILED_ERROR: UiMessage = UiMessage::new("update.failed_error", "更新失败：{error}", "Update failed: {error}");
+pub const TASK_INTERRUPTED: UiMessage = UiMessage::new("task.interrupted", "后台任务异常，请重新测试连接", "The background task failed. Test the connection again.");
+pub const TASK_FAILED: UiMessage = UiMessage::new("task.failed", "后台任务异常", "Background task failed");
+pub const TASK_RESET: UiMessage = UiMessage::new("task.reset", "后台任务异常退出，已复位操作状态：{message}", "The background task exited unexpectedly. Operation state has been reset: {message}");
+
+#[cfg(test)]
+#[test]
+fn resources_have_unique_keys_and_matching_parameters() {
+    khaslana::ui_i18n::validate(&[CONFLICT_APPLIED_RESOLVED, CONFLICT_DRAFT_APPLIED, LOAD_FAILED, STATUS_COMPLETED, REFRESH_BRANCH_STARTED, REFRESH_BRANCH_COMPLETED, SSH_DISCOVERED, SSH_FAILED, LOGIN_BROWSER, GITHUB_SUCCESS, GITEE_SUCCESS, GITEE_EXPIRING, GITEE_RENEWAL_FAILED, LOGIN_FAILED, SSH_CANCELLED, HISTORY_EMPTY, HISTORY_LOADED, COMMIT_FILES_EMPTY, COMMIT_DIFF_LOADED, STASH_FILES_EMPTY, STASH_DIFF_LOADED, STASH_FAILED, HISTORY_FAILED, AHEAD_HEAD, ALL_ANCESTRY, HIGHLIGHTED, ANCESTRY_FAILED, SUBMODULE_LOADED, SUBMODULE_FAILED, SUBMODULE_CHECKED, SUBMODULE_CHECK_FAILED, BLAME_LOADED, BLAME_FAILED, DIFF_FILES_LOADED, NO_BRANCH_DIFF, FILE_LOADED, DIFF_LOADED, OPERATION_FAILED, CHECKOUT_BLOCKED, CREDENTIAL_REQUIRED, CREDENTIAL_HINT, PREVIOUS_WORKFLOW, WORKFLOW_CANCELLED, WORKFLOW_FAILED, FOLDER_CANCELLED, CLONE_FOLDER_CANCELLED, IDEA_SELECTED, IDEA_CANCELLED, AI_SESSION_CHANGED, AI_NO_COMMIT, AI_EMPTY_COMMIT, AI_COMMIT_COMPLETED, REVIEW_SAVED, REVIEW_UNSAVED, BACKGROUND_REVIEW_SAVED, BACKGROUND_REVIEW_UNSAVED, AI_FAILED, AI_FAILED_ERROR, BACKGROUND_REVIEW_FAILED, AI_MERGE_GENERATING, AI_MERGE_CHANGED, AI_MERGE_APPLIED, AI_MERGE_STALE, UPDATE_FOUND, UPDATE_READY, UPDATE_FAILED, UPDATE_FAILED_ERROR, TASK_INTERRUPTED, TASK_FAILED, TASK_RESET]).unwrap();
+}

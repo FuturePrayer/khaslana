@@ -1,6 +1,74 @@
 use super::*;
 
 #[test]
+fn all_prompt_language_pairs_preserve_payload_and_contracts() {
+    let payload = "用户原文 Keep ${target} 中文路径/README.md";
+    for system in [Language::ZhCn, Language::En] {
+        for output in [Language::ZhCn, Language::En] {
+            let languages = TaskLanguages { system, output };
+            let (commit, user) = commit_message_prompts_with_languages(payload, Some(payload), languages);
+            assert!(commit.content.ends_with(languages.output_instruction()));
+            assert!(user.content.contains(payload));
+            assert_eq!(commit.role, ChatRole::System);
+            assert_eq!(user.role, ChatRole::User);
+            let (merge, user) = conflict_merge_prompts_with_languages("中文.rs", payload, Some((2, 3)), languages);
+            assert!(merge.content.ends_with(languages.output_instruction()));
+            assert!(merge.content.contains("<<<<<<<"));
+            assert!(user.content.contains(payload));
+            assert!(user.content.contains("2/3"));
+            for version in [WorkflowPromptVersion::V1, WorkflowPromptVersion::V2] {
+                let (workflow, user) = workflow_template_prompts_with_languages(payload, Some(payload), version, languages);
+                assert!(workflow.content.ends_with(languages.output_instruction()));
+                assert!(user.content.contains(payload));
+                assert!(workflow.content.contains("filterBranches"));
+                let expected = match (system, version) {
+                    (Language::ZhCn, WorkflowPromptVersion::V1) => "version 字段恒为 1",
+                    (Language::ZhCn, WorkflowPromptVersion::V2) => "version 字段恒为 2",
+                    (Language::En, WorkflowPromptVersion::V1) => "version must be 1",
+                    (Language::En, WorkflowPromptVersion::V2) => "version must be 2",
+                };
+                assert!(workflow.content.contains(expected));
+                if system == Language::En {
+                    assert!(!workflow.content.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)));
+                }
+            }
+            if system == Language::En {
+                assert!(commit.content.starts_with("You are"));
+                assert!(merge.content.starts_with("You are"));
+            }
+        }
+    }
+}
+
+#[test]
+fn segmented_merge_keeps_language_snapshot_and_assistant_history_verbatim() {
+    for system in [Language::ZhCn, Language::En] {
+        for output in [Language::ZhCn, Language::En] {
+            let languages = TaskLanguages { system, output };
+            let (first_system, first) = conflict_merge_prompts_with_languages("中文.rs", "段一\n", Some((1, 2)), languages);
+            let (second_system, second) = conflict_merge_prompts_with_languages("中文.rs", "段二\n", Some((2, 2)), languages);
+            assert_eq!(first_system, second_system);
+            let history = vec![(first, ChatMessage { role: ChatRole::Assistant, content: "原样 resolved\n".into() })];
+            let messages = crate::ai::merge::build_segment_messages(second_system, &history, second, 20_000);
+            assert!(messages[0].content.ends_with(languages.output_instruction()));
+            assert_eq!(messages[2].content, "原样 resolved\n");
+            assert!(messages[3].content.contains("段二\n"));
+        }
+    }
+}
+
+#[test]
+fn english_workflow_reference_covers_all_actions_and_expression_methods() {
+    for token in ["checkout", "fetch", "pull", "createBranch", "guardRemoteBranch", "merge", "push",
+        "ensureClean", "assertBranch", "filterBranches", "deleteBranches", "mcp.call", "skill.run", "js.run",
+        "requireCleanWorktree", "browserGuard", "autoDiscover", "cachedTools", "saveAs", "dateGroup",
+        "olderThanMonths", "dryRun", "skipCurrent", "run.sourceKind", "git.initialBranch",
+        "compact", "nth:index", "replace:from:to", "slug", "suffix:n", "alt"] {
+        assert!(WORKFLOW_DOC_EN.contains(token), "missing English reference token: {token}");
+    }
+}
+
+#[test]
 fn commit_message_prompts_contains_diff_and_system_rules() {
     let (system, user) = commit_message_prompts("diff --git a/x b/x", None);
     assert_eq!(system.role, ChatRole::System);

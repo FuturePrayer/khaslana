@@ -7,12 +7,12 @@
 //! 风险标签移植参考项目 `cbm_hop_to_risk`：hop 1→CRITICAL / 2→HIGH /
 //! 3→MEDIUM / ≥4→LOW——离改动越近的调用方越需要优先审查。
 
+use crate::types::domain_ui_resources;
 use std::collections::HashSet;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::err;
 use super::graph::NodeLabel;
 use crate::types::Result;
 
@@ -293,7 +293,7 @@ pub fn index_overview(db_path: &Path) -> Result<IndexOverview> {
 /// git2 statuses 一次给出）；提供 base_branch 时额外并入
 /// merge-base(base)...HEAD 的已提交差异（三点语义）。
 pub fn changed_files_via_git(repo_root: &Path, base_branch: Option<&str>) -> Result<Vec<String>> {
-    let repo = git2::Repository::open(repo_root).map_err(|e| err(format!("打开仓库失败：{e}")))?;
+    let repo = git2::Repository::open(repo_root).map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_OPEN_THE_REPOSITORY, &[("e", &format!("{}", e))])))?;
     let mut files: HashSet<String> = HashSet::new();
 
     let mut options = git2::StatusOptions::new();
@@ -304,7 +304,7 @@ pub fn changed_files_via_git(repo_root: &Path, base_branch: Option<&str>) -> Res
         .exclude_submodules(true);
     let statuses = repo
         .statuses(Some(&mut options))
-        .map_err(|e| err(format!("读取工作区状态失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_WORKING_TREE_STATUS, &[("e", &format!("{}", e))])))?;
     for entry in statuses.iter() {
         // git2 0.21 的 StatusEntry::path() 返回 Result<&str>。
         if let Ok(path) = entry.path() {
@@ -317,24 +317,24 @@ pub fn changed_files_via_git(repo_root: &Path, base_branch: Option<&str>) -> Res
         let base_commit = repo
             .revparse_single(base)
             .and_then(|obj| obj.peel_to_commit())
-            .map_err(|e| err(format!("无法解析基线分支 {base}：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_RESOLVE_BASELINE_BRANCH, &[("base", &format!("{}", base)), ("e", &format!("{}", e))])))?;
         let head_commit = repo
             .head()
             .and_then(|head| head.peel_to_commit())
-            .map_err(|e| err(format!("无法解析 HEAD：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_RESOLVE_HEAD, &[("e", &format!("{}", e))])))?;
         let merge_base = repo
             .merge_base(base_commit.id(), head_commit.id())
-            .map_err(|e| err(format!("计算 merge-base 失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_COMPUTE_MERGE_BASE, &[("e", &format!("{}", e))])))?;
         let base_tree = repo
             .find_commit(merge_base)
             .and_then(|commit| commit.tree())
-            .map_err(|e| err(format!("读取基线树失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_THE_BASELINE_TREE, &[("e", &format!("{}", e))])))?;
         let head_tree = head_commit
             .tree()
-            .map_err(|e| err(format!("读取 HEAD 树失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_THE_HEAD_TREE, &[("e", &format!("{}", e))])))?;
         let diff = repo
             .diff_tree_to_tree(Some(&base_tree), Some(&head_tree), None)
-            .map_err(|e| err(format!("生成基线差异失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_GENERATE_THE_BASELINE_DIFF, &[("e", &format!("{}", e))])))?;
         for delta in diff.deltas() {
             if let Some(path) = delta.new_file().path() {
                 files.insert(path.to_string_lossy().replace('\\', "/"));

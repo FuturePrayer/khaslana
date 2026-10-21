@@ -1,4 +1,7 @@
 //! V2 动作参数适配。已识别字段进入表单，其余字段保留在高级参数中，避免重存丢失守卫。
+#[path = "v2_resources.rs"]
+mod deep_messages;
+
 use super::*;
 use std::collections::HashMap;
 use serde_json::{Map, Value};
@@ -79,13 +82,13 @@ impl InvokeEditorData {
     pub(super) fn build(&self) -> Result<WorkflowStep, String> {
         use WorkflowStepSlot::*;
         let mut arguments: Value = json5::from_str(self.value(Arguments))
-            .map_err(|error| format!("高级参数不是有效的 JSON5：{error}"))?;
-        let object = arguments.as_object_mut().ok_or("高级参数必须是对象")?;
+            .map_err(|error| khaslana::ui_i18n::encode(deep_messages::ADVANCED_ARGUMENTS_ARE_NOT_VALID_JSON5, &[("error", &(error).to_string())]))?;
+        let object = arguments.as_object_mut().ok_or_else(|| khaslana::ui_i18n::encode(deep_messages::ADVANCED_ARGUMENTS_MUST_BE_AN_OBJECT, &[]))?;
         for (slot, key, json) in self.parameters() {
             let text = self.value(slot);
             if !text.is_empty() {
                 let value = if json {
-                    json5::from_str(text).map_err(|error| format!("{}格式错误：{error}", slot.label()))?
+                    json5::from_str(text).map_err(|error| khaslana::ui_i18n::encode_with_messages(deep_messages::INVALID_FORMAT, &[("error", &error.to_string())], &[("value0", &khaslana::ui_i18n::encode(slot.label_message(), &[]))]))?
                 } else {
                     Value::String(text.into())
                 };
@@ -99,7 +102,7 @@ impl InvokeEditorData {
             _ => &[],
         };
         for slot in required {
-            if self.value(*slot).trim().is_empty() { return Err(format!("请填写{}", slot.label())); }
+            if self.value(*slot).trim().is_empty() { return Err(khaslana::ui_i18n::encode_with_messages(deep_messages::ENTER, &[], &[("value0", &khaslana::ui_i18n::encode(slot.label_message(), &[]))])); }
         }
         Ok(WorkflowStep::Invoke {
             id: self.value(StepId).trim().into(),
@@ -111,8 +114,8 @@ impl InvokeEditorData {
 
     pub(super) fn title(&self) -> &str {
         match self.value(WorkflowStepSlot::Uses) {
-            "mcp.call" => "MCP 工具",
-            "js.run" => "JavaScript 脚本",
+            "mcp.call" => khaslana::ui_i18n::text(deep_messages::MCP_TOOL),
+            "js.run" => khaslana::ui_i18n::text(deep_messages::JAVASCRIPT_SCRIPT),
             "skill.run" => "AI Skill",
             other => other,
         }

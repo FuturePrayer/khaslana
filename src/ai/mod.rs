@@ -11,6 +11,7 @@
 //
 // 本模块不含 GPUI 依赖；UI 接入在 src/ai_view.rs。
 
+pub(crate) mod messages;
 pub mod client;
 pub mod config;
 pub mod merge;
@@ -32,7 +33,8 @@ pub use merge::{
 };
 pub use prompt::{
     ChatMessage, ChatRole, commit_message_prompts, conflict_merge_prompts,
-    workflow_template_prompts,
+    workflow_template_prompts, commit_message_prompts_with_languages,
+    conflict_merge_prompts_with_languages, workflow_template_prompts_with_languages, WorkflowPromptVersion,
 };
 pub use review::{AiReviewResult, AiReviewStep};
 pub use review_agent::{AgentEvent, ReviewAgentInput, file_diff_to_patch_text, run_review_agent};

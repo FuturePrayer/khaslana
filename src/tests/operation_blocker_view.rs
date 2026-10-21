@@ -70,11 +70,12 @@ fn operation_blocker_renders_only_when_modal_and_busy_and_delay_elapsed() {
 }
 
 #[test]
-fn operation_blocker_message_wraps_remote_push_target() {
-    let message = "正在推送 dev_wzf_20260609_引进新保单检视系统 到 origin/dev_wzf_20260609_引进新保单检视系统";
-
-    assert_eq!(
-        wrap_operation_message(message),
-        "正在推送 dev_wzf_20260609_引进新保单检视系统 到\norigin/dev_wzf_20260609_引进新保单检视系统"
-    );
+fn operation_blocker_message_preserves_user_data_and_leaves_wrapping_to_layout() {
+    for message in [
+        "正在推送 feature/包含 到 的分支 到 origin/feature",
+        "Pushing feature/from to origin/feature",
+        "explicit\nline break",
+    ] {
+        assert_eq!(wrap_operation_message(message), message);
+    }
 }

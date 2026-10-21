@@ -1,3 +1,6 @@
+#[path = "ui_resources/commit_graph_view_messages.rs"]
+mod messages;
+
 // 提交图谱页（MainMode::CommitGraph）：拓扑专注型的独立页面。
 //
 // 图谱工具行和泳道列表由提交记录页与独立图谱页共用；独立页保留轻量详情卡。
@@ -448,9 +451,9 @@ impl RepositoryView {
             .flex_1()
             .min_w(px(0.0))
             .min_h(px(0.0))
-            .child(page_header("提交图谱", Some("分支拓扑与动向追踪")).child(
+            .child(page_header(khaslana::ui_i18n::text(messages::COMMIT_GRAPH), Some(khaslana::ui_i18n::text(messages::BRANCH_TOPOLOGY_AND_LINEAGE_TRACKING))).child(
                 command_group().child(self.button(
-                    "关闭",
+                    khaslana::ui_i18n::text(messages::CLOSE),
                     true,
                     |this, _window, _cx| {
                         this.close_commit_graph();
@@ -481,20 +484,20 @@ impl RepositoryView {
         let highlight_branch = self.commit_graph.highlight_branch.clone();
         let highlight_active = highlight_branch.is_some();
         let trigger_label = match &highlight_branch {
-            Some(branch) => format!("高亮：{branch} ▾"),
-            None => "分支高亮 ▾".to_string(),
+            Some(branch) => khaslana::ui_i18n::format(messages::HIGHLIGHT_BRANCH, &[("branch", &(branch).to_string())]),
+            None => khaslana::ui_i18n::text(messages::BRANCH_HIGHLIGHT).to_string(),
         };
         let trigger_tooltip = if self.commit_graph.trace_loading {
-            "正在计算分支谱系...".to_string()
+            khaslana::ui_i18n::text(messages::COMPUTING_BRANCH_LINEAGE).to_string()
         } else {
-            "选择要追踪动向的本地分支；谱系内提交保持高亮，其余淡化".to_string()
+            khaslana::ui_i18n::text(messages::SELECT_A_LOCAL_BRANCH_TO_TRACK_COMMITS_IN_ITS_LINEAGE).to_string()
         };
         let truncated_hint = self
             .commit_graph
             .trace
             .as_ref()
             .filter(|trace| trace.truncated)
-            .map(|_| format!("已高亮前 {} 个提交", khaslana::git::COMMIT_TRACE_OID_LIMIT));
+            .map(|_| khaslana::ui_i18n::format(messages::FIRST_COMMIT_TRACE_OID_LIMIT_COMMITS_HIGHLIGHTED, &[("COMMIT_TRACE_OID_LIMIT", &(khaslana::git::COMMIT_TRACE_OID_LIMIT).to_string())]));
 
         div()
             .flex()
@@ -522,7 +525,7 @@ impl RepositoryView {
                     // 选中态（history_scope 单值），互斥且是一个视觉整体。
                     .child(scope_segment_option(
                         "commit-graph-scope-current",
-                        "当前分支",
+                        khaslana::ui_i18n::text(messages::CURRENT_BRANCH),
                         self.history_scope == khaslana::HistoryScope::CurrentBranch,
                         |this| this.set_history_scope(khaslana::HistoryScope::CurrentBranch),
                         cx,
@@ -536,7 +539,7 @@ impl RepositoryView {
                     )
                     .child(scope_segment_option(
                         "commit-graph-scope-all",
-                        "所有分支",
+                        khaslana::ui_i18n::text(messages::ALL_BRANCHES),
                         self.history_scope == khaslana::HistoryScope::AllRefs,
                         |this| this.set_history_scope(khaslana::HistoryScope::AllRefs),
                         cx,
@@ -598,7 +601,7 @@ impl RepositoryView {
                     highlight_active,
                 )
                 .when(!highlight_active, |this| {
-                    this.tooltip(move |_window, cx| tooltip_text("先选择分支高亮后可用", cx))
+                    this.tooltip(move |_window, cx| tooltip_text(khaslana::ui_i18n::text(messages::SELECT_A_BRANCH_HIGHLIGHT_FIRST), cx))
                 })
                 .when(highlight_active, |this| {
                     this.on_click(cx.listener(|this, _event, _window, cx| {
@@ -606,7 +609,7 @@ impl RepositoryView {
                         cx.notify();
                     }))
                 })
-                .child("仅领先 HEAD"),
+                .child(khaslana::ui_i18n::text(messages::ONLY_AHEAD_OF_HEAD)),
             )
             .child(
                 segmented_button(
@@ -618,7 +621,7 @@ impl RepositoryView {
                     this.toggle_commit_graph_dim_merges();
                     cx.notify();
                 }))
-                .child("淡化合并提交"),
+                .child(khaslana::ui_i18n::text(messages::DIM_MERGE_COMMITS)),
             )
             .when_some(truncated_hint, |this, hint| {
                 this.child(
@@ -635,7 +638,7 @@ impl RepositoryView {
                         .flex_none()
                         .text_size(px(ui_theme::TYPE_META))
                         .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                        .child("谱系计算中..."),
+                        .child(khaslana::ui_i18n::text(messages::COMPUTING_LINEAGE)),
                 )
             })
             .child(div().flex_1().min_w(px(0.0)))
@@ -682,7 +685,7 @@ impl RepositoryView {
         }
         let mut rows: Vec<BranchMenuRow> = Vec::new();
         if !local_branches.is_empty() || !remote_branches.is_empty() || !remote_loading {
-            rows.push(BranchMenuRow::GroupLabel("本地分支"));
+            rows.push(BranchMenuRow::GroupLabel(khaslana::ui_i18n::text(messages::LOCAL_BRANCHES)));
             rows.extend(
                 (0..local_branches.len()).map(|group_index| BranchMenuRow::Branch {
                     group_index,
@@ -690,7 +693,7 @@ impl RepositoryView {
                 }),
             );
             if !remote_branches.is_empty() || remote_loading {
-                rows.push(BranchMenuRow::GroupLabel("远端分支"));
+                rows.push(BranchMenuRow::GroupLabel(khaslana::ui_i18n::text(messages::REMOTE_BRANCHES)));
                 rows.extend(
                     (0..remote_branches.len()).map(|group_index| BranchMenuRow::Branch {
                         group_index,
@@ -786,7 +789,7 @@ impl RepositoryView {
                                         .py_1()
                                         .text_size(px(11.0))
                                         .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                        .child("远端分支加载中...")
+                                        .child(khaslana::ui_i18n::text(messages::LOADING_REMOTE_BRANCHES))
                                         .into_any_element(),
                                     _ => div()
                                         .id("commit-graph-branch-empty")
@@ -794,7 +797,7 @@ impl RepositoryView {
                                         .py_1()
                                         .text_size(px(11.0))
                                         .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                        .child("没有匹配的分支")
+                                        .child(khaslana::ui_i18n::text(messages::NO_MATCHING_BRANCHES))
                                         .into_any_element(),
                                 };
                                 // 固定槽位保证 uniform_list 等高约束。
@@ -835,7 +838,7 @@ impl RepositoryView {
         // "off" 是关闭高亮的哨兵值，与任何真实分支名（含 "/"）不冲突。
         let is_off = branch == "off";
         let label = if is_off {
-            "关闭高亮".to_string()
+            khaslana::ui_i18n::text(messages::CLEAR_HIGHLIGHT).to_string()
         } else if selected {
             format!("✓ {branch}")
         } else {
@@ -924,11 +927,11 @@ impl RepositoryView {
                             .map(|row| {
                                 if indices_for_rows.is_empty() {
                                     let placeholder = if this.history_loading.commits {
-                                        "提交记录加载中..."
+                                        khaslana::ui_i18n::text(messages::LOADING_COMMIT_HISTORY)
                                     } else if this.repo_path.is_none() {
-                                        "请先打开一个仓库"
+                                        khaslana::ui_i18n::text(messages::OPEN_A_REPOSITORY_FIRST)
                                     } else {
-                                        "没有匹配的提交"
+                                        khaslana::ui_i18n::text(messages::NO_MATCHING_COMMITS)
                                     };
                                     return placeholder_row(placeholder).into_any_element();
                                 }
@@ -945,9 +948,9 @@ impl RepositoryView {
                                         .py_1()
                                         .child(this.button(
                                             if this.history_loading.commits {
-                                                "加载中..."
+                                                khaslana::ui_i18n::text(messages::LOADING)
                                             } else {
-                                                "加载更多"
+                                                khaslana::ui_i18n::text(messages::LOAD_MORE)
                                             },
                                             !this.history_loading.commits,
                                             |this, _, _| this.load_more_history(),
@@ -1102,9 +1105,9 @@ impl RepositoryView {
                 .flex_col()
                 .flex_none()
                 .h(px(COMMIT_GRAPH_DETAILS_HEIGHT))
-                .child(section_header_action("提交详情", None))
+                .child(section_header_action(khaslana::ui_i18n::text(messages::COMMIT_DETAILS), None))
                 .child(panel_empty_row(
-                    "点击泳道行选中提交，查看完整信息",
+                    khaslana::ui_i18n::text(messages::SELECT_A_LANE_ROW_TO_VIEW_FULL_COMMIT_DETAILS),
                     COMMIT_GRAPH_DETAILS_HEIGHT - 36.0,
                     PlaceholderAlign::Center,
                 ))
@@ -1112,11 +1115,11 @@ impl RepositoryView {
         };
 
         let header_title = if collapsed {
-            format!("提交详情 · {}", commit.summary)
+            khaslana::ui_i18n::format(messages::COMMIT_DETAILS_SUMMARY, &[("summary", &(commit.summary).to_string())])
         } else {
-            "提交详情".to_string()
+            khaslana::ui_i18n::text(messages::COMMIT_DETAILS).to_string()
         };
-        let toggle_label: &'static str = if collapsed { "展开" } else { "收起" };
+        let toggle_label: &'static str = if collapsed { khaslana::ui_i18n::text(messages::EXPAND) } else { khaslana::ui_i18n::text(messages::COLLAPSE) };
         let header = section_header_action(
             header_title,
             Some(
@@ -1125,7 +1128,7 @@ impl RepositoryView {
                     .items_center()
                     .gap_1()
                     .child(history_scope_button(
-                        "在提交记录页查看",
+                        khaslana::ui_i18n::text(messages::VIEW_IN_HISTORY),
                         false,
                         |this| this.close_commit_graph(),
                         cx,
@@ -1180,7 +1183,7 @@ impl RepositoryView {
                     .border_color(rgb(ui_theme::BORDER_MUTED))
                     .cursor_pointer()
                     .hover(|this| this.bg(rgb(ui_theme::STATE_HOVER)))
-                    .child("复制 SHA")
+                    .child(khaslana::ui_i18n::text(messages::COPY_SHA))
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         this.copy_commit_sha(oid_for_copy.clone(), cx);
                     })),
@@ -1196,21 +1199,21 @@ impl RepositoryView {
                     .border_color(rgb(ui_theme::BORDER_MUTED))
                     .cursor_pointer()
                     .hover(|this| this.bg(rgb(ui_theme::STATE_HOVER)))
-                    .child("复制信息")
+                    .child(khaslana::ui_i18n::text(messages::COPY_MESSAGE))
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(
                             message_for_copy.clone(),
                         ));
-                        this.status = "已复制提交信息".into();
+                        this.status = khaslana::ui_i18n::encode(messages::COMMIT_MESSAGE_COPIED, &[]);
                         this.last_error = None;
                         this.notify_success(this.status.clone(), cx);
                     })),
             )
-            .child(div().child(format!("作者 {}", author_label(&commit))))
-            .child(div().child(format!("提交时间 {}", commit_time_label(commit.time))))
+            .child(div().child(khaslana::ui_i18n::format(messages::AUTHOR_COMMIT, &[("commit", &(author_label(&commit)).to_string())])))
+            .child(div().child(khaslana::ui_i18n::format(messages::COMMITTED_TIME, &[("time", &(commit_time_label(commit.time)).to_string())])))
             .child(div().child(parents_note(&commit.parents)));
         if let Some(committer) = committer_note(&commit) {
-            meta_row = meta_row.child(div().child(format!("提交者 {committer}")));
+            meta_row = meta_row.child(div().child(khaslana::ui_i18n::format(messages::COMMITTER_COMMITTER, &[("committer", &(committer).to_string())])));
         }
 
         let handle = self.scroll_handle("commit-graph-details-scroll");
@@ -1253,7 +1256,7 @@ impl RepositoryView {
                                 .flex_none()
                                 .text_size(px(ui_theme::TYPE_META))
                                 .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                .child("无引用标签"),
+                                .child(khaslana::ui_i18n::text(messages::NO_REFERENCE_LABELS)),
                         )
                     }),
             )

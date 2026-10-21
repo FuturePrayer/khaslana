@@ -1,3 +1,4 @@
+use crate::types::domain_ui_resources;
 // 分支浏览模式的 Git 服务：只读地解析分支/标签引用、遍历文件树、读取文件内容、
 // 计算与当前 HEAD 的差异。所有操作均不修改 index/worktree。
 
@@ -41,18 +42,18 @@ impl GitService {
                 let reference = self.find_branch_reference(repo, name)?;
                 let peeled = reference
                     .peel(ObjectType::Commit)
-                    .map_err(|err| GitError::Message(format!("无法解析引用 {name}: {err}")))?;
+                    .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_RESOLVE_REFERENCE, &[("name", &format!("{}", name)), ("err", &format!("{}", err))])))?;
                 peeled
                     .into_commit()
-                    .map_err(|_| GitError::Message(format!("{name} 不是提交")))?
+                    .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::IS_NOT_A_COMMIT, &[("name", &format!("{}", name))])))?
             }
             BrowseRefKind::Tag => {
                 let object = repo
                     .revparse_single(&format!("refs/tags/{name}"))
-                    .map_err(|_| GitError::Message(format!("标签 {name} 不存在")))?;
+                    .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::TAG_DOES_NOT_EXIST_2, &[("name", &format!("{}", name))])))?;
                 object
                     .peel_to_commit()
-                    .map_err(|_| GitError::Message(format!("标签 {name} 不指向提交")))?
+                    .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::TAG_DOES_NOT_POINT_TO_A_COMMIT, &[("name", &format!("{}", name))])))?
             }
         };
         let commit_oid = commit.id().to_string();
@@ -79,11 +80,11 @@ impl GitService {
             Some(path) if !path.as_os_str().is_empty() => {
                 let entry = root_tree
                     .get_path(path)
-                    .map_err(|_| GitError::Message(format!("路径不存在: {}", path.display())))?;
+                    .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::PATH_DOES_NOT_EXIST, &[("value0", &format!("{}", path.display()))])))?;
                 let object = entry.to_object(repo)?;
                 object
                     .into_tree()
-                    .map_err(|_| GitError::Message("该路径不是目录".to_string()))?
+                    .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_PATH_IS_NOT_A_DIRECTORY, &[])))?
             }
             _ => root_tree,
         };
@@ -151,7 +152,7 @@ impl GitService {
         let tree = commit.tree()?;
         let entry = tree
             .get_path(path)
-            .map_err(|_| GitError::Message(format!("文件不存在: {}", path.display())))?;
+            .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FILE_DOES_NOT_EXIST, &[("value0", &format!("{}", path.display()))])))?;
 
         // 大文件保护：先读 ODB 对象头取体积（不加载内容），超大文件直接报错，
         // 避免几百 MB 的 blob 为了一次判断先整体 inflate 到堆。
@@ -159,22 +160,18 @@ impl GitService {
             && let Ok((size, _)) = odb.read_header(entry.id())
             && size as u64 > super::FULL_FILE_MAX_BYTES
         {
-            return Err(GitError::Message(
-                super::FULL_FILE_TOO_LARGE_MESSAGE.to_string(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FULL_FILE_TOO_LARGE, &[])));
         }
 
         let blob = entry
             .to_object(repo)?
             .into_blob()
-            .map_err(|_| GitError::Message("该路径不是文件".to_string()))?;
+            .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_PATH_IS_NOT_A_FILE, &[])))?;
         let content = blob.content();
 
         // 大文件保护：超过阈值直接报错
         if content.len() as u64 > super::FULL_FILE_MAX_BYTES {
-            return Err(GitError::Message(
-                super::FULL_FILE_TOO_LARGE_MESSAGE.to_string(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FULL_FILE_TOO_LARGE, &[])));
         }
 
         // 二进制检测：前 8KB 含 NUL 字节视为二进制。Office 文档（docx/

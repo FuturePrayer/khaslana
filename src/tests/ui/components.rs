@@ -102,3 +102,17 @@ fn clamp_dialog_panel_size_respects_viewport() {
     assert_eq!(width, super::DIALOG_PANEL_MIN_WIDTH);
     assert_eq!(height, super::DIALOG_PANEL_MIN_HEIGHT);
 }
+
+#[test]
+fn completion_toasts_keep_user_action_feedback_without_translated_text_matching() {
+    use khaslana::ui_i18n::{UiMessage, encode};
+    for key in ["repository_credentials.credential_test_passed", "repository_core.proxy_test_passed",
+        "repository_credentials.credential_added", "repository_credentials.remote_credential_binding_updated",
+        "repository_credentials.credential_deleted", "repository_credentials.copied",
+        "ai_view.review_conclusion_copied", "workflow_view.refreshed_workflow_templates"] {
+        let encoded = encode(UiMessage::new(key, "完全不同的中文", "Unrelated English"), &[]);
+        assert!(RepositoryView::should_toast_completion(&encoded), "{key}");
+    }
+    assert!(!RepositoryView::should_toast_completion("凭据测试通过"));
+    assert!(!RepositoryView::should_toast_completion(&encode(UiMessage::new("credentials.testing", "凭据测试通过", "Passed"), &[])));
+}

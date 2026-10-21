@@ -1,3 +1,4 @@
+use crate::types::domain_ui_resources;
 // 文件历史（按路径过滤的提交列表）与文件追溯（blame）的 Git 服务。
 //
 // 「文件历史」只返回改动过指定路径的提交；「文件追溯」逐行归属到
@@ -119,28 +120,26 @@ impl GitService {
             .head()
             .ok()
             .and_then(|head| head.peel_to_tree().ok())
-            .ok_or_else(|| GitError::Message("该文件尚未提交，暂无追溯信息".to_string()))?;
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_FILE_HAS_NOT_BEEN_COMMITTED_NO_TRACE_INFORMATION_IS_AVAILABLE, &[])))?;
         let entry = head_tree
             .get_path(path)
-            .map_err(|_| GitError::Message("该文件尚未提交，暂无追溯信息".to_string()))?;
+            .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_FILE_HAS_NOT_BEEN_COMMITTED_NO_TRACE_INFORMATION_IS_AVAILABLE, &[])))?;
 
         // 大文件保护：先读 ODB 对象头取体积（不加载内容），超大文件直接报错。
         if let Ok(odb) = repo.odb()
             && let Ok((size, _)) = odb.read_header(entry.id())
             && size as u64 > super::FULL_FILE_MAX_BYTES
         {
-            return Err(GitError::Message(
-                super::FULL_FILE_TOO_LARGE_MESSAGE.to_string(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FULL_FILE_TOO_LARGE, &[])));
         }
 
         let blob = entry
             .to_object(repo)?
             .into_blob()
-            .map_err(|_| GitError::Message("该路径不是文件".to_string()))?;
+            .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_PATH_IS_NOT_A_FILE, &[])))?;
         let head_content = blob.content().to_vec();
         if bytes_sample_is_binary(&head_content) {
-            return Err(GitError::Message("二进制文件不支持追溯".to_string()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::BINARY_FILES_DO_NOT_SUPPORT_TRACE_INFORMATION, &[])));
         }
 
         // 默认不追踪 rename/copy（等价 git blame 不带 -M/-C）。
@@ -237,7 +236,7 @@ impl GitService {
                                 summary: hunk
                                     .summary_bytes()
                                     .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-                                    .unwrap_or_else(|| "(无提交信息)".to_string()),
+                                    .unwrap_or_else(|| crate::ui_i18n::text(domain_ui_resources::NO_COMMIT_MESSAGE).to_string()),
                                 oid: oid_string,
                             })
                         })

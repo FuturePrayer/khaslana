@@ -1,4 +1,7 @@
 use std::cell::RefCell;
+#[path = "workflow_resources.rs"]
+mod deep_messages;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -58,7 +61,7 @@ impl WorkflowDefinition {
         self.name
             .clone()
             .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| "未命名工作流".to_string())
+            .unwrap_or_else(|| crate::ui_i18n::text(deep_messages::UNTITLED_WORKFLOW).to_string())
     }
 }
 
@@ -354,7 +357,7 @@ impl<'a> WorkflowExecutor<'a> {
                 {
                     let action = self
                         .actions
-                        .ok_or_else(|| GitError::Message(format!("未注册工作流动作：{uses}")))?
+                        .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::WORKFLOW_ACTION_IS_NOT_REGISTERED, &[("uses", &(uses).to_string())])))?
                         .get(uses)?;
                     let preview = action.preview(self.service, repo, arguments)?;
                     summary = preview.summary;
@@ -497,13 +500,11 @@ impl<'a> WorkflowExecutor<'a> {
             if let WorkflowStep::Invoke { uses, arguments, save_as, .. } = step {
                 if builtin_step(uses, arguments)?.is_some() {
                     if save_as.is_some() {
-                        return Err(GitError::Message(format!(
-                            "内置动作 {uses} 不支持 saveAs，请使用动作自身的输出参数"
-                        )));
+                        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::BUILT_IN_ACTION_DOES_NOT_SUPPORT_SAVEAS_USE_ITS_OWN_OUTPUT_ARGUMENTS, &[("uses", &(uses).to_string())])));
                     }
                 } else {
                     self.actions
-                        .ok_or_else(|| GitError::Message(format!("未注册工作流动作：{uses}")))?
+                        .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::WORKFLOW_ACTION_IS_NOT_REGISTERED, &[("uses", &(uses).to_string())])))?
                         .get(uses)?;
                 }
             }
@@ -725,7 +726,7 @@ impl WorkflowStep {
                 let output = resolver.interpolate(output)?;
                 let pattern_str = resolver.interpolate(pattern)?;
                 let pattern = Regex::new(&pattern_str).map_err(|err| {
-                    GitError::Message(format!("filterBranches 的正则表达式无效：{err}"))
+                    GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::INVALID_FILTERBRANCHES_REGULAR_EXPRESSION, &[("err", &(err).to_string())]))
                 })?;
                 // 校验正则至少存在一个捕获组：命名组优先，否则回退到组 1。
                 let has_named = pattern
@@ -733,21 +734,15 @@ impl WorkflowStep {
                     .any(|name| name == Some(&**date_group));
                 let has_group1 = pattern.captures_len() >= 2; // 组 0 是整体匹配，组 1 是第一个捕获组
                 if pattern.capture_names().count() == 1 || (!has_named && !has_group1) {
-                    return Err(GitError::Message(format!(
-                        "filterBranches 的正则表达式必须包含至少一个捕获组：{pattern_str}"
-                    )));
+                    return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::THE_FILTERBRANCHES_REGULAR_EXPRESSION_MUST_CONTAIN_AT_LEAST_ONE_CAPTURE_GROUP, &[("pattern_str", &(pattern_str).to_string())])));
                 }
                 let older_than_months_str = resolver.interpolate(older_than_months)?;
                 let older_than_months =
                     older_than_months_str.trim().parse::<i64>().map_err(|_| {
-                        GitError::Message(format!(
-                            "filterBranches 的 olderThanMonths 必须是整数：{older_than_months_str}"
-                        ))
+                        GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::FILTERBRANCHES_OLDERTHANMONTHS_MUST_BE_AN_INTEGER, &[("older_than_months_str", &(older_than_months_str).to_string())]))
                     })?;
                 if older_than_months < 0 {
-                    return Err(GitError::Message(format!(
-                        "filterBranches 的 olderThanMonths 不能为负数：{older_than_months}"
-                    )));
+                    return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::FILTERBRANCHES_OLDERTHANMONTHS_CANNOT_BE_NEGATIVE, &[("older_than_months", &(older_than_months).to_string())])));
                 }
                 Ok(ResolvedWorkflowStep::FilterBranches {
                     output,
@@ -777,22 +772,25 @@ impl WorkflowStep {
 impl ResolvedWorkflowStep {
     fn summary(&self) -> String {
         match self {
-            ResolvedWorkflowStep::Invoke { uses, .. } => format!("调用工作流动作 {uses}"),
-            ResolvedWorkflowStep::Checkout { branch } => format!("切换到分支 {branch}"),
-            ResolvedWorkflowStep::Fetch { remote } => format!("获取远端 {remote}"),
-            ResolvedWorkflowStep::Pull { remote } => format!("拉取远端 {remote}"),
+            ResolvedWorkflowStep::Invoke { uses, .. } => crate::ui_i18n::encode(deep_messages::INVOKE_WORKFLOW_ACTION, &[("uses", &(uses).to_string())]),
+            ResolvedWorkflowStep::Checkout { branch } => crate::ui_i18n::encode(deep_messages::SWITCH_TO_BRANCH, &[("branch", &(branch).to_string())]),
+            ResolvedWorkflowStep::Fetch { remote } => crate::ui_i18n::encode(deep_messages::FETCH_REMOTE, &[("remote", &(remote).to_string())]),
+            ResolvedWorkflowStep::Pull { remote } => crate::ui_i18n::encode(deep_messages::PULL_FROM_REMOTE, &[("remote", &(remote).to_string())]),
             ResolvedWorkflowStep::CreateBranch {
                 name,
                 from,
                 checkout,
             } => {
-                let from = from.clone().unwrap_or_else(|| "当前 HEAD".to_string());
-                let suffix = if *checkout { "并切换" } else { "" };
-                format!("基于 {from} 创建分支 {name}{suffix}")
+                match (from.as_deref(), *checkout) {
+                    (Some(from), true) => crate::ui_i18n::encode(deep_messages::CREATE_AND_SWITCH_BRANCH_FROM, &[("from", from), ("name", name)]),
+                    (Some(from), false) => crate::ui_i18n::encode(deep_messages::CREATE_BRANCH_FROM, &[("from", from), ("name", name)]),
+                    (None, true) => crate::ui_i18n::encode(deep_messages::CREATE_AND_SWITCH_BRANCH_FROM_HEAD, &[("name", name)]),
+                    (None, false) => crate::ui_i18n::encode(deep_messages::CREATE_BRANCH_FROM_HEAD, &[("name", name)]),
+                }
             }
-            ResolvedWorkflowStep::Merge { branch } => format!("合并分支 {branch}"),
+            ResolvedWorkflowStep::Merge { branch } => crate::ui_i18n::encode(deep_messages::MERGE_BRANCH, &[("branch", &(branch).to_string())]),
             ResolvedWorkflowStep::Push { remote, branch, .. } => {
-                format!("推送分支 {branch} 到 {remote}")
+                crate::ui_i18n::encode(deep_messages::PUSH_BRANCH_TO, &[("branch", &(branch).to_string()), ("remote", &(remote).to_string())])
             }
             ResolvedWorkflowStep::GuardRemoteBranch {
                 remote,
@@ -801,9 +799,9 @@ impl ResolvedWorkflowStep {
                 on_exists,
                 on_missing,
             } => guard_summary(remote, branch, *fetch, *on_exists, *on_missing),
-            ResolvedWorkflowStep::EnsureClean => "检查工作区干净".to_string(),
+            ResolvedWorkflowStep::EnsureClean => crate::ui_i18n::encode(deep_messages::ENSURE_A_CLEAN_WORKING_TREE, &[]),
             ResolvedWorkflowStep::AssertBranch { branch } => {
-                format!("确认当前分支是 {branch}")
+                crate::ui_i18n::encode(deep_messages::ASSERT_THE_CURRENT_BRANCH_IS, &[("branch", &(branch).to_string())])
             }
             ResolvedWorkflowStep::FilterBranches {
                 output,
@@ -811,13 +809,13 @@ impl ResolvedWorkflowStep {
                 ..
             } => {
                 let _ = output;
-                format!("筛选超过 {older_than_months} 个月的命名分支")
+                crate::ui_i18n::encode(deep_messages::FILTER_NAMED_BRANCHES_OLDER_THAN_MONTHS, &[("older_than_months", &(older_than_months).to_string())])
             }
             ResolvedWorkflowStep::DeleteBranches { dry_run, .. } => {
                 if *dry_run {
-                    "删除分支（试运行）".to_string()
+                    crate::ui_i18n::encode(deep_messages::DELETE_BRANCHES_DRY_RUN, &[])
                 } else {
-                    "删除本地分支".to_string()
+                    crate::ui_i18n::encode(deep_messages::DELETE_LOCAL_BRANCHES, &[])
                 }
             }
         }
@@ -834,7 +832,7 @@ impl ResolvedWorkflowStep {
         match self {
             ResolvedWorkflowStep::Invoke { uses, arguments, save_as } => {
                 let action = actions
-                    .ok_or_else(|| GitError::Message(format!("未注册工作流动作：{uses}")))?
+                    .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::WORKFLOW_ACTION_IS_NOT_REGISTERED, &[("uses", &(uses).to_string())])))?
                     .get(uses)?;
                 let result = action.execute_with_control_and_progress(
                     service, repo, arguments, control, progress)?;
@@ -927,12 +925,10 @@ impl ResolvedWorkflowStep {
             }
             ResolvedWorkflowStep::AssertBranch { branch } => {
                 let actual = service.current_branch(repo).ok_or_else(|| {
-                    GitError::Message("当前 HEAD 未指向本地分支，无法确认分支".into())
+                    GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::HEAD_DOES_NOT_POINT_TO_A_LOCAL_BRANCH_CANNOT_ASSERT_THE_BRANCH, &[]))
                 })?;
                 if actual != *branch {
-                    return Err(GitError::Message(format!(
-                        "当前分支是 {actual}，不是工作流要求的 {branch}"
-                    )));
+                    return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::THE_CURRENT_BRANCH_IS_NOT_THE_REQUIRED, &[("actual", &(actual).to_string()), ("branch", &(branch).to_string())])));
                 }
                 Ok(StepOutcome::snapshot(
                     service.snapshot_after_operation(repo)?,
@@ -955,7 +951,7 @@ impl ResolvedWorkflowStep {
                     *older_than_months,
                     *skip_current,
                 )?;
-                let details = deletion_plan_details(&plan, "命中");
+                let details = deletion_plan_details(&plan);
                 Ok(StepOutcome {
                     snapshot: service.snapshot_after_operation(repo)?,
                     details,
@@ -981,13 +977,13 @@ impl ResolvedWorkflowStep {
                 let mut details = Vec::new();
                 if *dry_run {
                     for name in &to_delete {
-                        details.push(format!("将删除：{name}"));
+                        details.push(crate::ui_i18n::encode(deep_messages::WILL_DELETE, &[("name", &(name).to_string())]));
                     }
                     for name in &skipped_current {
-                        details.push(format!("跳过（当前分支）：{name}"));
+                        details.push(crate::ui_i18n::encode(deep_messages::SKIPPED_CURRENT_BRANCH, &[("name", &(name).to_string())]));
                     }
                     if details.is_empty() {
-                        details.push("没有需要删除的分支".to_string());
+                        details.push(crate::ui_i18n::encode(deep_messages::NO_BRANCHES_TO_DELETE, &[]));
                     }
                     return Ok(StepOutcome::snapshot_with_details(
                         service.snapshot_after_operation(repo)?,
@@ -1003,13 +999,13 @@ impl ResolvedWorkflowStep {
                         .collect::<Vec<_>>(),
                 )?;
                 for name in &to_delete {
-                    details.push(format!("已删除：{name}"));
+                    details.push(crate::ui_i18n::encode(deep_messages::DELETED, &[("name", &(name).to_string())]));
                 }
                 for name in &skipped_current {
-                    details.push(format!("跳过（当前分支）：{name}"));
+                    details.push(crate::ui_i18n::encode(deep_messages::SKIPPED_CURRENT_BRANCH, &[("name", &(name).to_string())]));
                 }
                 if details.is_empty() {
-                    details.push("没有需要删除的分支".to_string());
+                    details.push(crate::ui_i18n::encode(deep_messages::NO_BRANCHES_TO_DELETE, &[]));
                 }
                 Ok(StepOutcome::snapshot_with_details(
                     service.snapshot_after_operation(repo)?,
@@ -1022,20 +1018,17 @@ impl ResolvedWorkflowStep {
 
 pub fn parse_workflow_json5(content: &str) -> Result<WorkflowDefinition> {
     let definition = json5::from_str::<WorkflowDefinition>(content)
-        .map_err(|err| GitError::Message(format!("工作流 JSON5 解析失败：{err}")))?;
+        .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::WORKFLOW_JSON5_PARSING_FAILED, &[("err", &(err).to_string())])))?;
     validate_definition(&definition)?;
     Ok(definition)
 }
 
 fn validate_definition(definition: &WorkflowDefinition) -> Result<()> {
     if definition.version != 1 && definition.version != 2 {
-        return Err(GitError::Message(format!(
-            "不支持的工作流版本：{}",
-            definition.version
-        )));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::UNSUPPORTED_WORKFLOW_VERSION, &[("value0", &(definition.version).to_string())])));
     }
     if definition.steps.is_empty() {
-        return Err(GitError::Message("工作流至少需要一个步骤".into()));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::THE_WORKFLOW_MUST_HAVE_AT_LEAST_ONE_STEP, &[])));
     }
     for (key, input) in &definition.inputs {
         validate_input_name(key)?;
@@ -1045,13 +1038,13 @@ fn validate_definition(definition: &WorkflowDefinition) -> Result<()> {
     for step in &definition.steps {
         if let WorkflowStep::Invoke { id, uses, arguments, save_as } = step {
             if definition.version == 1 {
-                return Err(GitError::Message("v1 工作流不能使用 invoke 步骤".into()));
+                return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::V1_WORKFLOWS_CANNOT_USE_INVOKE_STEPS, &[])));
             }
             if id.trim().is_empty() || !ids.insert(id) {
-                return Err(GitError::Message(format!("工作流步骤 id 为空或重复：{id}")));
+                return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::WORKFLOW_STEP_ID_IS_EMPTY_OR_DUPLICATED, &[("id", &(id).to_string())])));
             }
             if uses.trim().is_empty() || !arguments.is_object() {
-                return Err(GitError::Message(format!("工作流步骤 {id} 的 uses 或 with 无效")));
+                return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::INVALID_USES_OR_WITH_IN_WORKFLOW_STEP, &[("id", &(id).to_string())])));
             }
             if let Some(name) = save_as {
                 validate_input_name(name)?;
@@ -1064,7 +1057,7 @@ fn validate_definition(definition: &WorkflowDefinition) -> Result<()> {
 fn validate_input_name(name: &str) -> Result<()> {
     let name = name.trim();
     if name.is_empty() {
-        return Err(GitError::Message("工作流输入变量名不能为空".into()));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::WORKFLOW_INPUT_VARIABLE_NAMES_CANNOT_BE_EMPTY, &[])));
     }
     if name == "run.id"
         || name == "run.sourceBranch"
@@ -1078,9 +1071,7 @@ fn validate_input_name(name: &str) -> Result<()> {
         || name.starts_with("git.")
         || name.starts_with("run.")
     {
-        return Err(GitError::Message(format!(
-            "工作流输入变量不能使用内置变量名：{name}"
-        )));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::WORKFLOW_INPUTS_CANNOT_USE_BUILT_IN_VARIABLE_NAMES, &[("name", &(name).to_string())])));
     }
     Ok(())
 }
@@ -1100,23 +1091,19 @@ fn ensure_clean_worktree(service: &GitService, repo: &Repository) -> Result<()> 
     if changes.is_empty() {
         return Ok(());
     }
-    Err(GitError::Message(format!(
-        "工作区存在未提交更改，不能运行该工作流：{}",
-        changes_preview(&changes)
-    )))
+    Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::THE_WORKING_TREE_HAS_UNCOMMITTED_CHANGES_CANNOT_RUN_THIS_WORKFLOW, &[("value0", &(changes_preview(&changes)).to_string())])))
 }
 
 fn changes_preview(changes: &[WorktreeChange]) -> String {
-    let mut preview = changes
+    let preview = changes
         .iter()
         .take(5)
         .map(|change| change.path.clone())
         .collect::<Vec<_>>()
         .join(", ");
     if changes.len() > 5 {
-        preview.push_str(&format!(" 等 {} 个文件", changes.len()));
-    }
-    preview
+        crate::ui_i18n::format(deep_messages::CHANGES_PREVIEW, &[("paths", &preview), ("count", &changes.len().to_string())])
+    } else { preview }
 }
 
 struct WorkflowEvalContext {
@@ -1141,7 +1128,7 @@ impl WorkflowEvalContext {
                     BranchKind::Remote => BranchType::Remote,
                 };
                 repo.find_branch(&source.name, kind).map_err(|_| {
-                    GitError::Message(format!("工作流来源分支已不存在：{}", source.name))
+                    GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::WORKFLOW_SOURCE_BRANCH_NO_LONGER_EXISTS, &[("value0", &(source.name).to_string())]))
                 })?;
                 Some(source.name.clone())
             }
@@ -1204,7 +1191,7 @@ impl<'a, 'repo> WorkflowResolver<'a, 'repo> {
             return Ok(branch.clone());
         }
         self.service.current_branch(self.repo).ok_or_else(|| {
-            GitError::Message("当前 HEAD 未指向本地分支，无法解析 git.currentBranch".into())
+            GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::HEAD_DOES_NOT_POINT_TO_A_LOCAL_BRANCH_CANNOT_RESOLVE_GIT_CURRENTBRANCH, &[]))
         })
     }
 
@@ -1212,7 +1199,7 @@ impl<'a, 'repo> WorkflowResolver<'a, 'repo> {
         let head = self.repo.head()?;
         let target = head
             .target()
-            .ok_or_else(|| GitError::Message("当前 HEAD 没有目标提交".into()))?;
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::HEAD_HAS_NO_TARGET_COMMIT, &[])))?;
         Ok(target.to_string())
     }
 
@@ -1246,9 +1233,7 @@ impl<'a, 'repo> WorkflowResolver<'a, 'repo> {
             output.push_str(&rest[..start]);
             let expression_start = start + 2;
             let Some(end) = rest[expression_start..].find('}') else {
-                return Err(GitError::Message(format!(
-                    "变量表达式缺少结束符：{template}"
-                )));
+                return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::VARIABLE_EXPRESSION_HAS_NO_CLOSING_DELIMITER, &[("template", &(template).to_string())])));
             };
             let expression_end = expression_start + end;
             let expression = rest[expression_start..expression_end].trim();
@@ -1312,9 +1297,7 @@ impl<'a, 'repo> WorkflowResolver<'a, 'repo> {
                 .filter(|line| !line.is_empty())
                 .map(str::to_string)
                 .collect()),
-            WorkflowExpressionValue::Json(_) => Err(GitError::Message(
-                "工作流参数需要字符串或字符串数组".into(),
-            )),
+            WorkflowExpressionValue::Json(_) => Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::WORKFLOW_ARGUMENTS_REQUIRE_A_STRING_OR_AN_ARRAY_OF_STRINGS, &[]))),
         }
     }
 
@@ -1356,7 +1339,7 @@ impl<'a, 'repo> WorkflowResolver<'a, 'repo> {
             "run.sourceBranch" => {
                 return Ok(WorkflowExpressionValue::String(
                     self.context.initial_branch.clone().ok_or_else(|| {
-                        GitError::Message("工作流没有可用的来源分支".into())
+                        GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::THE_WORKFLOW_HAS_NO_AVAILABLE_SOURCE_BRANCH, &[]))
                     })?,
                 ));
             }
@@ -1370,9 +1353,7 @@ impl<'a, 'repo> WorkflowResolver<'a, 'repo> {
             "git.initialBranch" => {
                 return Ok(WorkflowExpressionValue::String(
                     self.context.initial_branch.clone().ok_or_else(|| {
-                        GitError::Message(
-                            "当前 HEAD 未指向本地分支，无法解析 git.initialBranch".into(),
-                        )
+                        GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::HEAD_DOES_NOT_POINT_TO_A_LOCAL_BRANCH_CANNOT_RESOLVE_GIT_INITIALBRANCH, &[]))
                     })?,
                 ));
             }
@@ -1398,7 +1379,7 @@ impl<'a, 'repo> WorkflowResolver<'a, 'repo> {
             if let Some(WorkflowExpressionValue::Json(mut value)) = value {
                 for key in path.split('.') {
                     value = value.get(key).cloned().ok_or_else(|| {
-                        GitError::Message(format!("工作流输出字段不存在：{expression}"))
+                        GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::WORKFLOW_OUTPUT_FIELD_DOES_NOT_EXIST, &[("expression", &(expression).to_string())]))
                     })?;
                 }
                 return Ok(WorkflowExpressionValue::from_json(value));
@@ -1407,9 +1388,7 @@ impl<'a, 'repo> WorkflowResolver<'a, 'repo> {
 
         if let Some(value) = self.definition.vars.get(expression) {
             if !stack.insert(expression.to_string()) {
-                return Err(GitError::Message(format!(
-                    "工作流变量存在循环引用：{expression}"
-                )));
+                return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::WORKFLOW_VARIABLE_CONTAINS_A_CIRCULAR_REFERENCE, &[("expression", &(expression).to_string())])));
             }
             if let Some(input) = self.options.input_vars.get(expression) {
                 stack.remove(expression);
@@ -1425,7 +1404,7 @@ impl<'a, 'repo> WorkflowResolver<'a, 'repo> {
             return Ok(WorkflowExpressionValue::String(value.clone()));
         }
 
-        Err(GitError::Message(format!("未知工作流变量：{expression}")))
+        Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::UNKNOWN_WORKFLOW_VARIABLE, &[("expression", &(expression).to_string())])))
     }
 }
 
@@ -1483,22 +1462,22 @@ struct DeletionPlan {
 }
 
 /// 把筛选结果分类渲染成 details 明细行。
-fn deletion_plan_details(plan: &DeletionPlan, matched_label: &str) -> Vec<String> {
+fn deletion_plan_details(plan: &DeletionPlan) -> Vec<String> {
     let mut lines = Vec::new();
     for name in &plan.matched {
-        lines.push(format!("{matched_label}：{name}"));
+        lines.push(crate::ui_i18n::encode(deep_messages::MATCHED_BRANCH, &[("name", name)]));
     }
     for name in &plan.skipped_current {
-        lines.push(format!("跳过（当前分支）：{name}"));
+        lines.push(crate::ui_i18n::encode(deep_messages::SKIPPED_CURRENT_BRANCH, &[("name", &(name).to_string())]));
     }
     for name in &plan.skipped_nodate {
-        lines.push(format!("跳过（日期无法解析）：{name}"));
+        lines.push(crate::ui_i18n::encode(deep_messages::SKIPPED_UNPARSEABLE_DATE, &[("name", &(name).to_string())]));
     }
     for name in &plan.skipped_within {
-        lines.push(format!("跳过（未超过阈值）：{name}"));
+        lines.push(crate::ui_i18n::encode(deep_messages::SKIPPED_WITHIN_AGE_THRESHOLD, &[("name", &(name).to_string())]));
     }
     if lines.is_empty() {
-        lines.push("没有匹配的分支".to_string());
+        lines.push(crate::ui_i18n::encode(deep_messages::NO_MATCHING_BRANCHES, &[]));
     }
     lines
 }
@@ -1605,7 +1584,7 @@ fn record_preview_output(
             *older_than_months,
             *skip_current,
         )?;
-        let details = deletion_plan_details(&plan, "命中");
+        let details = deletion_plan_details(&plan);
         context.record_output(output.clone(), WorkflowExpressionValue::Array(plan.matched));
         return Ok(details);
     }

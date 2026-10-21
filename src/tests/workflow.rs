@@ -129,7 +129,7 @@ fn v2_builtin_uses_selected_source_branch_in_preview_and_run() {
     };
     let executor = WorkflowExecutor::new(&service);
     let preview = executor.preview(&repo, &definition, &options).unwrap();
-    assert!(preview.steps[0].summary.contains("基于 origin/existing"));
+    assert!(crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, &preview.steps[0].summary).contains("基于 origin/existing"));
     executor.run(&mut repo, &definition, options, |_| {}).unwrap();
     assert!(repo.find_branch("from-selected", BranchType::Local).is_ok());
 }
@@ -148,7 +148,7 @@ fn v1_initial_branch_uses_selected_remote_branch_and_keeps_default_head() {
     let default_preview = executor
         .preview(&repo, &definition, &WorkflowRunOptions::default())
         .unwrap();
-    assert!(default_preview.steps[0].summary.contains("基于 main"));
+    assert!(crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, &default_preview.steps[0].summary).contains("基于 main"));
 
     let options = WorkflowRunOptions {
         source_branch: Some(WorkflowSourceBranch {
@@ -158,7 +158,7 @@ fn v1_initial_branch_uses_selected_remote_branch_and_keeps_default_head() {
         ..WorkflowRunOptions::default()
     };
     let selected_preview = executor.preview(&repo, &definition, &options).unwrap();
-    assert!(selected_preview.steps[0].summary.contains("基于 origin/existing"));
+    assert!(crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, &selected_preview.steps[0].summary).contains("基于 origin/existing"));
     executor.run(&mut repo, &definition, options, |_| {}).unwrap();
     assert!(repo.find_branch("from-v1-source", BranchType::Local).is_ok());
 }
@@ -263,7 +263,7 @@ fn v2_action_output_is_available_to_following_builtin_step() {
     actions.register("test.name", Arc::new(BranchNameAction)).unwrap();
     let executor = WorkflowExecutor::with_actions(&service, &actions);
     let preview = executor.preview(&repo, &definition, &WorkflowRunOptions::default()).unwrap();
-    assert!(preview.steps[1].summary.contains("from-action"));
+    assert!(crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, &preview.steps[1].summary).contains("from-action"));
     executor
         .run(&mut repo, &definition, WorkflowRunOptions::default(), |_| {})
         .unwrap();
@@ -499,8 +499,8 @@ fn input_values_override_vars() {
         .unwrap();
 
     assert_eq!(
-        preview.steps[0].summary,
-        "基于 当前 HEAD 创建分支 chosen并切换"
+        crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, &preview.steps[0].summary),
+        "基于当前 HEAD 创建并切换到分支 chosen"
     );
 }
 
@@ -579,8 +579,8 @@ fn workflow_methods_can_build_branch_names_from_variables() {
         .unwrap();
 
     assert_eq!(
-        preview.steps[0].summary,
-        "基于 当前 HEAD 创建分支 tmp/user-story-1并切换"
+        crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, &preview.steps[0].summary),
+        "基于当前 HEAD 创建并切换到分支 tmp/user-story-1"
     );
 }
 
@@ -667,10 +667,10 @@ fn guard_remote_branch_preview_shows_policy_and_does_not_change_current_branch()
         .unwrap();
 
     assert_eq!(
-        preview.steps[0].summary,
+        crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, &preview.steps[0].summary),
         "检查远端分支 origin/target（基于本地引用，存在则停止，不存在则继续）"
     );
-    assert_eq!(preview.steps[1].summary, "推送分支 main 到 origin");
+    assert_eq!(crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, &preview.steps[1].summary), "推送分支 main 到 origin");
 }
 
 #[test]
@@ -863,7 +863,7 @@ fn guard_remote_branch_branch_supports_expression_methods() {
         .unwrap();
 
     assert_eq!(
-        preview.steps[0].summary,
+        crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, &preview.steps[0].summary),
         "检查远端分支 origin/demo（基于本地引用，存在则停止，不存在则继续）"
     );
 }
@@ -913,7 +913,7 @@ fn preview_uses_checkout_branch_for_implicit_push_branch() {
         .preview(&repo, &definition, &WorkflowRunOptions::default())
         .unwrap();
 
-    assert_eq!(preview.steps[1].summary, "推送分支 test 到 origin");
+    assert_eq!(crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, &preview.steps[1].summary), "推送分支 test 到 origin");
 }
 
 #[test]
@@ -939,8 +939,8 @@ fn preview_tracks_create_branch_checkout_for_current_branch() {
         .preview(&repo, &definition, &WorkflowRunOptions::default())
         .unwrap();
 
-    assert_eq!(preview.steps[1].summary, "确认当前分支是 A");
-    assert_eq!(preview.steps[2].summary, "推送分支 A 到 origin");
+    assert_eq!(crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, &preview.steps[1].summary), "确认当前分支是 A");
+    assert_eq!(crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, &preview.steps[2].summary), "推送分支 A 到 origin");
 }
 
 #[test]
@@ -965,7 +965,7 @@ fn preview_does_not_track_create_branch_without_checkout() {
         .preview(&repo, &definition, &WorkflowRunOptions::default())
         .unwrap();
 
-    assert_eq!(preview.steps[1].summary, "推送分支 main 到 origin");
+    assert_eq!(crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, &preview.steps[1].summary), "推送分支 main 到 origin");
 }
 
 #[test]
@@ -1256,7 +1256,7 @@ fn filter_then_delete_workflow_passes_array_between_steps() {
     assert!(
         finished
             .iter()
-            .any(|d| d.contains("将删除") && d.contains("dev_wzf_20250418"))
+            .any(|d| crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, d).contains("将删除") && d.contains("dev_wzf_20250418"))
     );
     // 步骤计数为 2
     assert_eq!(result.steps_run, 2);
@@ -1410,7 +1410,7 @@ fn filter_branches_preview_shows_matched_details() {
     // 预览步骤应携带命中明细（只读计算，不改动仓库）
     let details = &preview.steps[0].details;
     assert!(details.iter().any(|d| d.contains("dev_wzf_20250418")));
-    assert!(details.iter().any(|d| d.contains("命中")));
+    assert!(details.iter().any(|d| crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, d).contains("命中")));
 }
 
 #[test]
@@ -1484,7 +1484,7 @@ fn reproduce_user_scenario_uat_branch_with_alt_and_inputs() {
     assert!(
         filter_details
             .iter()
-            .any(|d| d.contains("uat_wzf_20250924_智慧消保系统") && d.contains("命中")),
+            .any(|d| d.contains("uat_wzf_20250924_智慧消保系统") && crate::ui_i18n::resolve_in(crate::language::Language::ZhCn, d).contains("命中")),
         "应命中 uat 分支，实际 details: {filter_details:?}"
     );
 }
@@ -1599,4 +1599,29 @@ fn workflow_step_serialization_omits_none_fields() {
     );
     let reparsed = parse_workflow_json5(&serialized).unwrap();
     assert_eq!(reparsed, definition);
+}
+
+#[test]
+fn generated_step_titles_keep_identity_and_branch_data_across_languages() {
+    use crate::{language::Language, ui_i18n::{message_key, resolve_in}};
+    let step = ResolvedWorkflowStep::CreateBranch {
+        name: "用户分支".into(), from: None, checkout: true,
+    };
+    let summary = step.summary();
+    assert_eq!(message_key(&summary).as_deref(), Some("workflow.create_and_switch_branch_from_head"));
+    assert_eq!(resolve_in(Language::ZhCn, &summary), "基于当前 HEAD 创建并切换到分支 用户分支");
+    assert_eq!(resolve_in(Language::En, &summary), "Create and switch to branch 用户分支 from current HEAD");
+    let guard = guard_summary("origin", "用户分支", false, RemoteBranchGuardAction::Fail, RemoteBranchGuardAction::Continue);
+    assert_eq!(resolve_in(Language::En, &guard), "Check remote branch origin/用户分支 (using local references, stop if present, continue if missing)");
+}
+
+#[test]
+fn workflow_validation_errors_keep_stable_message_identity() {
+    let definition = WorkflowDefinition { version: 1, name: None, defaults: WorkflowDefaults::default(), inputs: BTreeMap::new(), vars: BTreeMap::new(), steps: Vec::new() };
+    let error = validate_definition(&definition).unwrap_err();
+    assert!(error.is_message("workflow.the_workflow_must_have_at_least_one_step"));
+    if let GitError::Localized(message) = error {
+        assert_eq!(crate::ui_i18n::text_in(crate::language::Language::ZhCn, message.message), "工作流至少需要一个步骤");
+        assert_eq!(crate::ui_i18n::text_in(crate::language::Language::En, message.message), "The workflow must have at least one step");
+    } else { panic!("工作流校验必须保留消息身份"); }
 }

@@ -1,5 +1,8 @@
 //! 未打开仓库的只读分支目录和延迟导航。扫描期间不创建 tab，不检出分支。
 
+#[path = "../ui_resources/code_palette_view_repositories_messages.rs"]
+mod messages;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -68,11 +71,11 @@ impl RepositorySearchCatalog {
             .filter(|repo| matches!(&repo.branches, Some(Err(_))))
             .count();
         if pending > 0 {
-            format!("{count} 个结果 · 正在读取 {pending} 个仓库")
+            khaslana::ui_i18n::format(messages::COUNT_RESULTS_READING_PENDING_REPOSITORIES, &[("count", &(count).to_string()), ("pending", &(pending).to_string())])
         } else if failed > 0 {
-            format!("{count} 个结果 · {failed} 个仓库不可用")
+            khaslana::ui_i18n::format(messages::COUNT_RESULTS_FAILED_REPOSITORIES_UNAVAILABLE, &[("count", &(count).to_string()), ("failed", &(failed).to_string())])
         } else {
-            format!("{count} 个结果")
+            khaslana::ui_i18n::format(messages::COUNT_RESULTS, &[("count", &(count).to_string())])
         }
     }
 }
@@ -107,27 +110,27 @@ pub(super) fn saved_repository_entries(repo: &SavedRepositorySearch) -> Vec<Sear
     let mut repository = SearchEntry::new(
         name.clone(),
         repo.path.to_string_lossy().into_owned(),
-        "仓库",
-        "项目 repository repo",
+        khaslana::ui_i18n::text(messages::REPOSITORIES),
+        khaslana::ui_i18n::text(messages::PROJECT_REPOSITORY_REPO),
         SearchTarget::SavedRepository(repo.path.clone()),
     );
     if let Some(Err(error)) = &repo.branches {
-        repository.disabled_reason = Some("仓库目录不可用，无法读取分支");
+        repository.disabled_reason = Some(khaslana::ui_i18n::text(messages::REPOSITORY_DIRECTORY_UNAVAILABLE_CANNOT_READ_BRANCHES));
         repository.subtitle = format!("{} · {error}", repo.path.display());
     }
     let mut entries = vec![repository];
     if let Some(Ok(branches)) = &repo.branches {
         for branch in branches {
             let group = if branch.kind == BranchKind::Local {
-                "本地分支"
+                khaslana::ui_i18n::text(messages::LOCAL_BRANCHES)
             } else {
-                "远端分支"
+                khaslana::ui_i18n::text(messages::REMOTE_BRANCHES)
             };
             entries.push(SearchEntry::new(
                 &branch.name,
-                format!("{name} · {} · 打开仓库并定位分支", repo.path.display()),
+                khaslana::ui_i18n::format(messages::NAME_PATH_OPEN_REPOSITORY_AND_LOCATE_BRANCH, &[("name", &(name).to_string()), ("path", &(repo.path.display()).to_string())]),
                 group,
-                "branch 分支",
+                khaslana::ui_i18n::text(messages::BRANCH_BRANCH),
                 SearchTarget::SavedBranch(
                     repo.path.clone(),
                     branch.name.clone(),
@@ -212,7 +215,7 @@ impl RepositoryView {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         read_repository_branches(&service, &path)
                     }))
-                    .unwrap_or_else(|panic| Err(format!("读取分支失败：{}", panic_message(panic))));
+                    .unwrap_or_else(|panic| Err(khaslana::ui_i18n::encode(messages::FAILED_TO_READ_BRANCHES_PANIC, &[("panic", &(panic_message(panic)).to_string())])));
                     if cancelled.load(Ordering::Relaxed) {
                         break;
                     }
@@ -296,7 +299,7 @@ impl RepositoryView {
             .as_ref()
             .is_some_and(|snapshot| pending.matches_branch(snapshot))
         {
-            self.notify_warning(format!("分支已不存在：{}", pending.name), cx);
+            self.notify_warning(khaslana::ui_i18n::encode(messages::BRANCH_NO_LONGER_EXISTS_NAME, &[("name", &(pending.name).to_string())]), cx);
             return;
         }
         self.locate_search_branch(pending.name);

@@ -34,7 +34,10 @@ impl AiReviewStep {
     /// Reasoning 步骤取思维链首行非空文本截断（`思考：xxx`）——「思考中…」
     /// 只属于 UI 流式期间的瞬时状态（live 区），轮次落定后该行显示实际
     /// 内容摘要；空文本兜底「思考」。纯函数，便于单测。
-    pub fn summary(&self) -> String {
+    pub fn summary(&self) -> String { self.summary_in(crate::ui_i18n::language()) }
+
+    pub fn summary_in(&self, language: crate::language::Language) -> String {
+        use crate::ai::prompt::text as localized;
         match self {
             Self::Reasoning { text } => {
                 let first_line = text
@@ -43,7 +46,7 @@ impl AiReviewStep {
                     .find(|line| !line.is_empty())
                     .unwrap_or("");
                 if first_line.is_empty() {
-                    "思考".to_string()
+                    localized(language, "思考", "Reasoning").to_string()
                 } else {
                     let snippet: String =
                         first_line.chars().take(REASONING_SUMMARY_CHARS).collect();
@@ -52,7 +55,7 @@ impl AiReviewStep {
                     } else {
                         ""
                     };
-                    format!("思考：{snippet}{ellipsis}")
+                    format!("{}{snippet}{ellipsis}", localized(language, "思考：", "Reasoning: "))
                 }
             }
             Self::ToolCall { args_summary, .. } => args_summary.clone(),
@@ -61,7 +64,7 @@ impl AiReviewStep {
             Self::Message { text } => {
                 let first_line = text.lines().next().unwrap_or("").trim();
                 if first_line.is_empty() {
-                    "回复".to_string()
+                    localized(language, "回复", "Reply").to_string()
                 } else {
                     let snippet: String =
                         first_line.chars().take(REASONING_SUMMARY_CHARS).collect();
@@ -70,7 +73,7 @@ impl AiReviewStep {
                     } else {
                         ""
                     };
-                    format!("回复：{snippet}{ellipsis}")
+                    format!("{}{snippet}{ellipsis}", localized(language, "回复：", "Reply: "))
                 }
             }
         }

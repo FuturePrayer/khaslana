@@ -1,3 +1,4 @@
+use crate::types::domain_ui_resources;
 use std::path::Path;
 
 #[cfg(windows)]
@@ -58,10 +59,10 @@ impl GitService {
 
     pub fn update_submodules(&self, repo: &mut Repository) -> Result<RepositorySnapshot> {
         self.progress
-            .emit(OperationEvent::Started("正在同步子模块记录版本".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::SYNCHRONIZING_RECORDED_SUBMODULE_REVISIONS).into()));
         self.update_submodules_recursive(repo)?;
         self.progress
-            .emit(OperationEvent::Finished("子模块已同步记录版本".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::RECORDED_SUBMODULE_REVISIONS_SYNCHRONIZED).into()));
         self.snapshot_after_operation(repo)
     }
 
@@ -70,10 +71,10 @@ impl GitService {
         repo: &mut Repository,
     ) -> Result<RepositorySnapshot> {
         self.progress
-            .emit(OperationEvent::Started("正在更新子模块到远端最新".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::UPDATING_SUBMODULES_TO_THE_LATEST_REMOTE_REVISIONS).into()));
         self.update_submodules_to_remote_latest_recursive(repo)?;
         self.progress
-            .emit(OperationEvent::Finished("子模块已更新到远端最新".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::SUBMODULES_UPDATED_TO_THE_LATEST_REMOTE_REVISIONS).into()));
         self.snapshot_after_operation(repo)
     }
 
@@ -82,13 +83,9 @@ impl GitService {
         repo: &mut Repository,
         name: &str,
     ) -> Result<RepositorySnapshot> {
-        self.progress.emit(OperationEvent::Started(format!(
-            "正在更新子模块 {name} 到远端最新"
-        )));
+        self.progress.emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::UPDATING_SUBMODULE_TO_THE_LATEST_REMOTE_REVISION, &[("name", &format!("{}", name))])));
         self.update_one_submodule_to_remote_latest(repo, name)?;
-        self.progress.emit(OperationEvent::Finished(format!(
-            "子模块 {name} 已更新到远端最新"
-        )));
+        self.progress.emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::SUBMODULE_UPDATED_TO_THE_LATEST_REMOTE_REVISION, &[("name", &format!("{}", name))])));
         self.snapshot_after_operation(repo)
     }
 
@@ -109,7 +106,7 @@ impl GitService {
             let path = submodule.path().to_path_buf();
             self.ensure_submodule_clean(repo, &name, &path)?;
             self.progress
-                .emit(OperationEvent::Progress(format!("正在同步子模块 {name}")));
+                .emit(OperationEvent::Progress(crate::ui_i18n::format(domain_ui_resources::SYNCHRONIZING_SUBMODULE, &[("name", &format!("{}", name))])));
             self.checkout_submodule_recorded_commit(repo, &mut submodule, &name)?;
         }
         Ok(())
@@ -132,9 +129,7 @@ impl GitService {
         let path = submodule.path().to_path_buf();
         self.ensure_submodule_clean(repo, name, &path)?;
         if submodule_needs_recorded_checkout(repo, name, &submodule)? {
-            self.progress.emit(OperationEvent::Progress(format!(
-                "正在同步子模块 {name} 的记录版本"
-            )));
+            self.progress.emit(OperationEvent::Progress(crate::ui_i18n::format(domain_ui_resources::SYNCHRONIZING_THE_RECORDED_REVISION_OF_SUBMODULE, &[("name", &format!("{}", name))])));
             self.checkout_submodule_recorded_commit(repo, &mut submodule, name)?;
         } else {
             submodule.init(true)?;
@@ -159,12 +154,12 @@ impl GitService {
         let state = submodule_state(parent_status, submodule.index_id(), submodule.workdir_id());
         if !state.initialized {
             return Ok(SubmoduleRemoteSyncStatus::Unavailable(
-                "子模块未初始化".to_string(),
+                crate::ui_i18n::text(domain_ui_resources::SUBMODULE_IS_NOT_INITIALIZED).to_string(),
             ));
         }
         if !state.checked_out {
             return Ok(SubmoduleRemoteSyncStatus::Unavailable(
-                "子模块未检出".to_string(),
+                crate::ui_i18n::text(domain_ui_resources::SUBMODULE_IS_NOT_CHECKED_OUT).to_string(),
             ));
         }
 
@@ -173,7 +168,7 @@ impl GitService {
         let current = head
             .target()
             .or_else(|| head.peel_to_commit().ok().map(|commit| commit.id()))
-            .ok_or_else(|| GitError::Message(format!("子模块 {name} 当前 HEAD 无法解析")))?;
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_RESOLVE_CURRENT_HEAD_OF_SUBMODULE, &[("name", &format!("{}", name))])))?;
         let target = self.fetch_submodule_remote_latest(repo, &subrepo, name)?;
         let (ahead, behind) = subrepo.graph_ahead_behind(current, target)?;
         Ok(SubmoduleRemoteSyncStatus::from_ahead_behind(ahead, behind))
@@ -255,11 +250,11 @@ impl GitService {
 
         let remote_ref = format!("refs/remotes/{remote_name}/{branch_name}");
         let reference = subrepo.find_reference(&remote_ref).map_err(|err| {
-            GitError::Message(format!("子模块 {name} 未找到远端分支 {remote_ref}：{err}"))
+            GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::REMOTE_BRANCH_NOT_FOUND_IN_SUBMODULE, &[("name", &format!("{}", name)), ("remote_ref", &format!("{}", remote_ref)), ("err", &format!("{}", err))]))
         })?;
         reference
             .target()
-            .ok_or_else(|| GitError::Message(format!("子模块 {name} 的远端分支不是直接引用")))
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_REMOTE_BRANCH_OF_SUBMODULE_IS_NOT_A_DIRECT_REFERENCE, &[("name", &format!("{}", name))])))
     }
 
     fn fast_forward_submodule_to(
@@ -273,16 +268,13 @@ impl GitService {
             .target()
             .or_else(|| head.peel_to_commit().ok().map(|commit| commit.id()))
             .ok_or_else(|| {
-                GitError::Message(format!("子模块 {} 当前 HEAD 无法解析", path.display()))
+                GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_RESOLVE_CURRENT_HEAD_OF_SUBMODULE_2, &[("value0", &format!("{}", path.display()))]))
             })?;
         if current == target {
             return Ok(());
         }
         if !subrepo.graph_descendant_of(target, current)? {
-            return Err(GitError::Message(format!(
-                "子模块 {} 不能快进到远端最新，请先手动处理分叉或本地提交",
-                path.display()
-            )));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::SUBMODULE_CANNOT_FAST_FORWARD_TO_THE_LATEST_REMOTE_REVISION_RESOLVE_DIVERGENCE_OR_LOC, &[("value0", &format!("{}", path.display()))])));
         }
 
         let target_object = subrepo.find_object(target, None)?;
@@ -310,10 +302,7 @@ impl GitService {
     fn ensure_submodule_clean(&self, repo: &Repository, name: &str, path: &Path) -> Result<()> {
         let status = repo.submodule_status(name, SubmoduleIgnore::None)?;
         if submodule_has_local_workdir_changes(status) {
-            return Err(GitError::Message(format!(
-                "子模块 {} 有本地改动，请先在子模块中提交、贮藏或清理后再更新",
-                path.display()
-            )));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::SUBMODULE_HAS_LOCAL_CHANGES_COMMIT_STASH_OR_DISCARD_THEM_IN_THE_SUBMODULE_BEFORE_UPDA, &[("value0", &format!("{}", path.display()))])));
         }
         Ok(())
     }
@@ -333,10 +322,7 @@ impl GitService {
                 || status.is_index_typechange()
                 || status.is_conflicted()
         }) {
-            return Err(GitError::Message(format!(
-                "子模块 {} 有本地改动，请先在子模块中提交、贮藏或清理后再更新",
-                path.display()
-            )));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::SUBMODULE_HAS_LOCAL_CHANGES_COMMIT_STASH_OR_DISCARD_THEM_IN_THE_SUBMODULE_BEFORE_UPDA, &[("value0", &format!("{}", path.display()))])));
         }
         Ok(())
     }
@@ -353,9 +339,7 @@ impl GitService {
         if let Some(branch) = submodule.branch()? {
             if branch == "." {
                 return parent_current_branch(parent_repo).ok_or_else(|| {
-                    GitError::Message(format!(
-                        "子模块 {submodule_name} 配置 branch = .，但父仓库当前不是本地分支"
-                    ))
+                    GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::SUBMODULE_HAS_BRANCH_BUT_THE_PARENT_REPOSITORY_IS_NOT_ON_A_LOCAL_BRANCH, &[("submodule_name", &format!("{}", submodule_name))]))
                 });
             }
             return Ok(branch.to_string());
@@ -391,9 +375,7 @@ impl GitService {
             return Ok(branch);
         }
 
-        Err(GitError::Message(format!(
-            "子模块 {submodule_name} 未配置跟踪分支，且无法确定远端默认分支"
-        )))
+        Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::SUBMODULE_HAS_NO_TRACKING_BRANCH_AND_ITS_REMOTE_DEFAULT_BRANCH_CANNOT_BE_DETERMINED, &[("submodule_name", &format!("{}", submodule_name))])))
     }
 }
 
@@ -444,9 +426,7 @@ fn submodule_remote_name(subrepo: &Repository, submodule_name: &str) -> Result<S
     if names.len() == 1 {
         return Ok(names[0].to_string());
     }
-    Err(GitError::Message(format!(
-        "子模块 {submodule_name} 无法确定远端，请保留 origin 或只配置一个远端"
-    )))
+    Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_DETERMINE_THE_REMOTE_FOR_SUBMODULE_KEEP_ORIGIN_OR_CONFIGURE_ONLY_ONE_REMOTE, &[("submodule_name", &format!("{}", submodule_name))])))
 }
 
 fn parent_current_branch(repo: &Repository) -> Option<String> {

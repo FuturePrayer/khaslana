@@ -76,11 +76,11 @@ pub enum RecoveryObjectState {
 impl RecoveryObjectState {
     pub fn label(&self) -> &str {
         match self {
-            Self::Available => "提交对象可用",
-            Self::Zero => "此侧没有提交",
-            Self::Missing => "当前本地提交对象不可用",
-            Self::NonCommit => "该对象不是提交",
-            Self::Unreadable(_) => "提交对象读取失败",
+            Self::Available => crate::ui_i18n::text(super::domain_ui_resources::COMMIT_OBJECT_AVAILABLE),
+            Self::Zero => crate::ui_i18n::text(super::domain_ui_resources::NO_COMMIT_ON_THIS_SIDE),
+            Self::Missing => crate::ui_i18n::text(super::domain_ui_resources::LOCAL_COMMIT_OBJECT_UNAVAILABLE),
+            Self::NonCommit => crate::ui_i18n::text(super::domain_ui_resources::THIS_OBJECT_IS_NOT_A_COMMIT),
+            Self::Unreadable(_) => crate::ui_i18n::text(super::domain_ui_resources::FAILED_TO_READ_COMMIT_OBJECT),
         }
     }
 }

@@ -18,6 +18,7 @@
 //! 启动），供 Claude Code / Cursor / ZCode 等 AI 工具作为 MCP 服务器挂载，
 //! 查询本机已索引仓库的代码知识图谱。
 
+use crate::types::domain_ui_resources;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -76,7 +77,7 @@ impl McpServer {
     /// 失败返回 Err（调用方写 stderr 后退出）。
     pub fn new(repo_path: Option<&Path>) -> Result<Self> {
         let data_dir = crate::storage::active_data_dir()
-            .ok_or_else(|| super::err("数据目录不可用，无法定位索引库"))?;
+            .ok_or_else(|| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_DATA_DIRECTORY_IS_UNAVAILABLE_CANNOT_LOCATE_THE_INDEX_DATABASE, &[])))?;
         let mut server = Self {
             fixed: None,
             data_dir,
@@ -121,11 +122,11 @@ impl McpServer {
     fn context_from_root(data_dir: &Path, repo_path: &Path) -> Result<RepoContext> {
         let repo_root = repo_path
             .canonicalize()
-            .map_err(|e| super::err(format!("仓库路径不可用 {}: {e}", repo_path.display())))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::REPOSITORY_PATH_UNAVAILABLE, &[("value0", &format!("{}", repo_path.display())), ("e", &format!("{}", e))])))?;
         let repo = git2::Repository::open(&repo_root)
-            .map_err(|e| super::err(format!("{} 不是 Git 仓库：{e}", repo_root.display())))?;
-        let repo_root = repo.workdir().ok_or_else(|| super::err("裸仓库没有工作区，不能建立工作区代码索引"))?
-            .canonicalize().map_err(|e| super::err(format!("仓库工作区不可用：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::IS_NOT_A_GIT_REPOSITORY, &[("value0", &format!("{}", repo_root.display())), ("e", &format!("{}", e))])))?;
+        let repo_root = repo.workdir().ok_or_else(|| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::A_BARE_REPOSITORY_HAS_NO_WORKING_TREE_CANNOT_BUILD_A_WORKING_TREE_CODE_INDEX, &[])))?
+            .canonicalize().map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::REPOSITORY_WORKING_TREE_UNAVAILABLE, &[("e", &format!("{}", e))])))?;
         let repo_key = crate::ai::review_store::repo_key(&repo_root.to_string_lossy());
         let db_path = super::open_index_db_path(data_dir, &repo_key)?;
         Ok(RepoContext {
@@ -156,16 +157,16 @@ impl McpServer {
                 use rusqlite::OptionalExtension;
                 let store = super::store::open_read_only_if_exists(&db_path)
                     .map_err(|error| json!({ "error": error.to_string() }))?
-                    .ok_or_else(|| json!({ "error": "索引库不可用或版本不兼容", "repo": key }))?;
+                    .ok_or_else(|| json!({ "error": crate::ui_i18n::text(domain_ui_resources::THE_INDEX_DATABASE_IS_UNAVAILABLE_OR_ITS_VERSION_IS_INCOMPATIBLE), "repo": key }))?;
                 let root: Option<String> = store.conn.query_row("SELECT value FROM meta WHERE key='repo_path'", [], |row| row.get(0))
-                    .optional().map_err(|error| json!({ "error": format!("读取仓库路径失败：{error}") }))?;
+                    .optional().map_err(|error| json!({ "error": crate::ui_i18n::format(domain_ui_resources::FAILED_TO_READ_THE_REPOSITORY_PATH, &[("error", &format!("{}", error))]) }))?;
                 return Ok(RepoContext { repo_root: root.filter(|root| !root.is_empty()).map(PathBuf::from),
                     db_path, repo_key: key });
             }
         }
         Err(json!({
-            "error": format!("repo 参数 {spec} 既不是存在的仓库路径，也没有对应的索引库"),
-            "hint": "传仓库绝对路径，或先调 list_projects 查看可用仓库",
+            "error": crate::ui_i18n::format(domain_ui_resources::THE_REPO_ARGUMENT_IS_NEITHER_AN_EXISTING_REPOSITORY_PATH_NOR_A_KNOWN_INDEX_DATABASE, &[("spec", &format!("{}", spec))]),
+            "hint": crate::ui_i18n::text(domain_ui_resources::PROVIDE_AN_ABSOLUTE_REPOSITORY_PATH_OR_CALL_LIST_PROJECTS_TO_SEE_AVAILABLE_REPOSITORI),
         }))
     }
 
@@ -215,8 +216,8 @@ impl McpServer {
             let entries = Self::list_project_entries(&self.data_dir);
             return match entries.len() {
                 0 => Err(json!({
-                    "error": "还没有任何已索引仓库",
-                    "hint": "调用 refresh_index 并传 repo 参数（仓库绝对路径）建立索引",
+                    "error": crate::ui_i18n::text(domain_ui_resources::NO_REPOSITORIES_HAVE_BEEN_INDEXED_YET),
+                    "hint": crate::ui_i18n::text(domain_ui_resources::CALL_REFRESH_INDEX_WITH_REPO_SET_TO_AN_ABSOLUTE_REPOSITORY_PATH_TO_BUILD_THE_INDEX),
                 })),
                 1 => Ok(Self::context_from_entry(
                     &self.data_dir,
@@ -229,9 +230,9 @@ impl McpServer {
                         .map(|(key, stats)| project_entry_json(key, stats))
                         .collect();
                     Err(json!({
-                        "error": format!("未指定 repo 参数且本机已有 {} 个已索引仓库", projects.len()),
+                        "error": crate::ui_i18n::format(domain_ui_resources::THE_REPO_ARGUMENT_WAS_OMITTED_BUT_INDEXED_REPOSITORIES_EXIST_LOCALLY, &[("value0", &format!("{}", projects.len()))]),
                         "projects": projects,
-                        "hint": "传 repo 参数（仓库绝对路径，或上方任一条目的 repo 键）；也可先调 list_projects 查看",
+                        "hint": crate::ui_i18n::text(domain_ui_resources::PROVIDE_REPO_AS_AN_ABSOLUTE_REPOSITORY_PATH_OR_ONE_OF_THE_REPO_KEYS_ABOVE_CALL_LIST_P),
                     }))
                 }
             };
@@ -271,15 +272,12 @@ impl McpServer {
     ) -> Result<()> {
         let mut options = super::PipelineOptions::new(
             cancel,
-            Box::new(move |p| progress(format!("{} {}/{}", p.phase.display(), p.done, p.total))),
+            Box::new(move |p| progress(crate::ui_i18n::resolve(&p.message))),
         );
         match super::run_index(repo_root, db_path, force_full, &mut options)? {
-            super::RunOutcome::Completed(stats) => progress(format!(
-                "索引完成：{} 文件 / {} 符号 / {} 边",
-                stats.files, stats.symbols, stats.edges
-            )),
-            super::RunOutcome::Unchanged => progress("索引无变化".to_string()),
-            super::RunOutcome::Cancelled => return Err(super::err("索引已取消，保留原有索引")),
+            super::RunOutcome::Completed(stats) => progress(crate::ui_i18n::format(domain_ui_resources::INDEXING_COMPLETE_FILES_SYMBOLS_EDGES, &[("value0", &format!("{}", stats.files)), ("value1", &format!("{}", stats.symbols)), ("value2", &format!("{}", stats.edges))])),
+            super::RunOutcome::Unchanged => progress(crate::ui_i18n::text(domain_ui_resources::INDEX_UNCHANGED).to_string()),
+            super::RunOutcome::Cancelled => return Err(crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INDEXING_CANCELLED_THE_PREVIOUS_INDEX_WAS_RETAINED, &[]))),
         }
         Ok(())
     }
@@ -292,7 +290,7 @@ impl McpServer {
     /// list_projects 不依赖仓库；其余工具先按 repo 参数解析目标仓库。
     fn call_tool(&self, name: &str, arguments: &Value) -> Value {
         if !matches!(name, "list_projects" | "search_symbols" | "search_graph" | "get_symbol_detail" | "get_code_snippet" | "trace_path" | "get_architecture" | "detect_changes" | "index_status" | "check_index_coverage" | "refresh_index") {
-            return text_result(&json!({ "error": format!("未知工具 {name}"), "hint": "可用工具见 tools/list" }), true);
+            return text_result(&json!({ "error": crate::ui_i18n::format(domain_ui_resources::UNKNOWN_TOOL, &[("name", &format!("{}", name))]), "hint": crate::ui_i18n::text(domain_ui_resources::SEE_TOOLS_LIST_FOR_AVAILABLE_TOOLS) }), true);
         }
         if name == "list_projects" {
             return match self.tool_list_projects() {
@@ -314,7 +312,7 @@ impl McpServer {
             }
         } else { None };
         if guarded && Self::arg_str(arguments, "generation").is_some_and(|expected| generation.as_deref() != Some(expected)) {
-            return text_result(&json!({ "error": "索引已刷新，旧分页代际失效", "hint": "移除 generation 并从 offset=0 重新查询" }), true);
+            return text_result(&json!({ "error": crate::ui_i18n::text(domain_ui_resources::THE_INDEX_WAS_REFRESHED_THE_PREVIOUS_PAGINATION_GENERATION_IS_NO_LONGER_VALID), "hint": crate::ui_i18n::text(domain_ui_resources::REMOVE_GENERATION_AND_RESTART_THE_QUERY_AT_OFFSET_0) }), true);
         }
         let result = match name {
             "search_symbols" | "search_graph" => self.tool_search_symbols(&ctx, arguments, name == "search_graph"),
@@ -329,8 +327,8 @@ impl McpServer {
             other => {
                 return text_result(
                     &json!({
-                        "error": format!("未知工具 {other}"),
-                        "hint": "可用工具见 tools/list",
+                        "error": crate::ui_i18n::format(domain_ui_resources::UNKNOWN_TOOL_2, &[("other", &format!("{}", other))]),
+                        "hint": crate::ui_i18n::text(domain_ui_resources::SEE_TOOLS_LIST_FOR_AVAILABLE_TOOLS),
                     }),
                     true,
                 );
@@ -344,7 +342,7 @@ impl McpServer {
                         Err(error) => return text_result(&json!({ "error": error.to_string() }), true),
                     };
                     if generation != current {
-                        return text_result(&json!({ "error": "查询期间索引已更新", "hint": "从 offset=0 重新查询" }), true);
+                        return text_result(&json!({ "error": crate::ui_i18n::text(domain_ui_resources::THE_INDEX_CHANGED_DURING_THE_QUERY), "hint": crate::ui_i18n::text(domain_ui_resources::RESTART_THE_QUERY_AT_OFFSET_0) }), true);
                     }
                     value["generation"] = json!(generation);
                 }
@@ -355,7 +353,7 @@ impl McpServer {
                 // （仅当正在建的就是当前仓库，多仓库模式不误伤其他仓库报错）。
                 if self.indexing(&ctx.repo_key) {
                     value["hint"] =
-                        json!("索引正在后台建立/刷新，稍候重试；可用 index_status 观察");
+                        json!(crate::ui_i18n::text(domain_ui_resources::THE_INDEX_IS_BEING_BUILT_OR_REFRESHED_IN_THE_BACKGROUND_RETRY_LATER_AND_USE_INDEX_STA));
                 }
                 text_result(&value, true)
             }
@@ -374,7 +372,7 @@ impl McpServer {
     }
 
     fn missing_arg_error(key: &str) -> Value {
-        json!({ "error": format!("缺少必填参数 {key}"), "hint": "参考 tools/list 中该工具的 inputSchema" })
+        json!({ "error": crate::ui_i18n::format(domain_ui_resources::MISSING_REQUIRED_ARGUMENT, &[("key", &format!("{}", key))]), "hint": crate::ui_i18n::text(domain_ui_resources::SEE_THIS_TOOL_S_INPUTSCHEMA_IN_TOOLS_LIST) })
     }
 
     fn tool_search_symbols(
@@ -386,7 +384,7 @@ impl McpServer {
         let query = Self::arg_str(args, "query");
         if query.is_none() && (!structural || ["name_pattern", "qn_pattern", "file_pattern", "label"]
             .iter().all(|key| Self::arg_str(args, key).is_none())) {
-            return Err(Self::missing_arg_error("query 或 name_pattern / qn_pattern / file_pattern / label"));
+            return Err(Self::missing_arg_error(crate::ui_i18n::text(domain_ui_resources::QUERY_OR_NAME_PATTERN_QN_PATTERN_FILE_PATTERN_LABEL)));
         }
         let limit = Self::arg_usize(args, "limit").unwrap_or(10).clamp(1, 200);
         let offset = Self::arg_usize(args, "offset").unwrap_or(0);
@@ -411,9 +409,9 @@ impl McpServer {
         if has_more { result["next_offset"] = json!(next_offset); }
         if count == 0 {
             result["hint"] = if total > 0 {
-                json!("offset 已超过结果总数，从 offset=0 重新查询")
+                json!(crate::ui_i18n::text(domain_ui_resources::OFFSET_EXCEEDS_THE_TOTAL_RESULT_COUNT_RESTART_THE_QUERY_AT_OFFSET_0))
             } else {
-                json!("无命中。缩短 query 或用 search_graph 的 name_pattern 正则、file_pattern 路径 glob 定位；怀疑过期时调用 refresh_index。索引是尽力解析，查不到不能证明代码不存在。")
+                json!(crate::ui_i18n::text(domain_ui_resources::NO_MATCHES_SHORTEN_QUERY_OR_USE_SEARCH_GRAPH_WITH_A_NAME_PATTERN_REGEX_OR_FILE_PATTER))
             };
         }
         Ok(result)
@@ -428,7 +426,7 @@ impl McpServer {
             object.remove("callers");
             object.remove("callees");
             if !object.contains_key("source") && !object.contains_key("suggestions") {
-                object.insert("source_note".to_string(), json!("当前无法读取源码文件。确认 repo 为存在的仓库绝对路径；文件已移动或索引过期时先刷新。"));
+                object.insert("source_note".to_string(), json!(crate::ui_i18n::text(domain_ui_resources::CANNOT_READ_THE_SOURCE_FILE_MAKE_SURE_REPO_IS_AN_EXISTING_ABSOLUTE_REPOSITORY_PATH_RE)));
             }
         }
         Ok(result)
@@ -450,16 +448,16 @@ impl McpServer {
             .map_err(|e| json!({ "error": e.to_string() }))?;
         match outcome {
             DetailOutcome::Found(detail) => Ok(serde_json::to_value(&*detail)
-                .map_err(|e| json!({ "error": format!("序列化详情失败：{e}") }))?),
+                .map_err(|e| json!({ "error": crate::ui_i18n::format(domain_ui_resources::FAILED_TO_SERIALIZE_DETAILS, &[("e", &format!("{}", e))]) }))?),
             DetailOutcome::Ambiguous(candidates) => Ok(json!({
                 "status": "ambiguous",
-                "message": format!("有 {} 个同名定义，请用 qualified_name 精确查询", candidates.len()),
+                "message": crate::ui_i18n::format(domain_ui_resources::THERE_ARE_DEFINITIONS_WITH_THIS_NAME_QUERY_AN_EXACT_QUALIFIED_NAME, &[("value0", &format!("{}", candidates.len()))]),
                 "suggestions": candidates,
             })),
             DetailOutcome::NotFound => Err(json!({
                 "error": "symbol not found",
                 "name": name,
-                "hint": "先用 search_symbols 模糊检索确认名称",
+                "hint": crate::ui_i18n::text(domain_ui_resources::USE_SEARCH_SYMBOLS_FIRST_TO_FIND_THE_CORRECT_NAME),
             })),
         }
     }
@@ -497,10 +495,10 @@ impl McpServer {
                     }
                 }
                 let mut value = serde_json::to_value(&result)
-                    .map_err(|e| json!({ "error": format!("序列化结果失败：{e}") }))?;
+                    .map_err(|e| json!({ "error": crate::ui_i18n::format(domain_ui_resources::FAILED_TO_SERIALIZE_RESULTS, &[("e", &format!("{}", e))]) }))?;
                 if result.has_more { value["next_offset"] = json!(offset.saturating_add(limit)); }
                 if Self::arg_str(args, "detail") == Some("full") {
-                    value["coverage_note"] = json!("total 统计指定深度内去重的节点，不是调用次数；hop=1 的 call_sites 给出直接边的调用次数和最多 100 个行号。启发式调用图仍可能缺少动态调用或类型信息。");
+                    value["coverage_note"] = json!(crate::ui_i18n::text(domain_ui_resources::TOTAL_COUNTS_DISTINCT_NODES_WITHIN_THE_REQUESTED_DEPTH_NOT_CALLS_FOR_HOP_1_CALL_SITES));
                 } else {
                     for key in ["callers", "callees"] {
                         if let Some(hops) = value.get_mut(key).and_then(Value::as_array_mut) {
@@ -518,13 +516,13 @@ impl McpServer {
             }
             TraceOutcome::Ambiguous(candidates) => Ok(json!({
                 "status": "ambiguous",
-                "message": format!("有 {} 个同名可调用定义，请用 qualified_name 精确查询", candidates.len()),
+                "message": crate::ui_i18n::format(domain_ui_resources::THERE_ARE_CALLABLE_DEFINITIONS_WITH_THIS_NAME_QUERY_AN_EXACT_QUALIFIED_NAME, &[("value0", &format!("{}", candidates.len()))]),
                 "suggestions": candidates,
             })),
             TraceOutcome::NotFound => Err(json!({
                 "error": "function not found",
                 "function_name": function_name,
-                "hint": "先用 search_symbols 模糊检索确认名称",
+                "hint": crate::ui_i18n::text(domain_ui_resources::USE_SEARCH_SYMBOLS_FIRST_TO_FIND_THE_CORRECT_NAME),
             })),
         }
     }
@@ -532,7 +530,7 @@ impl McpServer {
     fn tool_architecture(&self, ctx: &RepoContext) -> std::result::Result<Value, Value> {
         let overview =
             queries::index_overview(&ctx.db_path).map_err(|e| json!({ "error": e.to_string() }))?;
-        serde_json::to_value(&overview).map_err(|e| json!({ "error": format!("序列化失败：{e}") }))
+        serde_json::to_value(&overview).map_err(|e| json!({ "error": crate::ui_i18n::format(domain_ui_resources::SERIALIZATION_FAILED, &[("e", &format!("{}", e))]) }))
     }
 
     fn tool_detect_changes(
@@ -542,8 +540,8 @@ impl McpServer {
     ) -> std::result::Result<Value, Value> {
         let Some(repo_root) = ctx.repo_root.as_ref() else {
             return Err(json!({
-                "error": "该索引库缺少仓库路径元数据，无法读取工作区状态",
-                "hint": "改传 repo 参数为仓库绝对路径；或先 refresh_index（同样传绝对路径）补写元数据",
+                "error": crate::ui_i18n::text(domain_ui_resources::THIS_INDEX_DATABASE_HAS_NO_REPOSITORY_PATH_METADATA_CANNOT_READ_WORKING_TREE_STATUS),
+                "hint": crate::ui_i18n::text(domain_ui_resources::SET_REPO_TO_AN_ABSOLUTE_REPOSITORY_PATH_OR_CALL_REFRESH_INDEX_WITH_THAT_PATH_TO_RESTO),
             }));
         };
         let scope = Self::arg_str(args, "scope").unwrap_or("symbols");
@@ -560,11 +558,11 @@ impl McpServer {
                 let report = queries::impacted_symbols_for_files(&ctx.db_path, &changed_files, 1)
                     .map_err(|e| json!({ "error": e.to_string() }))?;
                 serde_json::to_value(&report)
-                    .map_err(|e| json!({ "error": format!("序列化失败：{e}") }))?
+                    .map_err(|e| json!({ "error": crate::ui_i18n::format(domain_ui_resources::SERIALIZATION_FAILED, &[("e", &format!("{}", e))]) }))?
             }
         };
         if changed_files.is_empty() {
-            result["hint"] = json!("工作区与基线之间没有检测到变更文件");
+            result["hint"] = json!(crate::ui_i18n::text(domain_ui_resources::NO_CHANGED_FILES_DETECTED_BETWEEN_THE_WORKING_TREE_AND_THE_BASELINE));
         }
         Ok(result)
     }
@@ -581,8 +579,8 @@ impl McpServer {
                 value["indexing"] = json!(indexing);
                 value["refresh"] = self.coordinator.status(&ctx.repo_key);
                 if indexing { value["status"] = json!("indexing"); }
-                if stats.needs_rebuild { value["hint"] = json!("索引需升级重建；等待后台刷新结束，或调用 refresh_index，再确认 needs_rebuild=false"); }
-                value["coverage_note"] = json!("索引基于 tree-sitter 和启发式调用解析；统计正常不等于所有定义和关系均已覆盖。");
+                if stats.needs_rebuild { value["hint"] = json!(crate::ui_i18n::text(domain_ui_resources::THE_INDEX_NEEDS_REBUILDING_FOR_AN_UPGRADE_WAIT_FOR_THE_BACKGROUND_REFRESH_OR_CALL_REF)); }
+                value["coverage_note"] = json!(crate::ui_i18n::text(domain_ui_resources::THE_INDEX_USES_TREE_SITTER_AND_HEURISTIC_CALL_RESOLUTION_NORMAL_STATISTICS_DO_NOT_MEA));
                 Ok(value)
             }
             None => Ok(json!({
@@ -590,7 +588,7 @@ impl McpServer {
                 "indexing": indexing,
                 "repo": ctx.repo_key,
                 "refresh": self.coordinator.status(&ctx.repo_key),
-                "hint": "索引为空。调用 refresh_index 建立全量索引（多仓库模式需传 repo 参数）",
+                "hint": crate::ui_i18n::text(domain_ui_resources::THE_INDEX_IS_EMPTY_CALL_REFRESH_INDEX_TO_BUILD_A_FULL_INDEX_PROVIDE_REPO_IN_MULTI_REP),
             })),
         }
     }
@@ -605,11 +603,11 @@ impl McpServer {
         let mut result = json!({ "total": count, "projects": projects });
         if count == 0 {
             result["hint"] = json!(
-                "还没有任何已索引仓库：调用 refresh_index 并传 repo 参数（仓库绝对路径）建立索引"
+                crate::ui_i18n::text(domain_ui_resources::NO_REPOSITORIES_HAVE_BEEN_INDEXED_YET_CALL_REFRESH_INDEX_WITH_REPO_SET_TO_AN_ABSOLUTE)
             );
         } else {
             result["hint"] = json!(
-                "其余工具传 repo 参数（仓库绝对路径或这里的 repo 键）选择目标仓库；本机仅一个仓库时可不传"
+                crate::ui_i18n::text(domain_ui_resources::FOR_OTHER_TOOLS_SELECT_THE_REPOSITORY_WITH_REPO_AN_ABSOLUTE_PATH_OR_A_REPO_KEY_SHOWN)
             );
         }
         Ok(result)
@@ -618,9 +616,9 @@ impl McpServer {
     fn tool_coverage(&self, ctx: &RepoContext, args: &Value) -> std::result::Result<Value, Value> {
         let strings = |key: &str| -> std::result::Result<Vec<String>, Value> {
             let Some(value) = args.get(key) else { return Ok(Vec::new()); };
-            let Some(items) = value.as_array() else { return Err(json!({ "error": format!("{key} 必须是字符串数组") })); };
+            let Some(items) = value.as_array() else { return Err(json!({ "error": crate::ui_i18n::format(domain_ui_resources::MUST_BE_AN_ARRAY_OF_STRINGS, &[("key", &format!("{}", key))]) })); };
             items.iter().map(|value| value.as_str().map(str::to_string)
-                .ok_or_else(|| json!({ "error": format!("{key} 必须是字符串数组") }))).collect()
+                .ok_or_else(|| json!({ "error": crate::ui_i18n::format(domain_ui_resources::MUST_BE_AN_ARRAY_OF_STRINGS, &[("key", &format!("{}", key))]) }))).collect()
         };
         super::coverage::check_coverage(&ctx.db_path, ctx.repo_root.as_deref(), &strings("paths")?, &strings("scopes")?,
             Self::arg_usize(args, "offset").unwrap_or(0), Self::arg_usize(args, "limit").unwrap_or(50).clamp(1, 200))
@@ -638,14 +636,14 @@ impl McpServer {
             "full" => true,
             other => {
                 return Err(
-                    json!({ "error": format!("未知 mode {other}，可选 incremental | full") }),
+                    json!({ "error": crate::ui_i18n::format(domain_ui_resources::UNKNOWN_MODE_EXPECTED_INCREMENTAL_OR_FULL, &[("other", &format!("{}", other))]) }),
                 );
             }
         };
         let Some(repo_root) = ctx.repo_root.clone() else {
             return Err(json!({
-                "error": "该索引库缺少仓库路径元数据，无法定位仓库根目录",
-                "hint": "改传 repo 参数为仓库绝对路径再刷新",
+                "error": crate::ui_i18n::text(domain_ui_resources::THIS_INDEX_DATABASE_HAS_NO_REPOSITORY_PATH_METADATA_CANNOT_LOCATE_THE_REPOSITORY_ROOT),
+                "hint": crate::ui_i18n::text(domain_ui_resources::SET_REPO_TO_AN_ABSOLUTE_REPOSITORY_PATH_AND_REFRESH_AGAIN),
             }));
         };
         let db_path = ctx.db_path.clone();
@@ -655,15 +653,15 @@ impl McpServer {
             }).map_err(|error| error.to_string())
         });
         if !scheduled && (force_full || !self.indexing(&ctx.repo_key)) {
-            return Err(json!({ "error": "刷新未安排：同仓库任务仍在运行或调度器已关闭",
+            return Err(json!({ "error": crate::ui_i18n::text(domain_ui_resources::REFRESH_WAS_NOT_SCHEDULED_A_TASK_FOR_THIS_REPOSITORY_IS_STILL_ACTIVE_OR_THE_SCHEDULER),
                 "repo": ctx.repo_key, "scheduled": false, "refresh": self.coordinator.status(&ctx.repo_key),
-                "hint": "先用 index_status 等待当前任务结束，再重新调用 refresh_index" }));
+                "hint": crate::ui_i18n::text(domain_ui_resources::USE_INDEX_STATUS_TO_WAIT_FOR_THE_CURRENT_TASK_TO_FINISH_THEN_CALL_REFRESH_INDEX_AGAIN) }));
         }
         // stdio 串行分发不能等分钟级建库；小任务保留直接返回结果的兼容行为。
         if !self.coordinator.wait_timeout(&ctx.repo_key, std::time::Duration::from_millis(100)) {
             return Ok(json!({ "status": "indexing", "indexing": true, "repo": ctx.repo_key,
                 "scheduled": scheduled, "refresh": self.coordinator.status(&ctx.repo_key),
-                "hint": "索引仍在后台处理，请用 index_status 查询完成或失败状态；无需重复 refresh_index" }));
+                "hint": crate::ui_i18n::text(domain_ui_resources::INDEXING_IS_STILL_RUNNING_IN_THE_BACKGROUND_USE_INDEX_STATUS_TO_CHECK_COMPLETION_OR_F) }));
         }
         if let Some(error) = self.coordinator.status(&ctx.repo_key)["last_error"].as_str() {
             return Err(json!({ "error": error }));
@@ -671,7 +669,7 @@ impl McpServer {
 
         let stats = read_index_stats(&ctx.db_path)
             .map_err(|e| json!({ "error": e.to_string() }))?
-            .ok_or_else(|| json!({ "error": "索引完成后统计仍为空" }))?;
+            .ok_or_else(|| json!({ "error": crate::ui_i18n::text(domain_ui_resources::STATISTICS_ARE_STILL_EMPTY_AFTER_INDEXING_COMPLETED) }))?;
         let mut value = stats_to_json(&stats);
         value["status"] = json!("ready");
         value["repo"] = json!(ctx.repo_key);
@@ -706,7 +704,7 @@ impl McpServer {
             ));
         };
         if parsed.get("params").is_some_and(|params| !params.is_object()) {
-            return Some(jsonrpc_error(&id, -32602, "params 必须是对象"));
+            return Some(jsonrpc_error(&id, -32602, crate::ui_i18n::text(domain_ui_resources::PARAMS_MUST_BE_AN_OBJECT)));
         }
 
         match method {
@@ -742,7 +740,7 @@ impl McpServer {
                     .cloned()
                     .unwrap_or_else(|| json!({}));
                 let Some(definition) = tool_definitions().iter().find(|tool| tool["name"] == name) else {
-                    return Some(jsonrpc_error(&id, -32602, &format!("未知工具 {name}")));
+                    return Some(jsonrpc_error(&id, -32602, &crate::ui_i18n::format(domain_ui_resources::UNKNOWN_TOOL, &[("name", &format!("{}", name))])));
                 };
                 if let Err(error) = validate_arguments(&definition["inputSchema"], &arguments, "arguments") {
                     return Some(jsonrpc_error(&id, -32602, &error));
@@ -813,28 +811,28 @@ fn validate_arguments(schema: &Value, value: &Value, path: &str) -> std::result:
         Some("boolean") => value.is_boolean(),
         _ => true,
     };
-    if !valid_type { return Err(format!("{path} 类型无效，应为 {}", schema["type"])); }
+    if !valid_type { return Err(crate::ui_i18n::format(domain_ui_resources::INVALID_TYPE_FOR_EXPECTED, &[("path", &format!("{}", path)), ("value0", &format!("{}", schema["type"]))])); }
     if let Some(values) = schema["enum"].as_array() {
-        if !values.contains(value) { return Err(format!("{path} 不在允许的取值中")); }
+        if !values.contains(value) { return Err(crate::ui_i18n::format(domain_ui_resources::IS_NOT_ONE_OF_THE_ALLOWED_VALUES, &[("path", &format!("{}", path))])); }
     }
     if let Some(minimum) = schema["minimum"].as_i64() {
         if value.as_i64().is_some_and(|number| number < minimum) {
-            return Err(format!("{path} 不得小于 {minimum}"));
+            return Err(crate::ui_i18n::format(domain_ui_resources::MUST_NOT_BE_LESS_THAN, &[("path", &format!("{}", path)), ("minimum", &format!("{}", minimum))]));
         }
     }
     if let Some(maximum) = schema["maximum"].as_u64() {
         if value.as_u64().is_some_and(|number| number > maximum) {
-            return Err(format!("{path} 不得大于 {maximum}"));
+            return Err(crate::ui_i18n::format(domain_ui_resources::MUST_NOT_EXCEED, &[("path", &format!("{}", path)), ("maximum", &format!("{}", maximum))]));
         }
     }
     if let Some(required) = schema["required"].as_array() {
         for key in required.iter().filter_map(Value::as_str) {
-            if value.get(key).is_none() { return Err(format!("缺少必填参数 {path}.{key}")); }
+            if value.get(key).is_none() { return Err(crate::ui_i18n::format(domain_ui_resources::MISSING_REQUIRED_ARGUMENT_2, &[("path", &format!("{}", path)), ("key", &format!("{}", key))])); }
         }
     }
     if let Some(choices) = schema["anyOf"].as_array() {
         if !choices.iter().any(|choice| validate_arguments(choice, value, path).is_ok()) {
-            return Err(format!("{path} 缺少必需的查询条件，请参考 tools/list"));
+            return Err(crate::ui_i18n::format(domain_ui_resources::IS_MISSING_REQUIRED_QUERY_CRITERIA_SEE_TOOLS_LIST, &[("path", &format!("{}", path))]));
         }
     }
     if let Some(properties) = schema["properties"].as_object() {
@@ -855,8 +853,14 @@ fn validate_arguments(schema: &Value, value: &Value, path: &str) -> std::result:
 // ---------------------------------------------------------------------------
 
 fn tool_definitions() -> &'static [Value] {
-    static DEFINITIONS: std::sync::OnceLock<Vec<Value>> = std::sync::OnceLock::new();
-    DEFINITIONS.get_or_init(build_tool_definitions)
+    // 标题缓存按语言分开，工具名称与 schema 身份不随语言变化。
+    static ZH: std::sync::OnceLock<Vec<Value>> = std::sync::OnceLock::new();
+    static EN: std::sync::OnceLock<Vec<Value>> = std::sync::OnceLock::new();
+    let cache = match crate::ui_i18n::language() {
+        crate::language::Language::ZhCn => &ZH,
+        crate::language::Language::En => &EN,
+    };
+    cache.get_or_init(build_tool_definitions)
 }
 
 fn build_tool_definitions() -> Vec<Value> {
@@ -873,14 +877,14 @@ fn build_tool_definitions() -> Vec<Value> {
     let mut definitions = vec![
         json!({
             "name": "list_projects",
-            "title": "项目清单",
+            "title": crate::ui_i18n::text(domain_ui_resources::PROJECTS),
             "description": "List local indexed repos: keys, paths, file/symbol/edge counts and index times. Select a repo for subsequent tools.",
             "inputSchema": { "type": "object", "properties": {} },
             "outputSchema": output_schema,
         }),
         json!({
             "name": "search_symbols",
-            "title": "符号搜索",
+            "title": crate::ui_i18n::text(domain_ui_resources::SYMBOL_SEARCH),
             "description": "Search definition names/paths/signatures/docs. Exact names rank first; relax all-words only if empty. Filters AND. Returns locations, signatures and pages; full adds docs. Use qualified_name for snippet/trace. No match is not proof of absence.",
             "inputSchema": with_repo(json!({
                 "type": "object",
@@ -900,7 +904,7 @@ fn build_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_symbol_detail",
-            "title": "符号详情",
+            "title": crate::ui_i18n::text(domain_ui_resources::SYMBOL_DETAILS),
             "description": "Definition location, direct callers/callees and source (max 200 lines). On status=ambiguous, retry a suggestions qualified_name. Use names from search, not tool names.",
             "inputSchema": with_repo(json!({
                 "type": "object",
@@ -913,7 +917,7 @@ fn build_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "trace_path",
-            "title": "调用链追踪",
+            "title": crate::ui_i18n::text(domain_ui_resources::CALL_TRACING),
             "description": "Traverse CALLS with risk labels. Totals count distinct nodes within depth, not calls; directions page independently. hop=1 call_sites has count/lines (max 100, truncated); missing call_sites.file_path uses row file_path. Heuristic links may miss calls. full restores all fields and notes.",
             "inputSchema": with_repo(json!({
                 "type": "object",
@@ -932,14 +936,14 @@ fn build_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_architecture",
-            "title": "架构概览",
+            "title": crate::ui_i18n::text(domain_ui_resources::ARCHITECTURE_OVERVIEW),
             "description": "Repo overview: node/edge totals and types, languages, top-level folder symbol density and top 10 fan-in hotspots.",
             "inputSchema": with_repo(json!({ "type": "object", "properties": {} })),
             "outputSchema": output_schema,
         }),
         json!({
             "name": "detect_changes",
-            "title": "变更影响分析",
+            "title": crate::ui_i18n::text(domain_ui_resources::CHANGE_IMPACT_ANALYSIS),
             "description": "Impact of unstaged, staged and untracked changes: files, affected symbols and upstream callers with risk labels. Optional base_branch includes committed changes via three-dot diff.",
             "inputSchema": with_repo(json!({
                 "type": "object",
@@ -952,14 +956,14 @@ fn build_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "index_status",
-            "title": "索引状态",
+            "title": crate::ui_i18n::text(domain_ui_resources::INDEX_STATUS),
             "description": "Index stats and this process's refresh queue/errors/backoff. If empty or needs_rebuild, use refresh_index; old relations are blocked until rebuilt.",
             "inputSchema": with_repo(json!({ "type": "object", "properties": {} })),
             "outputSchema": output_schema,
         }),
         json!({
             "name": "refresh_index",
-            "title": "刷新索引",
+            "title": crate::ui_i18n::text(domain_ui_resources::REFRESH_INDEX),
             "description": "Refresh index; first build needs an absolute repo path. Returns ready or indexing: poll index_status, do not repeat refresh. An active local job is reused for incremental; full is rejected until it finishes.",
             "inputSchema": with_repo(json!({
                 "type": "object",
@@ -972,7 +976,7 @@ fn build_tool_definitions() -> Vec<Value> {
     ];
     let mut search_graph = definitions[1].clone();
     search_graph["name"] = json!("search_graph");
-    search_graph["title"] = json!("结构与关键词搜索");
+    search_graph["title"] = json!(crate::ui_i18n::text(domain_ui_resources::STRUCTURE_AND_KEYWORD_SEARCH));
     search_graph["description"] = json!("Find definitions by keywords and/or filters (AND). Without query, supply a regex/glob/label. Returns locations, signatures and total/has_more/next_offset; full adds docs. Use qualified_name for snippet/trace. No match is not proof of absence.");
     search_graph["inputSchema"].as_object_mut().unwrap().remove("required");
     search_graph["inputSchema"]["anyOf"] = json!([
@@ -981,7 +985,7 @@ fn build_tool_definitions() -> Vec<Value> {
     ]);
     let mut snippet = definitions[2].clone();
     snippet["name"] = json!("get_code_snippet");
-    snippet["title"] = json!("定义源码");
+    snippet["title"] = json!(crate::ui_i18n::text(domain_ui_resources::DEFINITION_SOURCE));
     snippet["description"] = json!("Read a definition found by search_graph/search_symbols, not a search tool. Returns signature, docs and source.lines/start_line (max 200; source.truncated). On ambiguity, retry a suggestions qualified_name. For calls use trace_path.");
     let name_schema = snippet["inputSchema"]["properties"]["name"].clone();
     snippet["inputSchema"]["properties"].as_object_mut().unwrap().remove("name");
@@ -989,7 +993,7 @@ fn build_tool_definitions() -> Vec<Value> {
     snippet["inputSchema"]["required"] = json!(["qualified_name"]);
     definitions.extend([search_graph, snippet]);
     definitions.push(json!({
-        "name": "check_index_coverage", "title": "索引覆盖检查",
+        "name": "check_index_coverage", "title": crate::ui_i18n::text(domain_ui_resources::INDEX_COVERAGE_CHECK),
         "description": "Check evidence files: coverage status, parse gaps, unresolved calls and metadata freshness. unresolved_no_candidate=no same-language repo definition; unresolved_with_candidates=target uncertain. Neither is a parse error rate. Read source for gaps/stale/missing coverage; clean status is no proof of completeness. Supply paths or scopes.",
         "inputSchema": with_repo(json!({ "type": "object", "properties": {
             "paths": { "type": "array", "items": { "type": "string" }, "description": "Exact repo-relative file paths." },

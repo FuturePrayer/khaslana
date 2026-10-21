@@ -1,3 +1,6 @@
+#[path = "ui_resources/submodule_view_messages.rs"]
+mod messages;
+
 use std::collections::BTreeMap;
 
 use git2::Repository;
@@ -56,20 +59,21 @@ pub(crate) fn submodule_remote_request_matches(
 }
 
 pub(crate) fn operation_refreshes_submodule_dialog(message: &str) -> bool {
-    message == "子模块已同步记录版本"
-        || message == "子模块已更新到远端最新"
-        || (message.starts_with("子模块 ") && message.ends_with(" 已更新到远端最新"))
+    let Some(key) = khaslana::ui_i18n::message_key(message) else { return false; };
+    key == crate::operation_ui_resources::SUBMODULE_SYNCED.key
+        || key == crate::operation_ui_resources::SUBMODULES_UPDATED.key
+        || key == crate::operation_ui_resources::SUBMODULE_UPDATED.key
 }
 
 impl RepositoryView {
     pub(crate) fn open_submodule_manager(&mut self) {
         if self.repo_path.is_none() {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         }
         self.close_popups();
         self.active_dialog = Some(DialogState::SubmoduleManager);
-        self.status = "子模块已打开".into();
+        self.status = khaslana::ui_i18n::encode(messages::SUBMODULE_OPENED, &[]);
         self.last_error = None;
         if !self.submodule_dialog.loaded && !self.submodule_dialog.loading {
             self.load_submodules();
@@ -78,11 +82,11 @@ impl RepositoryView {
 
     pub(crate) fn load_submodules(&mut self) {
         let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         let Some(repo_path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         let service = self.service_for_tab(tab_id);
@@ -99,7 +103,7 @@ impl RepositoryView {
             state.remote_error = None;
             state.request_id
         };
-        self.status = "正在加载子模块列表".into();
+        self.status = khaslana::ui_i18n::encode(messages::LOADING_SUBMODULE_LIST, &[]);
 
         self.tasks.spawn(TaskKind::Short, move || {
             let result = (|| -> khaslana::Result<Vec<SubmoduleInfo>> {
@@ -155,7 +159,7 @@ impl RepositoryView {
                 .collect();
             state.remote_request_id
         };
-        self.status = "正在检查子模块远端状态".into();
+        self.status = khaslana::ui_i18n::encode(messages::CHECKING_SUBMODULE_REMOTE_STATUS, &[]);
 
         self.tasks.spawn(TaskKind::Long, move || {
             let result = (|| -> khaslana::Result<Vec<(String, SubmoduleRemoteSyncStatus)>> {
@@ -186,42 +190,42 @@ impl RepositoryView {
     }
 
     pub(crate) fn update_submodules(&mut self) {
-        if !self.ensure_no_merge_in_progress("同步子模块记录版本") {
+        if !self.ensure_no_merge_in_progress(khaslana::ui_i18n::text(messages::SYNC_RECORDED_SUBMODULE_REVISIONS)) {
             return;
         }
         if self.repo_path.is_none() {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         }
         self.with_repo_keep_dialog_blocking(
-            "子模块已同步记录版本",
+            crate::operation_ui_resources::SUBMODULE_SYNCED,
             move |service, repo| service.update_submodules(repo),
         );
     }
 
     pub(crate) fn update_submodules_to_remote_latest(&mut self) {
-        if !self.ensure_no_merge_in_progress("更新子模块") {
+        if !self.ensure_no_merge_in_progress(khaslana::ui_i18n::text(messages::UPDATE_SUBMODULES)) {
             return;
         }
         if self.repo_path.is_none() {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         }
         self.with_repo_keep_dialog_blocking(
-            "子模块已更新到远端最新",
+            crate::operation_ui_resources::SUBMODULES_UPDATED,
             move |service, repo| service.update_submodules_to_remote_latest(repo),
         );
     }
 
     pub(crate) fn update_submodule_to_remote_latest(&mut self, name: String) {
-        if !self.ensure_no_merge_in_progress("更新子模块") {
+        if !self.ensure_no_merge_in_progress(khaslana::ui_i18n::text(messages::UPDATE_SUBMODULES)) {
             return;
         }
         if self.repo_path.is_none() {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         }
-        let label = format!("子模块 {name} 已更新到远端最新");
+        let label = khaslana::ui_i18n::LocalizedMessage::new(crate::operation_ui_resources::SUBMODULE_UPDATED, &[("name", &name)]);
         self.with_repo_keep_dialog_owned_blocking(label, move |service, repo| {
             service.update_submodule_to_remote_latest(repo, &name)
         });
@@ -233,11 +237,11 @@ impl RepositoryView {
     ) -> impl IntoElement {
         let state = &self.submodule_dialog;
         let rows = if state.loading && !state.loaded {
-            vec![placeholder_row("正在加载子模块列表...").into_any_element()]
+            vec![placeholder_row(khaslana::ui_i18n::text(messages::LOADING_SUBMODULE_LIST_2)).into_any_element()]
         } else if let Some(error) = state.error.as_ref() {
-            vec![self.submodule_dialog_placeholder(format!("子模块列表加载失败：{error}"))]
+            vec![self.submodule_dialog_placeholder(khaslana::ui_i18n::format(messages::FAILED_TO_LOAD_SUBMODULE_LIST_ERROR, &[("error", &(error).to_string())]))]
         } else if state.loaded && state.items.is_empty() {
-            vec![placeholder_row("当前仓库没有子模块").into_any_element()]
+            vec![placeholder_row(khaslana::ui_i18n::text(messages::THIS_REPOSITORY_HAS_NO_SUBMODULES)).into_any_element()]
         } else {
             state
                 .items
@@ -280,7 +284,7 @@ impl RepositoryView {
                             .text_size(px(ui_theme::TYPE_TITLE))
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                            .child("子模块"),
+                            .child(khaslana::ui_i18n::text(messages::SUBMODULES)),
                     )
                     .child(
                         div()
@@ -288,19 +292,19 @@ impl RepositoryView {
                             .items_center()
                             .gap_2()
                             .child(self.button(
-                                "刷新",
+                                khaslana::ui_i18n::text(messages::REFRESH),
                                 !self.busy && !state.loading,
                                 |this, _, _| this.load_submodules(),
                                 cx,
                             ))
                             .child(self.button(
-                                "同步记录版本",
+                                khaslana::ui_i18n::text(messages::SYNC_RECORDED_REVISIONS),
                                 can_update,
                                 |this, _, _| this.update_submodules(),
                                 cx,
                             ))
                             .child(self.primary_button(
-                                "更新到远端最新",
+                                khaslana::ui_i18n::text(messages::UPDATE_TO_REMOTE_LATEST),
                                 can_update,
                                 |this, _, _| this.update_submodules_to_remote_latest(),
                                 cx,
@@ -312,9 +316,9 @@ impl RepositoryView {
                     .text_size(px(ui_theme::TYPE_BODY))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
                     .child(if state.remote_loading {
-                        "列表仅在打开弹窗时读取；正在后台检查子模块相对远端分支的超前/落后状态。"
+                        khaslana::ui_i18n::text(messages::THE_LIST_IS_READ_ONLY_WHEN_OPENING_THIS_DIALOG_AHEAD)
                     } else {
-                        "列表仅在打开弹窗时读取；同步记录版本会检出父仓库记录的提交，更新到远端最新会修改父仓库子模块指针，需要后续提交该变更。"
+                        khaslana::ui_i18n::text(messages::THE_LIST_IS_READ_ONLY_WHEN_OPENING_THIS_DIALOG_SYNC)
                     }),
             )
             .child(
@@ -352,7 +356,7 @@ impl RepositoryView {
                     }),
             )
             .child(div().flex().justify_end().child(self.button(
-                "关闭",
+                khaslana::ui_i18n::text(messages::CLOSE),
                 !self.busy,
                 |this, _, _| this.close_dialog(),
                 cx,
@@ -392,16 +396,16 @@ impl RepositoryView {
                     .min_w(px(0.0))
                     .flex()
                     .justify_center()
-                    .child("路径"),
+                    .child(khaslana::ui_i18n::text(messages::PATH)),
             )
-            .child(div().flex_none().flex().justify_center().child("状态"))
+            .child(div().flex_none().flex().justify_center().child(khaslana::ui_i18n::text(messages::STATUS)))
             .child(
                 div()
                     .flex_none()
                     .w(px(86.0))
                     .flex()
                     .justify_center()
-                    .child("目标"),
+                    .child(khaslana::ui_i18n::text(messages::TARGET)),
             )
             .child(
                 div()
@@ -409,7 +413,7 @@ impl RepositoryView {
                     .w(px(86.0))
                     .flex()
                     .justify_center()
-                    .child("当前"),
+                    .child(khaslana::ui_i18n::text(messages::CURRENT)),
             )
             .child(
                 div()
@@ -425,7 +429,7 @@ impl RepositoryView {
                     .w(px(92.0))
                     .flex()
                     .justify_center()
-                    .child("操作"),
+                    .child(khaslana::ui_i18n::text(messages::ACTIONS)),
             )
     }
 
@@ -436,7 +440,7 @@ impl RepositoryView {
     ) -> impl IntoElement {
         let target = module.index_id.as_deref().map(short_oid).unwrap_or("-");
         let current = module.workdir_id.as_deref().map(short_oid).unwrap_or("-");
-        let url = module.url.as_deref().unwrap_or("未配置 URL");
+        let url = module.url.as_deref().unwrap_or(khaslana::ui_i18n::text(messages::URL_NOT_CONFIGURED));
         let module_name = module.name.clone();
         let remote_status = self.submodule_dialog.remote_statuses.get(&module.name);
         let (status_label, status_tone) = submodule_status_display(module, remote_status);
@@ -505,7 +509,7 @@ impl RepositoryView {
                     .child(url.to_string()),
             )
             .child(div().flex_none().w(px(92.0)).child(self.button(
-                "更新最新",
+                khaslana::ui_i18n::text(messages::UPDATE_LATEST),
                 !self.busy && !self.merge_in_progress(),
                 move |this, _, _| this.update_submodule_to_remote_latest(module_name.clone()),
                 cx,
@@ -532,20 +536,20 @@ pub(crate) fn submodule_status_display(
 
     match remote_status {
         Some(SubmoduleRemoteSyncStatus::UpToDate) => {
-            ("远端同步".to_string(), SubmoduleStatusTone::Ready)
+            (khaslana::ui_i18n::text(messages::UP_TO_DATE_WITH_REMOTE).to_string(), SubmoduleStatusTone::Ready)
         }
         Some(SubmoduleRemoteSyncStatus::Behind(behind)) => {
-            (format!("落后 {behind}"), SubmoduleStatusTone::Info)
+            (khaslana::ui_i18n::format(messages::BEHIND_BEHIND, &[("behind", &(behind).to_string())]), SubmoduleStatusTone::Info)
         }
         Some(SubmoduleRemoteSyncStatus::Ahead(ahead)) => {
-            (format!("超前 {ahead}"), SubmoduleStatusTone::Warning)
+            (khaslana::ui_i18n::format(messages::AHEAD_AHEAD, &[("ahead", &(ahead).to_string())]), SubmoduleStatusTone::Warning)
         }
         Some(SubmoduleRemoteSyncStatus::Diverged { ahead, behind }) => (
-            format!("分叉 {ahead}/{behind}"),
+            khaslana::ui_i18n::format(messages::DIVERGED_AHEAD_BEHIND, &[("ahead", &(ahead).to_string()), ("behind", &(behind).to_string())]),
             SubmoduleStatusTone::Danger,
         ),
         Some(SubmoduleRemoteSyncStatus::Unavailable(_)) => {
-            ("远端未知".to_string(), SubmoduleStatusTone::Muted)
+            (khaslana::ui_i18n::text(messages::REMOTE_UNKNOWN).to_string(), SubmoduleStatusTone::Muted)
         }
         Some(SubmoduleRemoteSyncStatus::Unknown | SubmoduleRemoteSyncStatus::Checking) | None => {
             let ready = module.status.is_ready();
@@ -563,13 +567,13 @@ pub(crate) fn submodule_status_display(
 
 fn submodule_local_issue_label(status: &SubmoduleState) -> Option<&'static str> {
     if !status.initialized {
-        Some("未初始化")
+        Some(khaslana::ui_i18n::text(messages::NOT_INITIALIZED))
     } else if !status.checked_out {
-        Some("未检出")
+        Some(khaslana::ui_i18n::text(messages::NOT_CHECKED_OUT))
     } else if status.workdir_modified {
-        Some("有改动")
+        Some(khaslana::ui_i18n::text(messages::MODIFIED))
     } else if status.workdir_untracked {
-        Some("有未跟踪文件")
+        Some(khaslana::ui_i18n::text(messages::UNTRACKED_FILES))
     } else {
         None
     }

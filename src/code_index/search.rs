@@ -1,12 +1,12 @@
 //! 符号检索：名称优先、文档补充，结构过滤与分页共用同一份匹配集合。
 
+use crate::types::domain_ui_resources;
 use std::path::Path;
 
 use regex::{Regex, RegexBuilder};
 use rusqlite::{Connection, params};
 use serde_json::Value;
 
-use super::err;
 use super::graph::GraphBuffer;
 use super::store::{CodeIndexStore, SearchHit, camel_split, open_read_only_if_exists};
 use crate::types::Result;
@@ -42,7 +42,7 @@ pub fn search_symbols_with_options(
     options: &SearchOptions<'_>,
 ) -> Result<(Vec<SearchHit>, usize)> {
     let store = open_read_only_if_exists(db_path)?
-        .ok_or_else(|| err("代码索引不存在或尚未建立，请先调用 refresh_index"))?;
+        .ok_or_else(|| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CODE_INDEX_DOES_NOT_EXIST_OR_HAS_NOT_BEEN_BUILT_CALL_REFRESH_INDEX_FIRST, &[])))?;
     store.search_with_options(options)
 }
 
@@ -52,7 +52,7 @@ fn pattern_regex(pattern: Option<&str>) -> Result<Option<Regex>> {
             RegexBuilder::new(pattern)
                 .size_limit(1024 * 1024)
                 .build()
-                .map_err(|e| err(format!("名称正则表达式无效：{e}")))
+                .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INVALID_NAME_REGULAR_EXPRESSION, &[("e", &format!("{}", e))])))
         })
         .transpose()
 }
@@ -96,7 +96,7 @@ impl CodeIndexStore {
         &self,
         options: &SearchOptions<'_>,
     ) -> Result<(Vec<SearchHit>, usize)> {
-        let tx = self.conn.unchecked_transaction().map_err(|e| err(format!("开启搜索快照失败：{e}")))?;
+        let tx = self.conn.unchecked_transaction().map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_START_THE_SEARCH_SNAPSHOT, &[("e", &format!("{}", e))])))?;
         let result = self.search_page(options, false)?;
         // 先保持多词查询的精度；完全无命中时再放宽，避免自然描述中的附加词吞掉结果。
         let query = options.query.unwrap_or("").trim();
@@ -105,7 +105,7 @@ impl CodeIndexStore {
         } else {
             Ok(result)
         }?;
-        tx.commit().map_err(|e| err(format!("结束搜索快照失败：{e}")))?;
+        tx.commit().map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_FINISH_THE_SEARCH_SNAPSHOT, &[("e", &format!("{}", e))])))?;
         Ok(result)
     }
 
@@ -167,14 +167,14 @@ impl CodeIndexStore {
                     params![match_expr, options.label, file_pattern],
                     |row| row.get::<_, i64>(0),
                 )
-                .map_err(|e| err(format!("全文检索失败：{e}")))?
+                .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FULL_TEXT_SEARCH_FAILED, &[("e", &format!("{}", e))])))?
                 .max(0) as usize;
             sql.push_str(" LIMIT ?6 OFFSET ?7");
         }
         let mut stmt = self
             .conn
             .prepare(&sql)
-            .map_err(|e| err(format!("全文检索失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FULL_TEXT_SEARCH_FAILED, &[("e", &format!("{}", e))])))?;
         let mut rows = if has_regex {
             stmt.query(params![
                 match_expr,
@@ -194,11 +194,11 @@ impl CodeIndexStore {
                 options.offset.min(i64::MAX as usize) as i64
             ])
         }
-        .map_err(|e| err(format!("全文检索失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FULL_TEXT_SEARCH_FAILED, &[("e", &format!("{}", e))])))?;
         let mut hits = Vec::new();
         while let Some(row) = rows
             .next()
-            .map_err(|e| err(format!("读取搜索结果失败：{e}")))?
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_SEARCH_RESULTS, &[("e", &format!("{}", e))])))?
         {
             let hit = (|| -> rusqlite::Result<SearchHit> {
                 let properties: String = row.get(6)?;
@@ -219,7 +219,7 @@ impl CodeIndexStore {
                         .collect(),
                 })
             })()
-            .map_err(|e| err(format!("读取搜索结果失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_SEARCH_RESULTS, &[("e", &format!("{}", e))])))?;
             if name_regex
                 .as_ref()
                 .is_some_and(|pattern| !pattern.is_match(&hit.name))
@@ -245,7 +245,7 @@ impl CodeIndexStore {
 /// 沿用 contentless FTS，额外索引声明和文档；原始属性仍存 nodes 表。
 pub(super) fn fill_search_index(conn: &Connection, graph: &GraphBuffer, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<()> {
     let mut stmt = conn.prepare("INSERT INTO nodes_fts (rowid, name, qualified_name, label, file_path, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
-        .map_err(|e| err(format!("准备全文索引失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_PREPARE_THE_FULL_TEXT_INDEX, &[("e", &format!("{}", e))])))?;
     for node in &graph.nodes {
         if node.id % 512 == 0 && cancel.is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Relaxed)) { break; }
         let properties: Value = serde_json::from_str(&node.properties).unwrap_or_default();
@@ -262,7 +262,7 @@ pub(super) fn fill_search_index(conn: &Connection, graph: &GraphBuffer, cancel: 
             index_text(&node.file_path),
             index_text(&body)
         ])
-        .map_err(|e| err(format!("写入全文索引失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_WRITE_THE_FULL_TEXT_INDEX, &[("e", &format!("{}", e))])))?;
     }
     Ok(())
 }
@@ -271,15 +271,15 @@ pub(super) fn fill_search_index(conn: &Connection, graph: &GraphBuffer, cancel: 
 pub(super) fn fill_stored_search_index(conn: &Connection) -> Result<()> {
     let mut select = conn
         .prepare("SELECT id, name, qualified_name, label, file_path, properties FROM nodes")
-        .map_err(|e| err(format!("读取迁移节点失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_MIGRATION_NODES, &[("e", &format!("{}", e))])))?;
     let mut rows = select
         .query([])
-        .map_err(|e| err(format!("读取迁移节点失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_MIGRATION_NODES, &[("e", &format!("{}", e))])))?;
     let mut insert = conn.prepare("INSERT INTO nodes_fts (rowid, name, qualified_name, label, file_path, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
-        .map_err(|e| err(format!("准备全文索引迁移失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_PREPARE_FULL_TEXT_INDEX_MIGRATION, &[("e", &format!("{}", e))])))?;
     while let Some(row) = rows
         .next()
-        .map_err(|e| err(format!("读取迁移节点失败：{e}")))?
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_MIGRATION_NODES, &[("e", &format!("{}", e))])))?
     {
         let values = (|| -> rusqlite::Result<_> {
             Ok((
@@ -291,7 +291,7 @@ pub(super) fn fill_stored_search_index(conn: &Connection) -> Result<()> {
                 row.get::<_, String>(5)?,
             ))
         })()
-        .map_err(|e| err(format!("读取迁移节点失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_MIGRATION_NODES, &[("e", &format!("{}", e))])))?;
         let properties: Value = serde_json::from_str(&values.5).unwrap_or_default();
         let body = format!(
             "{} {}",
@@ -307,7 +307,7 @@ pub(super) fn fill_stored_search_index(conn: &Connection) -> Result<()> {
                 index_text(&values.4),
                 index_text(&body)
             ])
-            .map_err(|e| err(format!("迁移全文索引失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_MIGRATE_THE_FULL_TEXT_INDEX, &[("e", &format!("{}", e))])))?;
     }
     Ok(())
 }
@@ -318,14 +318,14 @@ pub(super) fn insert_search_node(conn: &Connection, node: &super::graph::GraphNo
     let body = format!("{} {}", properties["signature"].as_str().unwrap_or(""), properties["docstring"].as_str().unwrap_or(""));
     conn.prepare_cached("INSERT INTO nodes_fts(rowid,name,qualified_name,label,file_path,body) VALUES(?1,?2,?3,?4,?5,?6)")
         .and_then(|mut stmt| stmt.execute(params![id, index_text(&node.name), index_text(&node.qualified_name), node.label.as_str(), index_text(&node.file_path), index_text(&body)]))
-        .map_err(|error| err(format!("更新全文索引失败：{error}")))?;
+        .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_UPDATE_THE_FULL_TEXT_INDEX, &[("error", &format!("{}", error))])))?;
     Ok(())
 }
 
 pub(super) fn delete_file_search_index(conn: &Connection, path: &str) -> Result<()> {
-    let mut stmt = conn.prepare("SELECT id FROM nodes WHERE file_path=?1").map_err(|error| err(format!("读取旧搜索节点失败：{error}")))?;
-    let ids: Vec<i64> = stmt.query_map(params![path], |row| row.get(0)).map_err(|error| err(format!("读取旧搜索节点失败：{error}")))?
-        .collect::<rusqlite::Result<_>>().map_err(|error| err(format!("读取旧搜索节点失败：{error}")))?;
+    let mut stmt = conn.prepare("SELECT id FROM nodes WHERE file_path=?1").map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_OLD_SEARCH_NODES, &[("error", &format!("{}", error))])))?;
+    let ids: Vec<i64> = stmt.query_map(params![path], |row| row.get(0)).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_OLD_SEARCH_NODES, &[("error", &format!("{}", error))])))?
+        .collect::<rusqlite::Result<_>>().map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_OLD_SEARCH_NODES, &[("error", &format!("{}", error))])))?;
     for id in ids { delete_search_node(conn, id)?; }
     Ok(())
 }
@@ -334,11 +334,11 @@ pub(super) fn delete_search_node(conn: &Connection, id: i64) -> Result<()> {
     let (name, qn, label, path, properties): (String, String, String, String, String) = conn.query_row(
         "SELECT name,qualified_name,label,file_path,properties FROM nodes WHERE id=?1", params![id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
-        .map_err(|error| err(format!("读取旧搜索内容失败：{error}")))?;
+        .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_OLD_SEARCH_CONTENT, &[("error", &format!("{}", error))])))?;
     let properties: Value = serde_json::from_str(&properties).unwrap_or_default();
     let body = format!("{} {}", properties["signature"].as_str().unwrap_or(""), properties["docstring"].as_str().unwrap_or(""));
     conn.prepare_cached("INSERT INTO nodes_fts(nodes_fts,rowid,name,qualified_name,label,file_path,body) VALUES('delete',?1,?2,?3,?4,?5,?6)")
         .and_then(|mut stmt| stmt.execute(params![id, index_text(&name), index_text(&qn), label, index_text(&path), index_text(&body)]))
-        .map_err(|error| err(format!("删除旧全文索引失败：{error}")))?;
+        .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_DELETE_THE_OLD_FULL_TEXT_INDEX, &[("error", &format!("{}", error))])))?;
     Ok(())
 }

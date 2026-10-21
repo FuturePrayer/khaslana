@@ -1,3 +1,6 @@
+#[path = "ui_resources/external_merge_view_messages.rs"]
+mod messages;
+
 use std::{
     path::Path,
     rc::Rc,
@@ -14,7 +17,7 @@ use crate::ui::theme::rgb;
 use crate::{
     FieldId, RepositoryView, UiEvent, send_ui_event,
     settings_center::{
-        settings_compact_heading, settings_compact_item, settings_compact_list, settings_item_body,
+        settings_compact_heading, settings_compact_list, settings_item_body,
     },
     ui::{components::dialog_actions, theme as ui_theme},
 };
@@ -26,9 +29,9 @@ fn external_merge_detection_label(
     detection: Option<&(khaslana::ExternalMergeSettings, bool)>,
 ) -> &'static str {
     match detection.filter(|(detected_settings, _)| detected_settings == settings) {
-        Some((_, true)) => "✓ IDEA 可用",
-        Some((_, false)) => "检测失败 · 重试",
-        None => "检测 IDEA",
+        Some((_, true)) => khaslana::ui_i18n::text(messages::IDEA_AVAILABLE),
+        Some((_, false)) => khaslana::ui_i18n::text(messages::DETECTION_FAILED_RETRY),
+        None => khaslana::ui_i18n::text(messages::DETECT_IDEA),
     }
 }
 
@@ -70,7 +73,7 @@ impl RepositoryView {
     /// 说明 + last_error + 检测/保存按钮组。`save_label` / `detection_label`
     /// 的计算时机与旧弹窗一致：分组每次渲染重建，捕获值等价于渲染期读取。
     ///
-    /// 每组用 [`settings_compact_item`] 整卡单条目自排 8px 行距（对齐旧弹窗
+    /// 每组用 [`localized_settings_compact_item`] 整卡单条目自排 8px 行距（对齐旧弹窗
     /// `gap_2`）；Kit `SettingGroup` 逐条排的 16px 行距会把表单撑散。
     pub(crate) fn settings_external_merge_groups(
         &self,
@@ -106,9 +109,9 @@ impl RepositoryView {
         let actions_view = view.clone();
         let pending_path = pending_external_merge_path();
         let save_label = if pending_path.is_some() {
-            "保存并继续"
+            khaslana::ui_i18n::text(messages::SAVE_AND_CONTINUE)
         } else {
-            "保存"
+            khaslana::ui_i18n::text(messages::SAVE)
         };
         let detection_label = external_merge_detection_label(
             &self.external_merge_form_settings(),
@@ -118,17 +121,17 @@ impl RepositoryView {
         let last_error_text = self.last_error.clone().unwrap_or_default();
 
         vec![
-            SettingGroup::new().item(settings_compact_item(
+            SettingGroup::new().item(localized_settings_compact_item(
                 &[
-                    "外部合并",
-                    "启用 IntelliJ IDEA 外部合并",
-                    "选中冲突文件时自动打开 IDEA",
+                    khaslana::ui_i18n::text(messages::EXTERNAL_MERGE),
+                    khaslana::ui_i18n::text(messages::ENABLE_INTELLIJ_IDEA_EXTERNAL_MERGE),
+                    khaslana::ui_i18n::text(messages::AUTOMATICALLY_OPEN_IDEA_WHEN_SELECTING_A_CONFLICT_FILE),
                 ],
                 move |options, _window, cx| {
                     let enabled = enabled_value_view.read(cx).external_merge_enabled_form;
                     let auto_open = auto_open_value_view.read(cx).external_merge_auto_open_form;
                     let mut list = settings_compact_list()
-                        .child(settings_compact_heading("外部合并", None));
+                        .child(settings_compact_heading(khaslana::ui_i18n::text(messages::EXTERNAL_MERGE), None));
                     // 冲突解决被 IDEA 缺失阻断时的待续提示：沿用旧弹窗的 when_some 条件。
                     if let Some(path) = pending_path.clone() {
                         list = list.child(
@@ -142,15 +145,13 @@ impl RepositoryView {
                                 .text_size(px(12.0))
                                 .line_height(px(18.0))
                                 .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                                .child(format!(
-                                    "尚未找到可用的 IntelliJ IDEA。配置完成后将继续解决：{path}"
-                                )),
+                                .child(khaslana::ui_i18n::format(messages::NO_USABLE_INTELLIJ_IDEA_INSTALLATION_FOUND_AFTER_CONFIGURATION_RESOLVING_WILL, &[("path", &(path).to_string())])),
                         );
                     }
                     let set_enabled = enabled_set.clone();
                     let set_auto_open = auto_open_set.clone();
                     list.child(settings_item_body(
-                        "启用 IntelliJ IDEA 外部合并",
+                        khaslana::ui_i18n::text(messages::ENABLE_INTELLIJ_IDEA_EXTERNAL_MERGE),
                         None,
                         Switch::new("merge-enabled")
                             .checked(enabled)
@@ -161,7 +162,7 @@ impl RepositoryView {
                             }),
                     ))
                     .child(settings_item_body(
-                        "选中冲突文件时自动打开 IDEA",
+                        khaslana::ui_i18n::text(messages::AUTOMATICALLY_OPEN_IDEA_WHEN_SELECTING_A_CONFLICT_FILE),
                         None,
                         Switch::new("merge-auto-open")
                             .checked(auto_open)
@@ -173,8 +174,8 @@ impl RepositoryView {
                     ))
                 },
             )),
-            SettingGroup::new().item(settings_compact_item(
-                &["IDEA 程序", "IDEA 路径", "选择 IDEA 程序", "检测 IDEA", "保存"],
+            SettingGroup::new().item(localized_settings_compact_item(
+                &[khaslana::ui_i18n::text(messages::IDEA_EXECUTABLE), khaslana::ui_i18n::text(messages::IDEA_PATH), khaslana::ui_i18n::text(messages::SELECT_IDEA_EXECUTABLE), khaslana::ui_i18n::text(messages::DETECT_IDEA), khaslana::ui_i18n::text(messages::SAVE)],
                 move |_options, window, cx| {
                     let path_input = path_view.update(cx, |this, cx| {
                         div().w(px(280.0)).max_w_full().child(this.input(
@@ -189,22 +190,22 @@ impl RepositoryView {
                     // 以子元素存入，类型即与借用脱钩。
                     let browse_button = browse_view.update(cx, |this, cx| {
                         div().child(this.button(
-                            "选择 IDEA 程序",
+                            khaslana::ui_i18n::text(messages::SELECT_IDEA_EXECUTABLE),
                             !this.busy,
                             |this, _, _| this.browse_external_merge_executable(),
                             cx,
                         ))
                     });
                     let mut list = settings_compact_list()
-                        .child(settings_compact_heading("IDEA 程序", None))
-                        .child(settings_item_body("IDEA 路径", None, path_input))
+                        .child(settings_compact_heading(khaslana::ui_i18n::text(messages::IDEA_EXECUTABLE), None))
+                        .child(settings_item_body(khaslana::ui_i18n::text(messages::IDEA_PATH), None, path_input))
                         .child(browse_button)
                         .child(
                             div()
                                 .text_size(px(12.0))
                                 .line_height(px(18.0))
                                 .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                .child("路径可留空。留空时会依次检测 KHASLANA_IDEA_PATH、PATH 中的 idea64 / idea，以及常见 JetBrains 安装目录。开启或保存时会立即验证；未找到工具时不会静默结束，而是保留当前操作并提示配置。"),
+                                .child(khaslana::ui_i18n::text(messages::THE_PATH_IS_OPTIONAL_WHEN_EMPTY_DETECTION_CHECKS_KHASLANA_IDEA)),
                         );
                     // last_error 行沿用旧弹窗的 when 条件。
                     if has_last_error {
@@ -228,7 +229,7 @@ impl RepositoryView {
                                 !this.busy,
                                 |this, _, cx| {
                                     this.save_external_merge_settings_from_form_and_resume();
-                                    this.notify_settings_save("合并工具设置已保存", cx);
+                                    this.notify_settings_save(khaslana::ui_i18n::text(messages::MERGE_TOOL_SETTINGS_SAVED), cx);
                                 },
                                 cx,
                             ))
@@ -245,7 +246,7 @@ impl RepositoryView {
                 &self.external_merge_settings,
             )
         } else {
-            Err(khaslana::GitError::Message("外部合并工具未启用".into()))
+            Err(khaslana::GitError::Message(khaslana::ui_i18n::text(messages::EXTERNAL_MERGE_TOOL_IS_NOT_ENABLED).into()))
         };
 
         if let Err(err) = validation {
@@ -254,10 +255,8 @@ impl RepositoryView {
             if !self.external_merge_enabled_form {
                 self.set_external_merge_enabled_form(true);
             }
-            self.status = "需要配置 IntelliJ IDEA 合并工具".into();
-            self.last_error = Some(format!(
-                "无法启动外部合并工具：{err}。请选择 IDEA 程序路径，保存后会自动继续当前冲突。"
-            ));
+            self.status = khaslana::ui_i18n::encode(messages::CONFIGURE_THE_INTELLIJ_IDEA_MERGE_TOOL, &[]);
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::CANNOT_START_THE_EXTERNAL_MERGE_TOOL_ERR_SELECT_THE_IDEA, &[("err", &(err).to_string())]));
             return false;
         }
 
@@ -271,7 +270,7 @@ impl RepositoryView {
         self.diff_headers_expanded = false;
         self.reset_uniform_scroll("diff-scroll");
         self.with_repo_blocking(
-            "IntelliJ IDEA 合并结果已应用",
+            crate::operation_ui_resources::EXTERNAL_MERGE_APPLIED,
             move |service, repo| {
                 service.resolve_conflict_with_intellij_idea_settings(
                     repo,
@@ -287,7 +286,7 @@ impl RepositoryView {
         let has_pending_merge = pending_external_merge_path().is_some();
 
         if has_pending_merge && !settings.enabled {
-            self.last_error = Some("请先启用外部合并工具，再保存并继续当前冲突".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::ENABLE_THE_EXTERNAL_MERGE_TOOL_BEFORE_SAVING_AND_CONTINUING_THIS, &[]));
             return;
         }
 
@@ -295,10 +294,8 @@ impl RepositoryView {
             match khaslana::external_merge::resolve_intellij_idea_command_with_settings(&settings) {
                 Ok(path) => Some(path),
                 Err(err) => {
-                    self.status = "需要配置 IntelliJ IDEA 合并工具".into();
-                    self.last_error = Some(format!(
-                        "未找到可用的 IntelliJ IDEA：{err}。请填写或选择正确的程序路径。"
-                    ));
+                    self.status = khaslana::ui_i18n::encode(messages::CONFIGURE_THE_INTELLIJ_IDEA_MERGE_TOOL, &[]);
+                    self.last_error = Some(khaslana::ui_i18n::encode(messages::NO_USABLE_INTELLIJ_IDEA_INSTALLATION_FOUND_ERR_ENTER_OR_SELECT, &[("err", &(err).to_string())]));
                     return;
                 }
             }
@@ -309,8 +306,8 @@ impl RepositoryView {
         self.external_merge_settings = settings;
         self.save_external_merge_settings();
         self.status = resolved_path
-            .map(|path| format!("合并工具设置已保存：{}", path.display()))
-            .unwrap_or_else(|| "合并工具设置已保存".into());
+            .map(|path| khaslana::ui_i18n::encode(messages::MERGE_TOOL_SETTINGS_SAVED_PATH, &[("path", &(path.display()).to_string())]))
+            .unwrap_or_else(|| khaslana::ui_i18n::encode(messages::MERGE_TOOL_SETTINGS_SAVED, &[]));
         self.last_error = None;
 
         if let Some(path) = take_pending_external_merge_path() {
@@ -328,15 +325,13 @@ impl RepositoryView {
         match khaslana::external_merge::resolve_intellij_idea_command_with_settings(&settings) {
             Ok(path) => {
                 self.external_merge_detection = Some((settings, true));
-                self.status = format!("已找到 IntelliJ IDEA：{}", path.display());
+                self.status = khaslana::ui_i18n::encode(messages::INTELLIJ_IDEA_FOUND_PATH, &[("path", &(path.display()).to_string())]);
                 self.last_error = None;
             }
             Err(err) => {
                 self.external_merge_detection = Some((settings, false));
-                self.status = "需要配置 IntelliJ IDEA 合并工具".into();
-                self.last_error = Some(format!(
-                    "启用前需要配置 IntelliJ IDEA：{err}。请填写路径或点击“选择 IDEA 程序”。"
-                ));
+                self.status = khaslana::ui_i18n::encode(messages::CONFIGURE_THE_INTELLIJ_IDEA_MERGE_TOOL, &[]);
+                self.last_error = Some(khaslana::ui_i18n::encode(messages::CONFIGURE_INTELLIJ_IDEA_BEFORE_ENABLING_ERR_ENTER_A_PATH_OR, &[("err", &(err).to_string())]));
             }
         }
     }
@@ -351,26 +346,24 @@ impl RepositoryView {
         match khaslana::external_merge::resolve_intellij_idea_command_with_settings(&settings) {
             Ok(path) => {
                 self.external_merge_detection = Some((settings, true));
-                self.status = format!("已找到 IntelliJ IDEA：{}", path.display());
+                self.status = khaslana::ui_i18n::encode(messages::INTELLIJ_IDEA_FOUND_PATH, &[("path", &(path.display()).to_string())]);
                 self.last_error = None;
             }
             Err(err) => {
                 self.external_merge_detection = Some((settings, false));
-                self.status = "需要配置 IntelliJ IDEA 合并工具".into();
-                self.last_error = Some(format!(
-                    "开启自动打开前需要配置 IntelliJ IDEA：{err}。请填写路径或点击“选择 IDEA 程序”。"
-                ));
+                self.status = khaslana::ui_i18n::encode(messages::CONFIGURE_THE_INTELLIJ_IDEA_MERGE_TOOL, &[]);
+                self.last_error = Some(khaslana::ui_i18n::encode(messages::CONFIGURE_INTELLIJ_IDEA_BEFORE_ENABLING_AUTOMATIC_OPENING_ERR_ENTER_A, &[("err", &(err).to_string())]));
             }
         }
     }
 
     pub(crate) fn browse_external_merge_executable(&mut self) {
-        self.status = "正在选择 IntelliJ IDEA 程序...".to_string();
+        self.status = khaslana::ui_i18n::encode(messages::SELECTING_INTELLIJ_IDEA_EXECUTABLE, &[]);
         self.last_error = None;
         let tx = self.tx.clone();
         // Windows 原生文件框有自己的 COM / 消息循环，不能阻塞在 GPUI 事件回调中。
         thread::spawn(move || {
-            let dialog = rfd::FileDialog::new().set_title("选择 IntelliJ IDEA 启动程序");
+            let dialog = rfd::FileDialog::new().set_title(khaslana::ui_i18n::text(messages::SELECT_INTELLIJ_IDEA_LAUNCHER));
             #[cfg(windows)]
             let dialog = dialog.add_filter("IntelliJ IDEA", &["exe", "bat", "cmd"]);
             let path = dialog.pick_file();
@@ -403,4 +396,10 @@ mod tests {
             "检测 IDEA"
         );
     }
+}
+
+// Kit 设置项即时复制关键词；局部桥接不要求临时翻译数组具有静态生命周期。
+fn localized_settings_compact_item<E, F>(keywords: &[&'static str], body: F) -> gpui_kit::component::setting::SettingItem
+where F: Fn(&gpui_kit::component::setting::RenderOptions, &mut Window, &mut App) -> E + 'static, E: IntoElement {
+    gpui_kit::component::setting::SettingItem::render(body).keywords(keywords.iter().copied())
 }

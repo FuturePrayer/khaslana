@@ -1,3 +1,6 @@
+#[path = "ui_resources/operation_blocker_view_messages.rs"]
+mod messages;
+
 use std::time::{Duration, Instant};
 
 use gpui::{AnyElement, Context, CursorStyle, Div, IntoElement, MouseButton, div, prelude::*, px};
@@ -60,8 +63,8 @@ pub(crate) fn should_render_operation_blocker(
 }
 
 pub(crate) fn wrap_operation_message(message: &str) -> String {
-    // 远端推送等状态常包含两个很长的分支名；在“到”前后主动换行，避免遮罩层标题溢出。
-    message.replace(" 到 ", " 到\n")
+    // 换行由有界标题布局负责，不解析译文分隔词或改写用户分支名。
+    message.to_owned()
 }
 
 fn operation_blocker_overlay(
@@ -126,6 +129,7 @@ fn operation_blocker_overlay(
                                 .flex_1()
                                 .min_w(px(0.0))
                                 .line_height(px(20.0))
+                                .whitespace_normal()
                                 .child(message),
                         ),
                 )
@@ -134,7 +138,7 @@ fn operation_blocker_overlay(
                         .text_size(px(ui_theme::TYPE_BODY))
                         .line_height(px(18.0))
                         .text_color(rgb(visual.detail))
-                        .child("请等待当前操作完成，期间不能进行其它操作。"),
+                        .child(khaslana::ui_i18n::text(messages::WAIT_FOR_THE_CURRENT_OPERATION_TO_FINISH_OTHER_OPERATIONS_ARE)),
                 )
                 .child(
                     div()
@@ -167,7 +171,7 @@ impl RepositoryView {
             tab.operation_blocker_started,
             Instant::now(),
         )
-        .then(|| tab.status.clone())
+        .then(|| khaslana::ui_i18n::resolve(&tab.status))
     }
 
     pub(crate) fn render_operation_blocker(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -176,7 +180,7 @@ impl RepositoryView {
                 let action = self.workflow_state.active_run.as_ref()
                     .filter(|run| !run.control.is_cancelled())
                     .map(|_| self.secondary_button(
-                        "停止后续步骤".into(),
+                        khaslana::ui_i18n::text(messages::STOP_REMAINING_STEPS).into(),
                         true,
                         |this, _, _| this.cancel_workflow(),
                         cx,

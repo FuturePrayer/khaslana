@@ -2,6 +2,9 @@
 // 其中部分控件为预留的公共 API，可能暂未被业务 view 调用，属于有意保留。
 #![allow(dead_code)]
 
+#[path = "component_messages.rs"]
+mod messages;
+use khaslana::ui_i18n::text;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -39,7 +42,6 @@ pub(crate) enum ToastAction {
 pub(crate) struct FeedbackMessage {
     pub(crate) id: u64,
     pub(crate) kind: AppToastKind,
-    pub(crate) title: &'static str,
     pub(crate) message: String,
     pub(crate) expires_at: Instant,
     /// 点击气泡体时执行的动作；None = 纯文本气泡（既有全部路径）。
@@ -84,10 +86,10 @@ pub(crate) enum InputFrameSize {
 impl AppToastKind {
     fn label(self) -> &'static str {
         match self {
-            AppToastKind::Info => "提示",
-            AppToastKind::Success => "完成",
-            AppToastKind::Warning => "注意",
-            AppToastKind::Error => "失败",
+            AppToastKind::Info => text(messages::INFO),
+            AppToastKind::Success => text(messages::SUCCESS),
+            AppToastKind::Warning => text(messages::WARNING),
+            AppToastKind::Error => text(messages::ERROR),
         }
     }
 
@@ -131,7 +133,6 @@ impl FeedbackMessage {
         Self {
             id,
             kind,
-            title: kind.label(),
             message,
             expires_at: Instant::now() + ttl,
             action: None,
@@ -621,7 +622,7 @@ pub(crate) fn icon_button(
     let tooltip = if enabled {
         label
     } else {
-        "当前状态不可用"
+        text(messages::UNAVAILABLE)
     };
     BaseButton::new(id)
         .disabled(!enabled)
@@ -655,12 +656,14 @@ pub(crate) fn icon_button(
         ))
 }
 
-fn icon_command_button_disabled_reason(label: &'static str) -> &'static str {
-    match label {
-        "更多命令" => "当前操作进行中，暂不可展开更多命令",
-        "设置" => "当前操作进行中，暂不可打开设置",
-        "展开上下文导航" | "收起上下文导航" => "此页面不显示导航区",
-        _ => "当前状态不可用",
+fn icon_command_button_disabled_reason(id: &str) -> &'static str {
+    match id {
+        "more-commands" => text(messages::BUSY_COMMANDS),
+        "settings" => text(messages::BUSY_SETTINGS),
+        "workflow-template-new" | "workflow-template-refresh" | "workflow-template-download"
+        | "workflow-template-directory" => text(messages::BUSY_WORKFLOW_TEMPLATES),
+        "context-navigator-toggle" => text(messages::NO_NAVIGATION),
+        _ => text(messages::UNAVAILABLE),
     }
 }
 
@@ -676,7 +679,7 @@ pub(crate) fn icon_command_button(
     let tooltip = if enabled {
         label
     } else {
-        icon_command_button_disabled_reason(label)
+        icon_command_button_disabled_reason(&id)
     };
     BaseButton::new(id)
         .disabled(!enabled)
@@ -1360,14 +1363,14 @@ pub(crate) fn feedback_bubble(
                         .text_size(px(12.0))
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_color(rgb(text))
-                        .child(feedback.title),
+                        .child(feedback.kind.label()),
                 )
                 .child(
                     div()
                         .text_size(px(12.0))
                         .line_height(px(18.0))
                         .text_color(rgb(theme::CONTENT_PRIMARY))
-                        .child(feedback.message.clone()),
+                        .child(khaslana::ui_i18n::resolve(&feedback.message)),
                 ),
         )
         .child(
@@ -1564,7 +1567,8 @@ impl RepositoryView {
     }
 
     pub(crate) fn notify_completion(&mut self, message: &str, cx: &mut Context<Self>) {
-        if message.contains("失败") || message.contains("冲突") {
+        let key = khaslana::ui_i18n::message_key(message).unwrap_or_default();
+        if messages::WARNING_KEYS.contains(&key.as_str()) || key.contains("failed") || key.contains("conflict") || key.contains("warning") {
             self.notify_warning(message.to_string(), cx);
         } else {
             self.notify_success(message.to_string(), cx);
@@ -1572,18 +1576,12 @@ impl RepositoryView {
     }
 
     pub(crate) fn should_toast_completion(message: &str) -> bool {
-        message.contains("完成")
-            || message.contains("失败")
-            || message.contains("冲突")
-            || message.contains("测试通过")
-            || message.contains("已复制")
-            || message.contains("已添加")
-            || message.contains("已更新")
-            || message.contains("已新增")
-            || message.contains("已删除")
-            || message.contains("已刷新")
-            || message.contains("已提交")
-            || message.contains("工作流")
+        let key = khaslana::ui_i18n::message_key(message).unwrap_or_default();
+        messages::COMPLETION_KEYS.contains(&key.as_str())
+            || key.starts_with("operation.") && !key.ends_with(".started")
+            || key.starts_with("feedback.")
+            || key.ends_with(".completed") || key.ends_with(".failed")
+            || key.ends_with(".saved") || key.ends_with(".copied")
     }
 
     /// 普通命令按钮。文案是静态字面量：按钮的 ElementId 与无障碍标签都由它派生，
@@ -1622,7 +1620,7 @@ impl RepositoryView {
         let hint = if enabled {
             None
         } else {
-            Some(disabled_hint.unwrap_or("当前状态不可用"))
+            Some(disabled_hint.unwrap_or(text(messages::UNAVAILABLE)))
         };
         // 图标与文字同色：AI 入口用主色强调，禁用时统一转为弱化灰。
         let fg = if enabled {
@@ -2048,7 +2046,7 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<T> {
         let palette = app_button_palette(tone, enabled);
-        let disabled_reason = self.disabled_reason(enabled, "当前状态不可用");
+        let disabled_reason = self.disabled_reason(enabled, text(messages::UNAVAILABLE));
         let bg_color = if enabled {
             palette.bg
         } else {

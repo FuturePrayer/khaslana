@@ -1,5 +1,9 @@
 //! MCP 测试与工作流共用的进程启动器；参数始终按独立参数传递。
 
+#[path = "mcp_process_resources.rs"]
+mod messages;
+use crate::ui_i18n::LocalizedMessage;
+
 use std::path::PathBuf;
 #[cfg(windows)]
 use std::path::Path;
@@ -32,12 +36,11 @@ fn resolve_windows_command(command: &str, search_path: &std::ffi::OsStr) -> Opti
 pub(super) fn command(command: &str, args: &[String]) -> Result<tokio::process::Command> {
     let command = command.trim();
     if command.is_empty() || command.contains('\0') {
-        return Err(GitError::Message("请填写有效的 MCP 启动命令".into()));
+        return Err(GitError::Localized(LocalizedMessage::new(messages::INVALID_COMMAND, &[])));
     }
     #[cfg(windows)]
     let program = resolve_windows_command(command, &std::env::var_os("PATH").unwrap_or_default())
-        .ok_or_else(|| GitError::Message(format!(
-            "找不到 MCP 启动命令 {command}；请确认已安装并加入 PATH，或填写完整路径。使用 npx 需安装 Node.js（含 npm），安装后重启 Khaslana。")))?;
+        .ok_or_else(|| GitError::Localized(LocalizedMessage::new(messages::COMMAND_NOT_FOUND, &[("command", command)])))?;
     #[cfg(not(windows))]
     let program = PathBuf::from(command);
 

@@ -1,5 +1,6 @@
 //! 索引覆盖证据：区分刻意排除、读取失败、部分语法树和当前文件的新鲜度。
 
+use crate::types::domain_ui_resources;
 use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,46 @@ use super::err;
 use super::graph::{GraphBuffer, NodeLabel};
 use super::store::open_read_only_if_exists;
 use crate::types::Result;
+
+/// 仅兼容旧版本持久化的已知自有原因；未知工具/系统原因不参与翻译。
+/// 写入时归一化为稳定代码，显示时才选语言，禁止用译文驱动业务。
+pub fn normalize_coverage_reason(reason: &str) -> &str {
+    match reason {
+        "非 UTF-8 路径" => "non_utf8_path",
+        "目录或产物过滤、符号链接、子模块" => "filtered_snapshot_entry",
+        "超过单文件解析上限" => "parse_size_limit",
+        "二进制文件" => "binary_file",
+        "解析器未返回语法树" => "no_syntax_tree",
+        "当前语言不支持符号解析" => "unsupported_language",
+        "文件名或生成产物过滤" => "filtered_file",
+        "目录剪枝或独立子仓库" => "pruned_directory",
+        "旧索引没有覆盖记录，请刷新索引" => "legacy_coverage_missing",
+        "未记录该文件；可能被忽略规则排除或尚未索引，需直接核对源码" => "file_not_recorded",
+        _ => reason,
+    }
+}
+
+pub fn coverage_reason_label(reason: &str) -> String {
+    coverage_reason_label_in(crate::ui_i18n::language(), reason)
+}
+
+pub fn coverage_reason_label_in(language: crate::language::Language, reason: &str) -> String {
+    use crate::types::domain_ui_resources as r;
+    let resource = match normalize_coverage_reason(reason) {
+        "non_utf8_path" => r::COVERAGE_NON_UTF8_PATH,
+        "filtered_snapshot_entry" => r::COVERAGE_FILTERED_SNAPSHOT_ENTRY,
+        "parse_size_limit" => r::COVERAGE_PARSE_SIZE_LIMIT,
+        "binary_file" => r::COVERAGE_BINARY_FILE,
+        "no_syntax_tree" => r::COVERAGE_NO_SYNTAX_TREE,
+        "unsupported_language" => r::COVERAGE_UNSUPPORTED_LANGUAGE,
+        "filtered_file" => r::COVERAGE_FILTERED_FILE,
+        "pruned_directory" => r::COVERAGE_PRUNED_DIRECTORY,
+        "legacy_coverage_missing" => r::COVERAGE_LEGACY_MISSING,
+        "file_not_recorded" => r::COVERAGE_FILE_NOT_RECORDED,
+        _ => return reason.into(),
+    };
+    crate::ui_i18n::text_in(language, resource).into()
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ErrorRange {
@@ -37,10 +78,11 @@ pub struct FileCoverage {
 
 impl FileCoverage {
     pub(super) fn new(path: &str, status: &str, reason: impl Into<String>) -> Self {
+        let reason = reason.into();
         Self {
             path: path.into(),
             status: status.into(),
-            reason: reason.into(),
+            reason: normalize_coverage_reason(&reason).into(),
             ..Default::default()
         }
     }
@@ -83,7 +125,7 @@ pub(super) fn summarize(graph: &GraphBuffer) -> Value {
     }
     json!({ "counts": counts, "unresolved_calls": unresolved,
         "unresolved_no_candidate": no_candidate, "unresolved_with_candidates": with_candidates,
-        "coverage_note": "未解析调用分为无同语言仓库定义（可能为外部库）和有候选但无法安全确定目标；旧库可能没有分类，均不代表语法解析失败率。统计不是完整性证明。" })
+        "coverage_note": crate::ui_i18n::text(domain_ui_resources::UNRESOLVED_CALLS_INCLUDE_CALLS_WITH_NO_SAME_LANGUAGE_REPOSITORY_DEFINITION_POSSIBLY_E) })
 }
 
 pub(super) fn source_freshness(
@@ -138,7 +180,7 @@ pub fn check_coverage(
     limit: usize,
 ) -> Result<Value> {
     if paths.is_empty() && scopes.is_empty() {
-        return Err(err("至少提供 paths 或 scopes"));
+        return Err(crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::PROVIDE_AT_LEAST_PATHS_OR_SCOPES, &[])));
     }
     let paths: Vec<String> = paths.iter().map(|path| path.replace('\\', "/")).collect();
     let scopes: Vec<String> = scopes
@@ -146,13 +188,13 @@ pub fn check_coverage(
         .map(|scope| scope.replace('\\', "/").trim_end_matches('/').to_string())
         .collect();
     if paths.iter().chain(&scopes).any(|path| !valid_path(path)) {
-        return Err(err("覆盖检查路径必须是仓库内的相对路径"));
+        return Err(crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::COVERAGE_PATHS_MUST_BE_RELATIVE_PATHS_WITHIN_THE_REPOSITORY, &[])));
     }
-    let store = open_read_only_if_exists(db_path)?.ok_or_else(|| err("代码索引尚未建立"))?;
+    let store = open_read_only_if_exists(db_path)?.ok_or_else(|| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CODE_INDEX_HAS_NOT_BEEN_BUILT, &[])))?;
     let tx = store
         .conn
         .unchecked_transaction()
-        .map_err(|e| err(format!("开启覆盖查询失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_START_THE_COVERAGE_QUERY, &[("e", &format!("{}", e))])))?;
     let generation: String = tx
         .query_row("SELECT value FROM meta WHERE key='generation'", [], |row| {
             row.get(0)
@@ -160,13 +202,13 @@ pub fn check_coverage(
         .unwrap_or_default();
     let mut records = std::collections::BTreeMap::<String, Value>::new();
     let mut select = tx.prepare("SELECT file_path, json_extract(properties, '$.coverage') FROM nodes WHERE label='File'")
-        .map_err(|e| err(format!("读取覆盖信息失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_COVERAGE_INFORMATION, &[("e", &format!("{}", e))])))?;
     let mut rows = select
         .query([])
-        .map_err(|e| err(format!("读取覆盖信息失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_COVERAGE_INFORMATION, &[("e", &format!("{}", e))])))?;
     while let Some(row) = rows
         .next()
-        .map_err(|e| err(format!("读取覆盖信息失败：{e}")))?
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_COVERAGE_INFORMATION, &[("e", &format!("{}", e))])))?
     {
         let path: String = row.get(0).map_err(|e| err(e.to_string()))?;
         let coverage: Option<String> = row.get(1).map_err(|e| err(e.to_string()))?;
@@ -174,7 +216,7 @@ pub fn check_coverage(
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
             .unwrap_or_else(|| {
                 json!({
-                    "path": path, "status": "unknown", "reason": "旧索引没有覆盖记录，请刷新索引"
+                    "path": path, "status": "unknown", "reason": "legacy_coverage_missing"
                 })
             });
         records.insert(path, coverage);
@@ -206,7 +248,7 @@ pub fn check_coverage(
                 })
                 .map(|(_, record)| record.clone());
             records.insert(path.clone(), excluded.map(|mut record| { record["path"] = json!(path); record }).unwrap_or_else(|| json!({
-                "path": path, "status": "not_indexed", "reason": "未记录该文件；可能被忽略规则排除或尚未索引，需直接核对源码"
+                "path": path, "status": "not_indexed", "reason": "file_not_recorded"
             })));
         }
     }
@@ -254,15 +296,24 @@ pub fn check_coverage(
         } else {
             "snapshot_or_unknown"
         };
+        if let Some(reason) = record["reason"].as_str() {
+            let code = normalize_coverage_reason(reason).to_owned();
+            record["reason"] = json!(code);
+            record["reason_text"] = json!(coverage_reason_label(&code));
+        }
         record["freshness"] = json!(freshness);
         returned.push(record);
     }
     tx.commit()
-        .map_err(|e| err(format!("结束覆盖查询失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_FINISH_THE_COVERAGE_QUERY, &[("e", &format!("{}", e))])))?;
     let next = offset.saturating_add(returned.len());
     Ok(
         json!({ "generation": generation, "total": total, "offset": offset, "results": returned,
         "has_more": next < total, "next_offset": (next < total).then_some(next),
-        "coverage_note": "metadata_matches 只证明时间和大小一致。unresolved_no_candidate 为无同语言仓库定义，unresolved_with_candidates 为有候选但目标不确定；旧库可能缺分类，未解析调用不等于语法解析失败。缺口与过期需回读源码。" }),
+        "coverage_note": crate::ui_i18n::text(domain_ui_resources::METADATA_MATCHES_ONLY_CONFIRMS_MATCHING_TIMESTAMPS_AND_SIZES_UNRESOLVED_NO_CANDIDATE) }),
     )
 }
+
+#[cfg(test)]
+#[path = "../tests/code_index_coverage_i18n.rs"]
+mod i18n_tests;

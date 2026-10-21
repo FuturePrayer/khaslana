@@ -2,6 +2,19 @@ use super::*;
 
 use crate::ai::review::AiReviewStep;
 
+#[test]
+fn record_write_failure_keeps_localized_wrapper_and_original_io_detail() {
+    use crate::language::Language;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("not-a-directory");
+    std::fs::write(&file, "user content").unwrap();
+    let error = save_review_record(&file, record("repo", 1, "用户正文")).unwrap_err();
+    assert!(error.message_key().is_some());
+    assert!(error.display_in(Language::En).starts_with("Failed to create review record directory:"));
+    assert!(error.display_in(Language::ZhCn).starts_with("创建评审记录目录失败："));
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "user content");
+}
+
 fn record(repo_path: &str, created_at: u64, content: &str) -> AiReviewRecord {
     AiReviewRecord {
         id: String::new(),

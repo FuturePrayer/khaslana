@@ -1,6 +1,15 @@
 use super::*;
 use crate::ai::prompt::{ChatMessage, ChatRole};
 
+#[test]
+fn merge_marker_error_has_stable_bilingual_identity() {
+    use crate::language::Language;
+    let error = split_diff3_text("<<<<<<< OURS\n用户内容\n", 100, 200).unwrap_err();
+    assert!(error.message_key().is_some());
+    assert!(error.display_in(Language::En).contains("unpaired"));
+    assert!(error.display_in(Language::ZhCn).contains("不配对"));
+}
+
 /// 构造一个含两个冲突块和上下文的 diff3 样例文本。
 fn sample_diff3() -> String {
     [

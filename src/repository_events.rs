@@ -1,6 +1,9 @@
 //! RepositoryView 的 UI 事件归约与状态落位。
 
 use crate::*;
+#[path = "event_ui_resources.rs"]
+mod messages;
+use khaslana::ui_i18n::{encode, text};
 
 impl RepositoryView {
     pub(crate) fn handle_ui_event(&mut self, event: UiEvent, cx: &mut Context<Self>) {
@@ -16,7 +19,7 @@ impl RepositoryView {
                 });
                 self.handle_ui_event(UiEvent::OperationFinished {
                     tab_id: Some(tab_id),
-                    message: if resolve { "冲突结果已应用并标记解决" } else { "冲突草稿已应用到工作区" }.into(),
+                    message: if resolve { encode(messages::CONFLICT_APPLIED_RESOLVED, &[]) } else { encode(messages::CONFLICT_DRAFT_APPLIED, &[]) }.into(),
                     snapshot: Some(snapshot), diff: None,
                 }, cx);
             }
@@ -190,7 +193,7 @@ impl RepositoryView {
                     if load_id == this.repository_load_id {
                         this.loading = RepositoryLoading::default();
                         this.operation_kind = OperationKind::Local;
-                        this.status = "仓库已打开，后台加载失败".to_string();
+                        this.status = encode(messages::LOAD_FAILED, &[]).to_string();
                         this.last_error = Some(error);
                     }
                 });
@@ -329,7 +332,7 @@ impl RepositoryView {
                             tab_id,
                             path,
                             load_id,
-                            "变更已补全".to_string(),
+                            encode(messages::STATUS_COMPLETED, &[]).to_string(),
                         );
                     }
                 }
@@ -345,8 +348,8 @@ impl RepositoryView {
                     self.queue_repository_load(
                         tab_id,
                         path,
-                        "正在刷新分支状态",
-                        "分支状态已刷新",
+                        messages::REFRESH_BRANCH_STARTED,
+                        messages::REFRESH_BRANCH_COMPLETED,
                         LoadPriority::Background,
                     );
                 }
@@ -415,14 +418,14 @@ impl RepositoryView {
                     self.ssh_credential_discovery.result = Some(result);
                     self.ssh_credential_discovery.error = None;
                     self.status =
-                        format!("已发现 {key_count} 个 SSH 私钥，Agent 中有 {agent_count} 个身份");
+                        encode(messages::SSH_DISCOVERED, &[("keys", &key_count.to_string()), ("agents", &agent_count.to_string())]);
                 }
             }
             UiEvent::SshCredentialDiscoveryFailed { request_id, error } => {
                 if request_id == self.ssh_credential_discovery.request_id {
                     self.ssh_credential_discovery.loading = false;
                     self.ssh_credential_discovery.error = Some(error.clone());
-                    self.status = "本机 SSH 检测失败".into();
+                    self.status = encode(messages::SSH_FAILED, &[]).into();
                     self.last_error = Some(error);
                 }
             }
@@ -436,7 +439,7 @@ impl RepositoryView {
                     self.oauth_login_flow.user_code = user_code;
                     self.oauth_login_flow.verification_uri = Some(url.clone());
                     open_url(&url);
-                    self.status = format!("请在浏览器中完成{}登录", provider.label());
+                    self.status = encode(messages::LOGIN_BROWSER, &[("provider", provider.label())]);
                 }
             }
             UiEvent::OAuthLoginSucceeded {
@@ -448,14 +451,14 @@ impl RepositoryView {
             } => {
                 if request_id == self.oauth_login_flow.request_id {
                     let (host_url, note) = match provider {
-                        OAuthProvider::Github => ("github.com", "GitHub 登录成功，凭据已保存"),
+                        OAuthProvider::Github => ("github.com", encode(messages::GITHUB_SUCCESS, &[])),
                         OAuthProvider::Gitee => (
                             "gitee.com",
                             if gitee_refresh.is_some() {
-                                "Gitee 登录成功，凭据已保存（令牌将自动续期）"
+                                encode(messages::GITEE_SUCCESS, &[])
                             } else {
                                 // 旧版 broker 未透传 refresh_token：保持手动续期提示。
-                                "Gitee 登录成功，凭据已保存（令牌约 1 天过期，过期后重新登录）"
+                                encode(messages::GITEE_EXPIRING, &[])
                             },
                         ),
                     };
@@ -498,7 +501,7 @@ impl RepositoryView {
                         ) {
                             tracing::warn!("Gitee 续期材料保存失败：{err}");
                             self.notify_warning(
-                                "Gitee 令牌已保存，但自动续期材料写入失败，令牌过期后需重新登录",
+                                encode(messages::GITEE_RENEWAL_FAILED, &[]),
                                 cx,
                             );
                         }
@@ -530,14 +533,14 @@ impl RepositoryView {
                     self.oauth_login_flow.cancel = None;
                     self.oauth_login_flow.error = Some(error.clone());
                     self.last_error = Some(error.clone());
-                    self.notify_error(format!("{label} 登录失败：{error}"), cx);
+                    self.notify_error(khaslana::ui_i18n::encode_with_messages(messages::LOGIN_FAILED, &[("provider", label)], &[("error", &error)]), cx);
                 }
             }
             UiEvent::CredentialSshKeyFileSelected { path } => {
                 if let Some(path) = path {
                     self.use_discovered_ssh_key(path);
                 } else {
-                    self.status = "已取消选择 SSH 私钥".into();
+                    self.status = encode(messages::SSH_CANCELLED, &[]).into();
                 }
             }
             UiEvent::HistoryCommitsLoaded {
@@ -608,10 +611,10 @@ impl RepositoryView {
                                 if let Some(commit) = this.history_commits.first() {
                                     this.select_history_commit(commit.oid.clone());
                                 } else {
-                                    this.status = "当前分支暂无提交记录".to_string();
+                                    this.status = encode(messages::HISTORY_EMPTY, &[]).to_string();
                                 }
                             } else {
-                                this.status = "提交记录已加载".to_string();
+                                this.status = encode(messages::HISTORY_LOADED, &[]).to_string();
                                 // 自愈：选中保留但文件列表为空（旧状态冻结、或此前的
                                 // 文件加载被仓库重载作废）时重新拉取；非空时
                                 // select_history_commit 幂等跳过，不影响现有展示。
@@ -645,7 +648,7 @@ impl RepositoryView {
                         ) {
                             this.select_history_file(preferred);
                         } else {
-                            this.status = "该提交没有文件变更".to_string();
+                            this.status = encode(messages::COMMIT_FILES_EMPTY, &[]).to_string();
                         }
                     }
                 });
@@ -676,7 +679,7 @@ impl RepositoryView {
                         this.history_diff_syntax = None;
                         this.schedule_syntax_highlight(SyntaxSlot::HistoryDiff);
                         this.reset_uniform_scroll("history-diff-scroll");
-                        this.status = "提交差异已加载".to_string();
+                        this.status = encode(messages::COMMIT_DIFF_LOADED, &[]).to_string();
                     }
                 });
             }
@@ -702,7 +705,7 @@ impl RepositoryView {
                             .first()
                             .map(|file| file.path.clone());
                         if first_path.is_none() {
-                            this.status = "该贮藏没有文件变更".to_string();
+                            this.status = encode(messages::STASH_FILES_EMPTY, &[]).to_string();
                         }
                     }
                 });
@@ -738,7 +741,7 @@ impl RepositoryView {
                         this.stash_preview.diff_syntax = None;
                         this.schedule_syntax_highlight(SyntaxSlot::StashDiff);
                         this.reset_uniform_scroll("stash-diff-scroll");
-                        this.status = "贮藏差异已加载".to_string();
+                        this.status = encode(messages::STASH_DIFF_LOADED, &[]).to_string();
                     }
                 });
             }
@@ -757,9 +760,9 @@ impl RepositoryView {
                     this.stash_preview.loading_diff = false;
                     if load_id == this.repository_load_id {
                         this.status = if this.main_mode == MainMode::Stash {
-                            "贮藏预览加载失败".to_string()
+                            encode(messages::STASH_FAILED, &[]).to_string()
                         } else {
-                            "提交记录加载失败".to_string()
+                            encode(messages::HISTORY_FAILED, &[]).to_string()
                         };
                         this.last_error = Some(error);
                         // 全文视图过大时自动回退到紧凑差异
@@ -788,11 +791,11 @@ impl RepositoryView {
                         truncated,
                     });
                     let mode_label = if ahead_only {
-                        "仅领先 HEAD"
+                        text(messages::AHEAD_HEAD)
                     } else {
-                        "全谱系"
+                        text(messages::ALL_ANCESTRY)
                     };
-                    this.status = format!("已高亮分支 {branch}（{mode_label}）");
+                    this.status = encode(messages::HIGHLIGHTED, &[("branch", &branch), ("mode", mode_label)]);
                 });
             }
             UiEvent::CommitTraceLoadFailed {
@@ -807,7 +810,7 @@ impl RepositoryView {
                     }
                     this.commit_graph.trace_loading = false;
                     if load_id == this.repository_load_id {
-                        this.status = "分支谱系计算失败".to_string();
+                        this.status = encode(messages::ANCESTRY_FAILED, &[]).to_string();
                         this.last_error = Some(error);
                     }
                 });
@@ -866,7 +869,7 @@ impl RepositoryView {
                         this.submodule_dialog.remote_error = None;
                         should_load_remote_statuses = !this.submodule_dialog.items.is_empty()
                             && this.active_dialog == Some(DialogState::SubmoduleManager);
-                        this.status = "子模块列表已加载".to_string();
+                        this.status = encode(messages::SUBMODULE_LOADED, &[]).to_string();
                     }
                 });
                 if should_load_remote_statuses {
@@ -895,7 +898,7 @@ impl RepositoryView {
                         this.submodule_dialog.loaded = false;
                         this.submodule_dialog.error = Some(error.clone());
                         this.submodule_dialog.remote_error = None;
-                        this.status = "子模块列表加载失败".to_string();
+                        this.status = encode(messages::SUBMODULE_FAILED, &[]).to_string();
                         this.last_error = Some(error);
                     }
                 });
@@ -916,7 +919,7 @@ impl RepositoryView {
                         this.submodule_dialog.remote_statuses = statuses.into_iter().collect();
                         this.submodule_dialog.remote_loading = false;
                         this.submodule_dialog.remote_error = None;
-                        this.status = "子模块远端状态已检查".to_string();
+                        this.status = encode(messages::SUBMODULE_CHECKED, &[]).to_string();
                     }
                 });
             }
@@ -946,7 +949,7 @@ impl RepositoryView {
                             .collect();
                         this.submodule_dialog.remote_loading = false;
                         this.submodule_dialog.remote_error = Some(error.clone());
-                        this.status = "子模块远端状态检查失败".to_string();
+                        this.status = encode(messages::SUBMODULE_CHECK_FAILED, &[]).to_string();
                         tracing::warn!("submodule remote status skipped: {error}");
                     }
                 });
@@ -966,7 +969,7 @@ impl RepositoryView {
                         this.blame.loading = false;
                         this.blame.syntax = None;
                         this.blame.view = Some(Arc::new(view));
-                        this.status = "文件追溯已加载".to_string();
+                        this.status = encode(messages::BLAME_LOADED, &[]).to_string();
                         this.schedule_syntax_highlight(SyntaxSlot::Blame);
                     }
                 });
@@ -983,7 +986,7 @@ impl RepositoryView {
                         && this.blame.path.as_deref() == Some(path.as_str())
                     {
                         this.blame.loading = false;
-                        this.status = "文件追溯加载失败".to_string();
+                        this.status = encode(messages::BLAME_FAILED, &[]).to_string();
                         this.last_error = Some(error);
                     }
                 });
@@ -1129,7 +1132,7 @@ impl RepositoryView {
                         this.browse.compare_files = files;
                         if let Some(first) = this.browse.compare_files.first().cloned() {
                             this.status =
-                                format!("已加载 {} 个差异文件", this.browse.compare_files.len());
+                                encode(messages::DIFF_FILES_LOADED, &[("count", &this.browse.compare_files.len().to_string())]);
                             this.select_browse_compare_file(first);
                         } else {
                             this.browse.selected_file = None;
@@ -1137,7 +1140,7 @@ impl RepositoryView {
                             this.browse.content = None;
                             this.browse.diff = None;
                             this.browse.diff_headers_expanded = false;
-                            this.status = "该分支与当前分支没有差异".to_string();
+                            this.status = encode(messages::NO_BRANCH_DIFF, &[]).to_string();
                         }
                     }
                 });
@@ -1156,7 +1159,7 @@ impl RepositoryView {
                         this.browse.loading_content = false;
                         this.browse.content_syntax = None;
                         this.browse.content = Some(Arc::new(content));
-                        this.status = "文件内容已加载".to_string();
+                        this.status = encode(messages::FILE_LOADED, &[]).to_string();
                         this.schedule_syntax_highlight(SyntaxSlot::BrowseContent);
                     }
                 });
@@ -1176,7 +1179,7 @@ impl RepositoryView {
                         this.browse.diff_syntax = None;
                         this.browse.diff = Some(Arc::new(diff));
                         this.browse.diff_headers_expanded = false;
-                        this.status = "文件差异已加载".to_string();
+                        this.status = encode(messages::DIFF_LOADED, &[]).to_string();
                         this.schedule_syntax_highlight(SyntaxSlot::BrowseDiff);
                     }
                 });
@@ -1194,7 +1197,7 @@ impl RepositoryView {
                     this.remote_branch_operation.refreshing = false;
                     this.operation_kind = OperationKind::Local;
                     this.loading = RepositoryLoading::default();
-                    this.status = "操作失败".to_string();
+                    this.status = encode(messages::OPERATION_FAILED, &[]).to_string();
                     this.last_error = Some(error);
                     // 全文视图过大时自动回退到紧凑差异
                     this.revert_full_file_if_too_large_error();
@@ -1216,7 +1219,7 @@ impl RepositoryView {
                     this.remote_branch_operation.refreshing = false;
                     this.operation_kind = OperationKind::Local;
                     this.loading = RepositoryLoading::default();
-                    this.status = "切换已被阻止".to_string();
+                    this.status = encode(messages::CHECKOUT_BLOCKED, &[]).to_string();
                     this.last_error = None;
                 });
                 self.close_popups();
@@ -1244,9 +1247,9 @@ impl RepositoryView {
                     return;
                 }
                 self.apply_status_event(tab_id, |this| {
-                    this.status = "需要凭据".to_string();
+                    this.status = encode(messages::CREDENTIAL_REQUIRED, &[]).to_string();
                 });
-                self.notify_toast(AppToastKind::Info, "远端操作需要凭据，请在右上角填写", cx);
+                self.notify_toast(AppToastKind::Info, encode(messages::CREDENTIAL_HINT, &[]), cx);
                 let pending = PendingCredential {
                     tab_id,
                     request,
@@ -1366,7 +1369,7 @@ impl RepositoryView {
                     this.operation_blocker_started = None;
                     this.operation_kind = OperationKind::Local;
                     this.loading = RepositoryLoading::default();
-                    this.status = if current_definition { message } else { "此前加载的工作流已完成".into() };
+                    this.status = if current_definition { message } else { encode(messages::PREVIOUS_WORKFLOW, &[]).into() };
                     this.last_error = None;
                     if current_definition {
                         this.workflow_state.log = log;
@@ -1393,7 +1396,7 @@ impl RepositoryView {
                     sync_request = this.prepare_branch_sync_status_request();
                 });
                 if let Some((tab_id, path, load_id)) = full_status_request {
-                    self.load_full_status_for_tab(tab_id, path, load_id, "变更已补全".to_string());
+                    self.load_full_status_for_tab(tab_id, path, load_id, encode(messages::STATUS_COMPLETED, &[]).to_string());
                 }
                 if let Some((tab_id, path, remote, load_id, request_id)) = sync_request {
                     self.load_branch_sync_status_for_tab(tab_id, path, remote, load_id, request_id);
@@ -1423,7 +1426,7 @@ impl RepositoryView {
                     this.loading = RepositoryLoading::default();
                     if current_definition {
                         this.workflow_state.log.push(WorkflowLogEntry::from(error.clone()));
-                        this.status = if cancelled { "工作流已取消".into() } else { "工作流失败".into() };
+                        this.status = if cancelled { encode(messages::WORKFLOW_CANCELLED, &[]).into() } else { encode(messages::WORKFLOW_FAILED, &[]).into() };
                         this.last_error = if cancelled { None } else { Some(error.clone()) };
                     }
                     if let Some(snapshot) = snapshot {
@@ -1447,7 +1450,7 @@ impl RepositoryView {
                     }
                 });
                 if let Some((tab_id, path, load_id)) = full_status_request {
-                    self.load_full_status_for_tab(tab_id, path, load_id, "变更已补全".to_string());
+                    self.load_full_status_for_tab(tab_id, path, load_id, encode(messages::STATUS_COMPLETED, &[]).to_string());
                 }
                 if let Some((tab_id, path, remote, load_id, request_id)) = sync_request {
                     self.load_branch_sync_status_for_tab(tab_id, path, remote, load_id, request_id);
@@ -1462,7 +1465,7 @@ impl RepositoryView {
                 if let Some(path) = path {
                     self.open_repo(path);
                 } else {
-                    self.status = "已取消选择仓库文件夹".to_string();
+                    self.status = encode(messages::FOLDER_CANCELLED, &[]).to_string();
                     self.last_error = None;
                 }
             }
@@ -1471,7 +1474,7 @@ impl RepositoryView {
                     self.clone_path.set_value(path.display().to_string());
                     self.last_error = None;
                 } else {
-                    self.status = "已取消选择克隆父文件夹".to_string();
+                    self.status = encode(messages::CLONE_FOLDER_CANCELLED, &[]).to_string();
                     self.last_error = None;
                 }
             }
@@ -1481,10 +1484,10 @@ impl RepositoryView {
                     self.external_merge_intellij_path
                         .set_value(path.display().to_string());
                     self.external_merge_enabled_form = true;
-                    self.status = format!("已选择 IntelliJ IDEA：{}", path.display());
+                    self.status = encode(messages::IDEA_SELECTED, &[("path", &path.display().to_string())]);
                     self.last_error = None;
                 } else {
-                    self.status = "已取消选择 IntelliJ IDEA 程序".to_string();
+                    self.status = encode(messages::IDEA_CANCELLED, &[]).to_string();
                     self.last_error = None;
                 }
             }
@@ -1497,7 +1500,7 @@ impl RepositoryView {
                 if target_alive {
                     self.handle_ai_workflow_template_generated(content, cx);
                 } else {
-                    self.notify_warning("AI 生成已结束，原编辑会话已关闭或更换，未覆盖当前模板", cx);
+                    self.notify_warning(encode(messages::AI_SESSION_CHANGED, &[]), cx);
                 }
             }
             UiEvent::AiCommitMessageGenerated { task_id, tab_id, field_uid, message } => {
@@ -1509,9 +1512,9 @@ impl RepositoryView {
                 // 兜底守卫：空结果不覆盖输入框（避免清掉用户草稿）并显式提示。
                 // 正常路径已在生成任务里按空正文报错，这里防御未来回归。
                 if message.trim().is_empty() {
-                    self.status = "AI 未返回提交信息".into();
-                    self.last_error = Some("AI 返回的提交信息为空".into());
-                    self.notify_error("AI 返回的提交信息为空", cx);
+                    self.status = encode(messages::AI_NO_COMMIT, &[]).into();
+                    self.last_error = Some(encode(messages::AI_EMPTY_COMMIT, &[]).into());
+                    self.notify_error(encode(messages::AI_EMPTY_COMMIT, &[]), cx);
                 } else {
                     // 流式期间已逐段填入输入框，这里用最终结果做一次干净覆盖，
                     // 确保最终的 trim 和换行规范化。
@@ -1519,7 +1522,7 @@ impl RepositoryView {
                         return;
                     };
                     tab.commit_message.set_value(message);
-                    tab.status = "AI 已生成提交信息".into();
+                    tab.status = encode(messages::AI_COMMIT_COMPLETED, &[]).into();
                     tab.last_error = None;
                 }
             }
@@ -1539,17 +1542,17 @@ impl RepositoryView {
                     self.ai_review_loaded_label = None;
                     self.ai_review = Some(Arc::new(review));
                     self.status = if saved {
-                        "AI 评审已生成并保存到评审记录".into()
+                        encode(messages::REVIEW_SAVED, &[]).into()
                     } else {
-                        "AI 评审已生成（保存记录失败）".into()
+                        encode(messages::REVIEW_UNSAVED, &[]).into()
                     };
                     self.last_error = None;
                 } else {
                     // 后台分离任务完成：落盘已在任务线程做完，提示可去历史查看。
                     let message = if saved {
-                        "后台 AI 评审完成，已保存到评审记录".to_string()
+                        encode(messages::BACKGROUND_REVIEW_SAVED, &[]).to_string()
                     } else {
-                        "后台 AI 评审完成（保存记录失败，历史弹窗中将看不到本次记录）".to_string()
+                        encode(messages::BACKGROUND_REVIEW_UNSAVED, &[]).to_string()
                     };
                     self.status = message.clone();
                     self.notify_completion(&message, cx);
@@ -1605,12 +1608,12 @@ impl RepositoryView {
                     self.ai_review_live_reasoning.clear();
                     self.ai_review_live_content.clear();
                     // 失败保留已产生的轨迹（可检查模型做了什么）。
-                    self.status = "AI 请求失败".into();
+                    self.status = encode(messages::AI_FAILED, &[]).into();
                     self.last_error = Some(error.clone());
-                    self.notify_error(format!("AI 请求失败：{error}"), cx);
+                    self.notify_error(khaslana::ui_i18n::encode_with_messages(messages::AI_FAILED_ERROR, &[], &[("error", &error)]), cx);
                 } else {
                     // 后台分离任务失败：不打断用户，仅状态栏可见。
-                    self.status = format!("后台 AI 评审失败：{error}");
+                    self.status = khaslana::ui_i18n::encode_with_messages(messages::BACKGROUND_REVIEW_FAILED, &[], &[("error", &error)]);
                 }
             }
             UiEvent::AiReviewCancelled => {
@@ -1641,7 +1644,7 @@ impl RepositoryView {
                 if self.ai_thinking_owns_conflict_path(&path)
                     && self.conflict_workbench.selected_path.as_deref() == Some(path.as_str())
                 {
-                    self.status = format!("正在生成 AI 合并建议（第 {segment}/{total} 段）");
+                    self.status = encode(messages::AI_MERGE_GENERATING, &[("segment", &segment.to_string()), ("total", &total.to_string())]);
                 }
             }
             UiEvent::AiConflictMergeGenerated {
@@ -1664,7 +1667,7 @@ impl RepositoryView {
                             this.conflict_workbench.ai_suggestions.insert(path, draft);
                         }
                     });
-                    self.status = "AI 建议已返回，结果已变化；更多菜单可复制保留的建议".into();
+                    self.status = encode(messages::AI_MERGE_CHANGED, &[]).into();
                     return;
                 }
                 match self.conflict_workbench.files.get_mut(&path) {
@@ -1675,14 +1678,14 @@ impl RepositoryView {
                         self.sync_conflict_editor_from_state();
                         // 草稿整体替换后重算结果区语法高亮
                         self.schedule_conflict_syntax_for_selected(&[ConflictSyntaxPane::Draft]);
-                        self.status = "已填入 AI 合并建议，请检查后应用".into();
+                        self.status = encode(messages::AI_MERGE_APPLIED, &[]).into();
                         self.last_error = None;
-                        self.notify_success("已填入 AI 合并建议，请检查后应用", cx);
+                        self.notify_success(encode(messages::AI_MERGE_APPLIED, &[]), cx);
                     }
                     // 生成期间冲突被解决、文件被移出列表或切换了标签页：
                     // 结果无处安放，仅状态栏说明，不弹错误。
                     _ => {
-                        self.status = "AI 合并建议已返回，但该文件已不在冲突列表".into();
+                        self.status = encode(messages::AI_MERGE_STALE, &[]).into();
                     }
                 }
             }
@@ -1712,9 +1715,9 @@ impl RepositoryView {
                 // 测试连接失败时也要解锁借用的 busy，否则按钮永久禁用。
                 self.end_global_test_busy();
                 // 失败提示走右下角 toast + 状态栏双通道，仅靠状态栏小字极易被错过。
-                self.status = "AI 请求失败".into();
+                self.status = encode(messages::AI_FAILED, &[]).into();
                 self.last_error = Some(error.clone());
-                self.notify_error(format!("AI 请求失败：{error}"), cx);
+                self.notify_error(khaslana::ui_i18n::encode_with_messages(messages::AI_FAILED_ERROR, &[], &[("error", &error)]), cx);
             }
             UiEvent::AiThinkingDelta {
                 task_id,
@@ -1754,9 +1757,9 @@ impl RepositoryView {
                 // 连接测试失败（不属于一次性生成任务）：只解锁借用的 busy
                 // 并提示，不碰任何思考弹窗/加载标志。
                 self.end_global_test_busy();
-                self.status = "AI 请求失败".into();
+                self.status = encode(messages::AI_FAILED, &[]).into();
                 self.last_error = Some(error.clone());
-                self.notify_error(format!("AI 请求失败：{error}"), cx);
+                self.notify_error(khaslana::ui_i18n::encode_with_messages(messages::AI_FAILED_ERROR, &[], &[("error", &error)]), cx);
             }
             // ── 更新事件 ──
             UiEvent::UpdateCheckFinished {
@@ -1770,7 +1773,7 @@ impl RepositoryView {
                     .as_ref()
                     .map(|known| known.version.clone());
                 self.available_update = Some(manifest.clone());
-                self.status = format!("发现新版本 v{}", manifest.version);
+                self.status = encode(messages::UPDATE_FOUND, &[("version", &manifest.version.to_string())]);
                 self.last_error = None;
                 if trigger == UpdateCheckTrigger::Periodic {
                     // 周期静默检查：不弹模态框，只弹可点击气泡直达更新设置；
@@ -1823,7 +1826,7 @@ impl RepositoryView {
             } => {
                 self.update_downloading = false;
                 self.update_download_progress = None;
-                self.status = format!("更新 v{} 已准备就绪", manifest.version);
+                self.status = encode(messages::UPDATE_READY, &[("version", &manifest.version.to_string())]);
                 self.last_error = None;
                 self.active_dialog = Some(DialogState::ConfirmInstallUpdate {
                     version: manifest.version.clone(),
@@ -1836,8 +1839,8 @@ impl RepositoryView {
                 self.update_downloading = false;
                 self.update_download_progress = None;
                 self.update_error = Some(error.clone());
-                self.status = "更新失败".into();
-                self.notify_toast(AppToastKind::Error, format!("更新失败：{error}"), cx);
+                self.status = encode(messages::UPDATE_FAILED, &[]).into();
+                self.notify_toast(AppToastKind::Error, khaslana::ui_i18n::encode_with_messages(messages::UPDATE_FAILED_ERROR, &[], &[("error", &error)]), cx);
             }
             UiEvent::BackgroundTaskPanicked { message } => {
                 // 无法定位具体是哪个任务 panic：保守复位所有 tab 的 busy/加载
@@ -1864,16 +1867,16 @@ impl RepositoryView {
                 self.ai_thinking_task = None;
                 self.close_ai_thinking_overlay();
                 self.global_busy_tab = None;
-                self.ai_extensions.connection_test.interrupt("后台任务异常，请重新测试连接".into());
+                self.ai_extensions.connection_test.interrupt(encode(messages::TASK_INTERRUPTED, &[]).into());
                 self.update_downloading = false;
                 self.remote_workflow_loading = false;
                 self.remote_workflow_downloading = None;
                 // 索引任务有带身份的 panic 兜底，其他任务异常不能清除其运行态。
                 self.reset_ai_loading_after_panic();
-                self.status = "后台任务异常".into();
+                self.status = encode(messages::TASK_FAILED, &[]).into();
                 self.notify_toast(
                     AppToastKind::Error,
-                    format!("后台任务异常退出，已复位操作状态：{message}"),
+                    encode(messages::TASK_RESET, &[("message", &message)]),
                     cx,
                 );
             }

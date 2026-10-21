@@ -258,3 +258,34 @@ fn creation_completion_does_not_reuse_a_newer_recovery_context() {
     assert!(target.recovery.preview.open);
     assert!(target.recovery.preview.loading_files);
 }
+
+#[test]
+fn recovery_placeholders_replace_seed_message_without_replacing_field_identity() {
+    use khaslana::ui_i18n::{UiMessage, text};
+    let cx = gpui::TestAppContext::single();
+    let seed_message = UiMessage::new("test.seed.placeholder", "seed-placeholder", "seed-placeholder");
+    let seed = cx.update(|cx| TextFieldState::localized(cx, seed_message));
+    let mut recovery = super::state::RecoveryState::new(&seed);
+    let search_message = UiMessage::new("test.expected.search", "搜索操作、引用、操作者或 OID", "Search operations, references, actors, or OIDs");
+    let branch_message = UiMessage::new("test.expected.branch", "恢复分支名称", "Recovery branch name");
+    assert!(recovery.search.has_localized_placeholder());
+    assert!(recovery.branch_name.has_localized_placeholder());
+    assert_eq!(recovery.search.displayed_placeholder().as_ref(), text(search_message));
+    assert_eq!(recovery.branch_name.displayed_placeholder().as_ref(), text(branch_message));
+    assert_ne!(recovery.search.uid, seed.uid);
+    assert_ne!(recovery.branch_name.uid, seed.uid);
+    assert_eq!(seed.displayed_placeholder().as_ref(), "seed-placeholder");
+
+    recovery.search.set_value("user query {literal}");
+    let uid = recovery.search.uid;
+    let caret = recovery.search.caret;
+    let replacement = UiMessage::new("test.rebound.placeholder", "replacement-placeholder", "replacement-placeholder");
+    recovery.search.set_placeholder_message(replacement);
+    assert_eq!(recovery.search.uid, uid);
+    assert_eq!(recovery.search.caret, caret);
+    assert_eq!(recovery.search.value, "user query {literal}");
+    assert_eq!(recovery.search.placeholder.as_ref(), "replacement-placeholder");
+    assert_eq!(recovery.search.displayed_placeholder().as_ref(), "replacement-placeholder");
+    assert_eq!(recovery.branch_name.displayed_placeholder().as_ref(), text(branch_message));
+    assert_eq!(seed.displayed_placeholder().as_ref(), "seed-placeholder");
+}

@@ -310,3 +310,21 @@ fn workflow_display_name_for_file_matches_templates_case_insensitively() {
         "release"
     );
 }
+
+#[test]
+fn progress_wrappers_translate_without_rewriting_user_labels_or_tool_output() {
+    use khaslana::{language::Language, ui_i18n::{message_key, resolve_in}};
+    let label = "用户步骤 中文 stdout {raw}".to_string();
+    let stdout = "工具原样输出：already completed".to_string();
+    let entry = workflow_progress_entry(&WorkflowProgressEvent::StepDetail {
+        index: 1, total: 3, label: label.clone(), detail: stdout.clone(),
+    });
+    assert_eq!(message_key(&entry.message).as_deref(), Some("workflow.progress.step_started"));
+    assert_eq!(resolve_in(Language::ZhCn, &entry.message), format!("步骤 2/3：{label}"));
+    assert_eq!(resolve_in(Language::En, &entry.message), format!("Step 2/3: {label}"));
+    assert_eq!(entry.details, vec![stdout]);
+    let started = workflow_progress_entry(&WorkflowProgressEvent::Started { name: "用户模板".into(), total: 3 });
+    assert_eq!(resolve_in(Language::En, &started.message), "Starting workflow \"用户模板\" (3 steps)");
+    let finished = workflow_progress_entry(&WorkflowProgressEvent::Finished { name: "用户模板".into(), total: 3 });
+    assert_eq!(resolve_in(Language::En, &finished.message), "Workflow \"用户模板\" completed (3 steps)");
+}

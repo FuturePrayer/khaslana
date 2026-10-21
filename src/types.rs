@@ -1,7 +1,9 @@
+#[path = "domain_ui_resources.rs"]
+pub mod domain_ui_resources;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+
 
 mod blame;
 mod browse;
@@ -174,17 +176,17 @@ impl SubmoduleState {
 
     pub fn label(&self) -> &'static str {
         if !self.initialized {
-            "未初始化"
+            crate::ui_i18n::text(domain_ui_resources::NOT_INITIALIZED)
         } else if !self.checked_out {
-            "未检出"
+            crate::ui_i18n::text(domain_ui_resources::NOT_CHECKED_OUT)
         } else if self.workdir_modified {
-            "有改动"
+            crate::ui_i18n::text(domain_ui_resources::MODIFIED)
         } else if self.workdir_untracked {
-            "有未跟踪文件"
+            crate::ui_i18n::text(domain_ui_resources::HAS_UNTRACKED_FILES)
         } else if !self.head_matches_index {
-            "需更新"
+            crate::ui_i18n::text(domain_ui_resources::UPDATE_NEEDED)
         } else {
-            "已同步"
+            crate::ui_i18n::text(domain_ui_resources::UP_TO_DATE)
         }
     }
 }
@@ -268,7 +270,7 @@ pub enum DiffEncodingChoice {
 impl DiffEncodingChoice {
     pub fn label(self) -> &'static str {
         match self {
-            DiffEncodingChoice::Auto => "自动",
+            DiffEncodingChoice::Auto => crate::ui_i18n::text(domain_ui_resources::AUTO),
             DiffEncodingChoice::Utf8 => "UTF-8",
             DiffEncodingChoice::Gb18030 => "GB18030/GBK",
             DiffEncodingChoice::Big5 => "Big5",
@@ -362,8 +364,8 @@ pub enum HistoryScope {
 impl HistoryScope {
     pub fn label(self) -> &'static str {
         match self {
-            Self::CurrentBranch => "当前分支",
-            Self::AllRefs => "所有分支",
+            Self::CurrentBranch => crate::ui_i18n::text(domain_ui_resources::CURRENT_BRANCH),
+            Self::AllRefs => crate::ui_i18n::text(domain_ui_resources::ALL_BRANCHES),
         }
     }
 }
@@ -415,30 +417,81 @@ pub enum OperationEvent {
     Finished(String),
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum GitError {
-    #[error("Git 错误：{0}")]
-    Git(#[from] git2::Error),
-    #[error("I/O 错误：{0}")]
-    Io(#[from] std::io::Error),
-    #[error("凭据错误：{0}")]
+    Git(git2::Error),
+    Io(std::io::Error),
     Credential(String),
-    #[error("访问 {url} 需要身份验证")]
     CredentialRequired { url: String },
-    #[error("分支名称无效：{0}")]
     InvalidBranchName(String),
-    #[error("提交信息不能为空")]
     EmptyCommitMessage,
-    #[error("没有暂存的变更，不能创建空提交")]
     EmptyCommit,
-    #[error("尚未打开仓库")]
     NoRepository,
-    #[error("操作产生冲突：{0:?}")]
     Conflicts(Vec<String>),
-    #[error("工作流已取消")]
     WorkflowCancelled,
-    #[error("{0}")]
     Message(String),
+    Localized(crate::ui_i18n::LocalizedMessage),
+    LocalizedCredential(crate::ui_i18n::LocalizedMessage),
 }
+
+impl GitError {
+    /// 错误创建后保留稳定身份，显示时才读取语言；不从译文反推业务分支。
+    pub fn message_key(&self) -> Option<&'static str> {
+        use domain_ui_resources as r;
+        Some(match self {
+            Self::Localized(message) | Self::LocalizedCredential(message) => message.message.key,
+            Self::EmptyCommitMessage => r::EMPTY_COMMIT_MESSAGE.key,
+            Self::EmptyCommit => r::EMPTY_COMMIT.key,
+            Self::NoRepository => r::NO_REPOSITORY.key,
+            Self::WorkflowCancelled => r::WORKFLOW_CANCELLED.key,
+            Self::CredentialRequired { .. } => r::AUTHENTICATION_IS_REQUIRED_TO_ACCESS.key,
+            Self::InvalidBranchName(_) => r::INVALID_BRANCH_NAME.key,
+            Self::Conflicts(_) => r::OPERATION_CONFLICTS.key,
+            Self::Git(_) | Self::Io(_) | Self::Credential(_) | Self::Message(_) => return None,
+        })
+    }
+
+    pub fn is_message(&self, key: &str) -> bool { self.message_key() == Some(key) }
+
+    /// 显式语言入口供无全局状态竞态的测试、导出和长驻错误展示复用。
+    pub fn display_in(&self, language: crate::language::Language) -> String {
+        use crate::ui_i18n::{format_in, text_in};
+        use domain_ui_resources as r;
+        let wrap = |message, detail: String| format_in(language, message, &[("detail", &detail)]);
+        let localized = |message: &crate::ui_i18n::LocalizedMessage| {
+            let args: Vec<_> = message.args.iter().map(|(key, value)| (key.as_str(), value.as_str())).collect();
+            format_in(language, message.message, &args)
+        };
+        match self {
+            Self::Git(error) => wrap(r::GIT_ERROR, crate::ui_i18n::resolve_in(language, &error.to_string())),
+            Self::Io(error) => wrap(r::IO_ERROR, error.to_string()),
+            Self::Credential(detail) => wrap(r::CREDENTIAL_ERROR, detail.clone()),
+            Self::LocalizedCredential(message) => wrap(r::CREDENTIAL_ERROR, localized(message)),
+            Self::CredentialRequired { url } => format_in(language, r::AUTHENTICATION_IS_REQUIRED_TO_ACCESS, &[("url", url)]),
+            Self::InvalidBranchName(name) => wrap(r::INVALID_BRANCH_NAME, name.clone()),
+            Self::EmptyCommitMessage => text_in(language, r::EMPTY_COMMIT_MESSAGE).into(),
+            Self::EmptyCommit => text_in(language, r::EMPTY_COMMIT).into(),
+            Self::NoRepository => text_in(language, r::NO_REPOSITORY).into(),
+            Self::Conflicts(paths) => wrap(r::OPERATION_CONFLICTS, format!("{paths:?}")),
+            Self::WorkflowCancelled => text_in(language, r::WORKFLOW_CANCELLED).into(),
+            Self::Message(message) => message.clone(),
+            Self::Localized(message) => localized(message),
+        }
+    }
+}
+
+impl std::fmt::Display for GitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.display_in(crate::ui_i18n::language()))
+    }
+}
+
+impl std::error::Error for GitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self { Self::Git(error) => Some(error), Self::Io(error) => Some(error), _ => None }
+    }
+}
+impl From<git2::Error> for GitError { fn from(error: git2::Error) -> Self { Self::Git(error) } }
+impl From<std::io::Error> for GitError { fn from(error: std::io::Error) -> Self { Self::Io(error) } }
 
 pub type Result<T> = std::result::Result<T, GitError>;

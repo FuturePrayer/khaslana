@@ -43,6 +43,12 @@ mod system;
 mod tasks;
 mod text_input;
 mod theme_view;
+mod language_view;
+mod main_ui_resources;
+mod operation_ui_resources;
+mod app_ui_resources;
+use khaslana::ui_i18n::{text as ui_text, encode as ui_encode, format as ui_message};
+use app_ui_resources as app_messages;
 #[cfg(windows)]
 mod tray;
 mod ui;
@@ -245,19 +251,19 @@ impl ShortcutAction {
     /// 用户可见的中文标签。
     pub(crate) fn label(&self) -> &'static str {
         match self {
-            ShortcutAction::Refresh => "刷新",
-            ShortcutAction::Fetch => "获取",
-            ShortcutAction::Pull => "拉取",
-            ShortcutAction::Push => "推送",
-            ShortcutAction::OpenStash => "贮藏",
-            ShortcutAction::OpenSubmodule => "子模块",
-            ShortcutAction::OpenSettings => "设置",
-            ShortcutAction::SwitchToWorktree => "工作区",
-            ShortcutAction::SwitchToHistory => "提交记录",
-            ShortcutAction::SwitchToWorkflow => "工作流",
-            ShortcutAction::OpenInExplorer => "在资源管理器中打开仓库",
-            ShortcutAction::OpenRemoteInBrowser => "以浏览器打开当前远端",
-            ShortcutAction::OpenCodeSearch => "全局搜索",
+            ShortcutAction::Refresh => ui_text(app_messages::REFRESH),
+            ShortcutAction::Fetch => ui_text(app_messages::FETCH),
+            ShortcutAction::Pull => ui_text(app_messages::PULL),
+            ShortcutAction::Push => ui_text(app_messages::PUSH),
+            ShortcutAction::OpenStash => ui_text(app_messages::STASH),
+            ShortcutAction::OpenSubmodule => ui_text(app_messages::SUBMODULE),
+            ShortcutAction::OpenSettings => ui_text(app_messages::SETTINGS),
+            ShortcutAction::SwitchToWorktree => ui_text(app_messages::WORKTREE),
+            ShortcutAction::SwitchToHistory => ui_text(app_messages::HISTORY),
+            ShortcutAction::SwitchToWorkflow => ui_text(app_messages::WORKFLOW),
+            ShortcutAction::OpenInExplorer => ui_text(app_messages::EXPLORER),
+            ShortcutAction::OpenRemoteInBrowser => ui_text(app_messages::BROWSER),
+            ShortcutAction::OpenCodeSearch => ui_text(app_messages::SEARCH),
         }
     }
 
@@ -329,7 +335,7 @@ impl ShortcutConflict {
     pub(crate) fn describe(&self) -> String {
         match self {
             ShortcutConflict::App(action) => action.label().to_string(),
-            ShortcutConflict::Workflow(file) => format!("工作流 {file}"),
+            ShortcutConflict::Workflow(file) => ui_message(app_messages::WORKFLOW_CONFLICT, &[("file", file)]),
         }
     }
 }
@@ -777,9 +783,9 @@ impl CheckoutTarget {
     /// 面向用户的名称，如「分支 main」「远端分支 origin/feature」「标签 v1.0」。
     pub(crate) fn label(&self) -> String {
         match self {
-            CheckoutTarget::Branch(name) => format!("分支 {name}"),
-            CheckoutTarget::RemoteBranch(name) => format!("远端分支 {name}"),
-            CheckoutTarget::Tag(name) => format!("标签 {name}"),
+            CheckoutTarget::Branch(name) => ui_message(app_messages::BRANCH_TARGET, &[("name", name)]),
+            CheckoutTarget::RemoteBranch(name) => ui_message(app_messages::REMOTE_TARGET, &[("name", name)]),
+            CheckoutTarget::Tag(name) => ui_message(app_messages::TAG_TARGET, &[("name", name)]),
         }
     }
 }
@@ -1153,7 +1159,7 @@ fn discard_paths_preview(paths: &[String]) -> String {
         if !preview.is_empty() {
             preview.push('\n');
         }
-        preview.push_str(&format!("... 以及另外 {} 个文件", paths.len() - 5));
+        preview.push_str(&ui_message(app_messages::MORE_FILES, &[("count", &(paths.len() - 5).to_string())]));
     }
     preview
 }
@@ -2046,7 +2052,7 @@ impl RepoTabState {
             loading: RepositoryLoading::default(),
             repository_load_id: 0,
             pending_search_branch: None,
-            status: "就绪".to_string(),
+            status: ui_encode(app_messages::READY, &[]).to_string(),
             last_error: None,
             last_active_at: now_epoch_secs(),
         }
@@ -2058,7 +2064,7 @@ impl RepoTabState {
             .and_then(|path| path.file_name())
             .map(|name| name.to_string_lossy().to_string())
             .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "未命名仓库".to_string())
+            .unwrap_or_else(|| ui_text(app_messages::UNNAMED_REPOSITORY).to_string())
     }
 
     fn path_key(&self) -> Option<String> {
@@ -2169,8 +2175,8 @@ pub(crate) struct DiffCacheKey {
 struct RepositoryLoadRequest {
     tab_id: RepoTabId,
     path: PathBuf,
-    started: &'static str,
-    finished: &'static str,
+    started: khaslana::ui_i18n::UiMessage,
+    finished: khaslana::ui_i18n::UiMessage,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -2189,15 +2195,12 @@ enum OperationKind {
 
 impl OperationKind {
     fn from_message(message: &str) -> Self {
-        if message.contains("拉取")
-            || message.contains("推送")
-            || message.contains("克隆")
-            || message.contains("刷新仓库")
-            || message.contains("远端")
-            || message.contains("凭据连接")
-        {
+        let key = khaslana::ui_i18n::message_key(message).unwrap_or_default();
+        if key.starts_with("network.") || key.contains(".fetch") || key.contains(".pull")
+            || key.contains(".push") || key.contains(".clone") || key.contains(".remote")
+            || key.contains(".refresh") || key.contains("credential_connection") {
             Self::Network
-        } else if message.contains("工作流") {
+        } else if key.starts_with("workflow.") || key.contains(".workflow") {
             Self::LongRunning
         } else {
             Self::Local
@@ -3059,9 +3062,7 @@ impl TabCredentialProvider {
                         &self.tx,
                         UiEvent::GiteeTokenRefreshed {
                             success: false,
-                            message: format!(
-                                "Gitee 令牌已续期，但续期材料保存失败（{err}）；请重新登录 Gitee 恢复自动续期"
-                            ),
+                            message: ui_encode(app_messages::GITEE_SAVE_FAILED, &[("error", &err.to_string())]),
                         },
                     );
                     // 本操作仍用新令牌（内存中已刷新）；仅持久化受损。
@@ -3086,7 +3087,7 @@ impl TabCredentialProvider {
                     &self.tx,
                     UiEvent::GiteeTokenRefreshed {
                         success: true,
-                        message: "Gitee 令牌已自动续期".into(),
+                        message: ui_encode(app_messages::GITEE_RENEWED, &[]).into(),
                     },
                 );
                 match stored.credential.clone() {
@@ -3112,9 +3113,7 @@ impl TabCredentialProvider {
                     &self.tx,
                     UiEvent::GiteeTokenRefreshed {
                         success: false,
-                        message: format!(
-                            "Gitee 令牌自动续期失败：{error}；请重新登录 Gitee 更新凭据"
-                        ),
+                        message: ui_encode(app_messages::GITEE_RENEW_FAILED, &[("error", &error)]),
                     },
                 );
                 stored.credential.clone()
@@ -3211,7 +3210,7 @@ impl CredentialProvider for TabCredentialProvider {
         );
         let credential = response_rx
             .recv()
-            .map_err(|_| khaslana::GitError::Credential("凭据输入已取消".into()))??;
+            .map_err(|_| khaslana::GitError::Credential(ui_encode(app_messages::CREDENTIAL_CANCELLED, &[]).into()))??;
 
         if let Some(credential) = credential {
             if credential.should_save() {
@@ -3341,7 +3340,7 @@ fn validate_credential_test_url(
     url: &str,
 ) -> Result<(), String> {
     if url.trim().is_empty() {
-        return Err("需要填写测试地址".to_string());
+        return Err(ui_encode(app_messages::TEST_URL_REQUIRED, &[]).to_string());
     }
     let url = url.trim();
     let inferred_mode = credential_form_mode_for_request(&CredentialRequest {
@@ -3359,20 +3358,18 @@ fn validate_credential_test_url(
     if inferred_mode != expected_mode {
         return Err(match expected_mode {
             CredentialFormMode::Https => {
-                "该记录是 HTTPS 凭据，测试地址必须是 http(s) 地址".to_string()
+                ui_encode(app_messages::TEST_HTTPS, &[]).to_string()
             }
             CredentialFormMode::Ssh => {
-                "该记录是 SSH 凭据，测试地址必须是 SSH 地址（git@主机:仓库 或 ssh://）".to_string()
+                ui_encode(app_messages::TEST_SSH, &[]).to_string()
             }
         });
     }
     if kind == khaslana::StoredCredentialKind::HttpsUserPass {
         match khaslana::credentials::remote_host_key(url) {
             Some(host_key) if host_key == record_host => Ok(()),
-            Some(host_key) => Err(format!(
-                "该凭据绑定 {record_host}，令牌不通用，不能用其它站点（{host_key}）的地址测试"
-            )),
-            None => Err("无法解析测试地址".to_string()),
+            Some(host_key) => Err(ui_encode(app_messages::TEST_HOST, &[("record_host", &record_host), ("host", &host_key)])),
+            None => Err(ui_encode(app_messages::TEST_URL_INVALID, &[]).to_string()),
         }
     } else {
         Ok(())
@@ -3444,60 +3441,54 @@ fn optional_display_name(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
-fn started_message_for_label(label: &'static str) -> &'static str {
-    match label {
-        "拉取远程引用完成" => "正在拉取远程引用",
-        "拉取完成" => "正在拉取",
-        "推送完成" => "正在推送",
-        "提交并推送完成" => "正在提交并推送",
-        "远端分支已拉取到本地" => "正在拉取远端分支",
-        "克隆完成" => "正在克隆仓库",
-        "已刷新" => "正在刷新仓库",
-        "合并操作已完成" => "正在合并分支",
-        "合并已完成" => "正在完成合并",
-        "合并已中止" => "正在中止合并",
-        "变基完成" => "正在变基分支",
-        "变基已中止" => "正在中止变基",
-        "变基拉取完成" => "正在变基拉取",
-        "切换分支完成" => "正在切换分支",
-        "提交完成" => "正在提交",
-        "修补提交完成" => "正在修补提交",
-        "拣选提交完成" => "正在拣选提交",
-        "已暂存选中改动" => "正在暂存选中改动",
-        "已取消暂存选中改动" => "正在取消暂存选中改动",
-        "标签已创建" => "正在创建标签",
-        "标签已删除" => "正在删除标签",
-        "标签已推送" => "正在推送标签",
-        "远端标签已删除" => "正在删除远端标签",
-        "分支已创建" => "正在创建分支",
-        "分支已重命名" => "正在重命名分支",
-        "分支已删除" => "正在删除分支",
-        "检出标签完成" => "正在检出标签",
-        "应用贮藏完成" => "正在应用贮藏",
-        "弹出贮藏完成" => "正在弹出贮藏",
-        "分支已重置" => "正在重置分支",
-        "回滚提交完成" => "正在回滚提交",
-        "远端已更新" => "正在更新远端",
-        "远端已新增" => "正在新增远端",
-        "远端已删除" => "正在删除远端",
-        "远端已刷新" => "正在刷新远端",
-        "冲突已标记为解决" => "正在标记冲突解决",
-        "IntelliJ IDEA 合并结果已应用" => "正在等待 IntelliJ IDEA 合并完成",
-        "子模块已同步记录版本" => "正在同步子模块记录版本",
-        "子模块已更新到远端最新" => "正在更新子模块到远端最新",
-        _ => label,
+fn operation_started_message(label: khaslana::ui_i18n::UiMessage) -> khaslana::ui_i18n::UiMessage {
+    use khaslana::ui_i18n::UiMessage;
+    match label.key {
+        "operation.fetched" => UiMessage::new("operation.fetched.started", "正在拉取远程引用", "Fetching remote references"),
+        "operation.pulled" => UiMessage::new("operation.pulled.started", "正在拉取", "Pulling"),
+        "operation.pushed" => UiMessage::new("operation.pushed.started", "正在推送", "Pushing"),
+        "operation.committed_pushed" => UiMessage::new("operation.committed_pushed.started", "正在提交并推送", "Committing and pushing"),
+        "operation.remote_branch_pulled" => UiMessage::new("operation.remote_branch_pulled.started", "正在拉取远端分支", "Pulling remote branch"),
+        "operation.cloned" => UiMessage::new("operation.cloned.started", "正在克隆仓库", "Cloning repository"),
+        "operation.refreshed" => UiMessage::new("operation.refreshed.started", "正在刷新仓库", "Refreshing repository"),
+        "operation.merge_operation_completed" => UiMessage::new("operation.merge_operation_completed.started", "正在合并分支", "Merging branch"),
+        "operation.merge_completed" => UiMessage::new("operation.merge_completed.started", "正在完成合并", "Completing merge"),
+        "operation.merge_aborted" => UiMessage::new("operation.merge_aborted.started", "正在中止合并", "Aborting merge"),
+        "operation.rebase_completed" => UiMessage::new("operation.rebase_completed.started", "正在变基分支", "Rebasing branch"),
+        "operation.rebase_aborted" => UiMessage::new("operation.rebase_aborted.started", "正在中止变基", "Aborting rebase"),
+        "operation.rebase_pulled" => UiMessage::new("operation.rebase_pulled.started", "正在变基拉取", "Pulling with rebase"),
+        "operation.branch_checked_out" => UiMessage::new("operation.branch_checked_out.started", "正在切换分支", "Checking out branch"),
+        "operation.committed" => UiMessage::new("operation.committed.started", "正在提交", "Committing"),
+        "operation.amended" => UiMessage::new("operation.amended.started", "正在修补提交", "Amending commit"),
+        "operation.cherry_picked" => UiMessage::new("operation.cherry_picked.started", "正在拣选提交", "Cherry-picking commit"),
+        "operation.staged_lines" => UiMessage::new("operation.staged_lines.started", "正在暂存选中改动", "Staging selected changes"),
+        "operation.unstaged_lines" => UiMessage::new("operation.unstaged_lines.started", "正在取消暂存选中改动", "Unstaging selected changes"),
+        "operation.tag_created" => UiMessage::new("operation.tag_created.started", "正在创建标签", "Creating tag"),
+        "operation.tag_deleted" => UiMessage::new("operation.tag_deleted.started", "正在删除标签", "Deleting tag"),
+        "operation.tag_pushed" => UiMessage::new("operation.tag_pushed.started", "正在推送标签", "Pushing tag"),
+        "operation.remote_tag_deleted" => UiMessage::new("operation.remote_tag_deleted.started", "正在删除远端标签", "Deleting remote tag"),
+        "operation.branch_created" => UiMessage::new("operation.branch_created.started", "正在创建分支", "Creating branch"),
+        "operation.branch_renamed" => UiMessage::new("operation.branch_renamed.started", "正在重命名分支", "Renaming branch"),
+        "operation.branch_deleted" => UiMessage::new("operation.branch_deleted.started", "正在删除分支", "Deleting branch"),
+        "operation.tag_checked_out" => UiMessage::new("operation.tag_checked_out.started", "正在检出标签", "Checking out tag"),
+        "operation.stash_applied" => UiMessage::new("operation.stash_applied.started", "正在应用贮藏", "Applying stash"),
+        "operation.stash_popped" => UiMessage::new("operation.stash_popped.started", "正在弹出贮藏", "Popping stash"),
+        "operation.branch_reset" => UiMessage::new("operation.branch_reset.started", "正在重置分支", "Resetting branch"),
+        "operation.commit_reverted" => UiMessage::new("operation.commit_reverted.started", "正在回滚提交", "Reverting commit"),
+        "operation.remote_updated" => UiMessage::new("operation.remote_updated.started", "正在更新远端", "Updating remote"),
+        "operation.remote_added" => UiMessage::new("operation.remote_added.started", "正在新增远端", "Adding remote"),
+        "operation.remote_deleted" => UiMessage::new("operation.remote_deleted.started", "正在删除远端", "Deleting remote"),
+        "operation.remote_refreshed" => UiMessage::new("operation.remote_refreshed.started", "正在刷新远端", "Refreshing remotes"),
+        "operation.conflict_resolved" => UiMessage::new("operation.conflict_resolved.started", "正在标记冲突解决", "Marking conflict resolved"),
+        "operation.external_merge_applied" => UiMessage::new("operation.external_merge_applied.started", "正在等待 IntelliJ IDEA 合并完成", "Waiting for IntelliJ IDEA merge"),
+        "operation.submodule_synced" => UiMessage::new("operation.submodule_synced.started", "正在同步子模块记录版本", "Synchronizing submodule revision"),
+        "operation.submodule_updated" | "operation.submodules_updated" => UiMessage::new("operation.submodules_updated.started", "正在更新子模块到远端最新", "Updating submodules to latest remote revision"),
+        _ => UiMessage::new("operation.running", "操作进行中", "Operation in progress"),
     }
 }
 
-fn started_message_for_label_text(label: &str) -> String {
-    if label.starts_with("子模块 ") && label.ends_with(" 已更新到远端最新") {
-        return "正在更新子模块到远端最新".to_string();
-    }
-    match label {
-        "子模块已同步记录版本" => "正在同步子模块记录版本".to_string(),
-        "子模块已更新到远端最新" => "正在更新子模块到远端最新".to_string(),
-        _ => label.to_string(),
-    }
+fn started_message_for_label(label: khaslana::ui_i18n::UiMessage) -> String {
+    khaslana::ui_i18n::encode(operation_started_message(label), &[])
 }
 
 /// 将 Git 的仓库相对路径转换为可复制、可交给系统文件管理器的绝对路径。
@@ -3541,6 +3532,11 @@ pub(crate) struct RepositoryView {
     diff_cache: RefCell<LruCache<DiffCacheKey, Arc<FileDiff>>>,
     pub(crate) proxy_settings: NetworkProxySettings,
     pub(crate) theme_mode: ThemeMode,
+    pub(crate) language_preferences: khaslana::language::LanguagePreferences,
+    pub(crate) ui_language: khaslana::language::Language,
+    pub(crate) ui_language_select: Option<language_view::LanguageSelect>,
+    pub(crate) prompt_language_select: Option<language_view::LanguageSelect>,
+    pub(crate) language_select_locale: Option<khaslana::language::Language>,
     /// 当前激活的主题色预设索引（0 = 靛蓝默认）。
     pub(crate) theme_accent: usize,
     tabs: Vec<RepoTabState>,
@@ -4052,11 +4048,7 @@ impl Render for RepositoryView {
                         ) {
                             this.recording_shortcut = None;
                             this.notify_warning(
-                                format!(
-                                    "快捷键 {} 已被「{}」占用",
-                                    shortcuts_view::format_keystroke(&ks),
-                                    conflict.describe()
-                                ),
+                                ui_encode(app_messages::SHORTCUT_TAKEN, &[("keystroke", &shortcuts_view::format_keystroke(&ks)), ("action", &conflict.describe())]),
                                 cx,
                             );
                         } else {
@@ -4283,30 +4275,18 @@ fn short_oid(oid: &str) -> &str {
     oid.get(..8).unwrap_or(oid)
 }
 
-fn reset_mode_label(mode: ResetMode) -> &'static str {
-    match mode {
-        ResetMode::Soft => "软重置",
-        ResetMode::Mixed => "混合重置",
-        ResetMode::Hard => "强制重置",
-    }
-}
 
-fn reset_mode_help(mode: ResetMode) -> &'static str {
-    match mode {
-        ResetMode::Soft => "保留暂存区和工作区修改",
-        ResetMode::Mixed => "重置暂存区，保留工作区修改",
-        ResetMode::Hard => "重置暂存区和工作区，丢弃未提交修改",
-    }
-}
+
+
 
 pub(crate) fn encoding_info_label(info: &DiffEncodingInfo) -> String {
     let base = if info.requested == DiffEncodingChoice::Auto {
-        format!("编码：自动({})", info.resolved.label())
+        ui_message(app_messages::ENCODING_AUTO, &[("encoding", info.resolved.label())])
     } else {
-        format!("编码：{}", info.requested.label())
+        ui_message(app_messages::ENCODING, &[("encoding", info.requested.label())])
     };
     if info.lossy {
-        format!("{base}，有替换")
+        ui_message(app_messages::ENCODING_REPLACED, &[("encoding", &base)])
     } else {
         base
     }
@@ -4373,30 +4353,30 @@ fn point_in_menu(x: f32, y: f32, menu_x: f32, menu_y: f32, width: f32, height: f
 }
 
 fn should_notify_operation_finished(message: &str, has_snapshot: bool, has_diff: bool) -> bool {
-    !(message == "差异已加载" && !has_snapshot && has_diff)
+    !(khaslana::ui_i18n::message_key(message).as_deref() == Some("operation.diff_loaded") && !has_snapshot && has_diff)
 }
 
 /// 这些操作会改变 HEAD、本地/远端分支引用或 upstream，需要在操作快照之外再完整刷新一次。
 fn operation_requires_repository_refresh(message: &str) -> bool {
     matches!(
-        message,
-        "切换分支完成"
-            | "检出标签完成"
-            | "远端分支已拉取到本地"
-            | "分支已创建"
-            | "分支已重命名"
-            | "分支已删除"
-            | "远端分支已删除"
-            | "远端已删除"
-            | "拉取远程引用完成"
-            | "远端已刷新"
-            | "拉取完成"
-            | "变基拉取完成"
-            | "分支拉取完成"
-            | "推送完成"
-            | "标签已推送"
-            | "远端标签已删除"
-            | "upstream 已设置"
+        khaslana::ui_i18n::message_key(message).as_deref().unwrap_or(""),
+        "operation.branch_checked_out"
+            | "operation.tag_checked_out"
+            | "operation.remote_branch_pulled"
+            | "operation.branch_created"
+            | "operation.branch_renamed"
+            | "operation.branch_deleted"
+            | "operation.remote_branch_deleted"
+            | "operation.remote_deleted"
+            | "operation.fetched"
+            | "operation.remote_refreshed"
+            | "operation.pulled"
+            | "operation.rebase_pulled"
+            | "operation.branch_pulled"
+            | "operation.pushed"
+            | "operation.tag_pushed"
+            | "operation.remote_tag_deleted"
+            | "operation.upstream_set"
     )
 }
 
@@ -4405,15 +4385,15 @@ fn operation_requires_repository_refresh(message: &str) -> bool {
 /// `RepositoryView::refresh_diff_after_stage_change`。
 fn operation_refreshes_worktree_diff(message: &str) -> bool {
     matches!(
-        message,
-        "暂存"
-            | "取消暂存"
-            | "已暂存选定文件"
-            | "已暂存所有文件"
-            | "已取消暂存选定文件"
-            | "已取消暂存所有文件"
-            | "已暂存选中改动"
-            | "已取消暂存选中改动"
+        khaslana::ui_i18n::message_key(message).as_deref().unwrap_or(""),
+        "operation.staged"
+            | "operation.unstaged"
+            | "operation.staged_files"
+            | "operation.staged_all"
+            | "operation.unstaged_files"
+            | "operation.unstaged_all"
+            | "operation.staged_lines"
+            | "operation.unstaged_lines"
     )
 }
 
@@ -4486,23 +4466,23 @@ fn toggle_index_selection(
 /// 它们走完整仓库重载路径，由 `RepositoryFastLoaded` 统一刷新历史。
 fn operation_affects_commit_history(message: &str) -> bool {
     matches!(
-        message,
-        "提交完成"
-            | "提交并推送完成"
-            | "合并操作已完成"
-            | "合并已完成"
-            | "合并已中止"
-            | "变基完成"
-            | "变基已中止"
-            | "分支已重置"
-            | "回滚提交完成"
-            | "撤销合并完成"
-            | "提交已还原到暂存区"
-            | "修补提交完成"
-            | "修补提交并推送完成"
-            | "拣选提交完成"
-            | "标签已创建"
-            | "标签已删除"
+        khaslana::ui_i18n::message_key(message).as_deref().unwrap_or(""),
+        "operation.committed"
+            | "operation.committed_pushed"
+            | "operation.merge_operation_completed"
+            | "operation.merge_completed"
+            | "operation.merge_aborted"
+            | "operation.rebase_completed"
+            | "operation.rebase_aborted"
+            | "operation.branch_reset"
+            | "operation.commit_reverted"
+            | "operation.merge_reverted"
+            | "operation.commit_undone"
+            | "operation.amended"
+            | "operation.amended_pushed"
+            | "operation.cherry_picked"
+            | "operation.tag_created"
+            | "operation.tag_deleted"
     )
 }
 
@@ -4535,10 +4515,10 @@ fn update_check_feedback(
     if trigger != UpdateCheckTrigger::Manual || error.is_empty() {
         return None;
     }
-    if error == "当前已是最新版本" {
+    if khaslana::ui_i18n::message_key(error).as_deref() == Some("update.up_to_date") {
         Some((AppToastKind::Success, error.to_string()))
     } else {
-        Some((AppToastKind::Error, format!("检查更新失败：{error}")))
+        Some((AppToastKind::Error, khaslana::ui_i18n::encode_with_messages(app_messages::UPDATE_CHECK_FAILED, &[], &[("error", error)])))
     }
 }
 
@@ -4549,7 +4529,7 @@ fn periodic_update_found_toast(known_version: Option<&str>, found_version: &str)
     if known_version == Some(found_version) {
         return None;
     }
-    Some(format!("发现新版本 v{found_version}，点击查看更新"))
+    Some(ui_encode(app_messages::UPDATE_NEW, &[("version", found_version)]))
 }
 
 fn dedupe_repo_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -5011,10 +4991,7 @@ fn main() {
             // `application().with_assets(...)` 提供；主题在窗口创建后按外观与
             // 强调色偏好重建（`apply_theme_for_appearance`）。
             gpui_kit::init(cx);
-            // 组件层文案语言：Kit 的内置 locale 停在 `en` fallback，迁移前
-            // Yororen `I18n` 提供的简体中文能力要在这一层继承（`zh-CN` 是
-            // 组件自带 ui.yml 支持的 locale key）。
-            gpui_kit::component::set_locale("zh-CN");
+            // 组件 locale 在 RepositoryView 加载独立语言偏好后统一桥接。
             let bounds = Bounds::centered(None, size(px(1280.0), px(820.0)), cx);
             // 注册全部键盘绑定：基础键位（TextInput）+ 工作流快捷键 + 应用级快捷键（从持久化加载）。
             let shortcut_bindings = khaslana::AppStorage::open_default()

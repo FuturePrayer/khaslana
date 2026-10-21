@@ -65,6 +65,10 @@ fn review_http_fixture(
 }
 
 fn run_fixture_review(settings: crate::ai::config::AiProviderSettings) -> AiReviewResult {
+    run_fixture_review_in(settings, TaskLanguages::default())
+}
+
+fn run_fixture_review_in(settings: crate::ai::config::AiProviderSettings, languages: TaskLanguages) -> AiReviewResult {
     let (dir, repo, service) = git_support::init_repo();
     git_support::write_file(dir.path(), "review.txt", "需要评审的内容\n");
     let oid = git_support::commit_all(&repo, "评审测试初始提交");
@@ -76,15 +80,97 @@ fn run_fixture_review(settings: crate::ai::config::AiProviderSettings) -> AiRevi
     };
     let client = ChatClient::new(settings, None);
     let mut completed = Vec::new();
-    let result = run_review_agent(
+    let result = run_review_agent_with_languages(
         &input, &service, &client,
         &std::sync::atomic::AtomicBool::new(false),
         &mut |event| {
             if let AgentEvent::Done(result) = event { completed.push(result.content); }
         },
+        languages,
     ).unwrap().expect("评审应完成而非取消");
     assert_eq!(completed, vec![result.content.clone()]);
     result
+}
+
+#[test]
+fn review_tool_schemas_change_descriptions_only_not_protocol_contracts() {
+    fn erase_descriptions(value: &mut Value) {
+        match value {
+            Value::Object(object) => {
+                object.remove("description");
+                for value in object.values_mut() { erase_descriptions(value); }
+            }
+            Value::Array(values) => for value in values { erase_descriptions(value); },
+            _ => {}
+        }
+    }
+    let zh = tool_schemas_in(Language::ZhCn);
+    let en = tool_schemas_in(Language::En);
+    assert_eq!(zh.len(), en.len());
+    for (zh, en) in zh.iter().zip(&en) {
+        assert_eq!(zh.name, en.name);
+        assert_ne!(zh.description, en.description);
+        assert!(!en.description.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)));
+        let mut zh_params = zh.parameters.clone();
+        let mut en_params = en.parameters.clone();
+        erase_descriptions(&mut zh_params);
+        erase_descriptions(&mut en_params);
+        assert_eq!(zh_params, en_params);
+    }
+}
+
+#[test]
+fn review_retry_keeps_frozen_language_messages_and_contract() {
+    let languages = TaskLanguages { system: Language::En, output: Language::ZhCn };
+    let partial = format!("data: {}\n\n", json!({
+        "choices":[{"index":0,"delta":{"content":"partial must be discarded"},"finish_reason":null}]
+    }));
+    let complete = format!("data: {}\n\ndata: [DONE]\n\n", json!({
+        "choices":[{"index":0,"delta":{"content":"最终结果"},"finish_reason":"stop"}]
+    }));
+    let (base_url, server) = review_http_fixture(vec![partial, complete]);
+    let result = run_fixture_review_in(crate::ai::config::AiProviderSettings {
+        enabled: true, base_url, model: "retry-language-fixture".into(), request_timeout_secs: 5,
+        ..Default::default()
+    }, languages);
+    assert_eq!(result.content, "最终结果");
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0]["messages"], requests[1]["messages"]);
+    assert_eq!(requests[0]["tools"], requests[1]["tools"]);
+    assert!(requests[1]["messages"][0]["content"].as_str().unwrap().ends_with(languages.output_instruction()));
+}
+
+#[test]
+fn review_agent_four_language_pairs_survive_real_tool_round_trip() {
+    for system in [Language::ZhCn, Language::En] {
+        for output in [Language::ZhCn, Language::En] {
+            let languages = TaskLanguages { system, output };
+            let event = |delta: Value| format!("data: {}\n\ndata: [DONE]\n\n", json!({
+                "choices":[{"index":0,"delta":delta,"finish_reason":"stop"}]
+            }));
+            let (base_url, server) = review_http_fixture(vec![
+                event(json!({"tool_calls":[{"index":0,"id":"call_language","type":"function","function":{"name":"get_file_tree","arguments":"{}"}}]})),
+                event(json!({"content":"原样 result"})),
+            ]);
+            let result = run_fixture_review_in(crate::ai::config::AiProviderSettings {
+                enabled: true, base_url, model: "language-fixture".into(), request_timeout_secs: 5,
+                ..Default::default()
+            }, languages);
+            assert_eq!(result.content, "原样 result");
+            let requests = server.join().unwrap();
+            assert_eq!(requests.len(), 2);
+            for request in &requests {
+                let system_text = request["messages"][0]["content"].as_str().unwrap();
+                assert!(system_text.ends_with(languages.output_instruction()));
+                assert_eq!(system_text.starts_with("You are"), system == Language::En);
+                assert_eq!(request["tools"][0]["function"]["name"], "read_lines");
+            }
+            assert_eq!(requests[0]["messages"][0], requests[1]["messages"][0]);
+            assert_eq!(requests[1]["messages"][3]["tool_call_id"], "call_language");
+            assert!(requests[1]["messages"][3]["content"].as_str().unwrap().contains("review.txt"));
+        }
+    }
 }
 
 #[test]
@@ -352,6 +438,28 @@ fn search_hits_and_history_format() {
     };
     let text = format_history_lines(std::slice::from_ref(&commit));
     assert!(text.starts_with("0123456 修复 — 李四, "));
+}
+
+#[test]
+fn tool_args_summary_uses_task_output_language_without_translating_query_or_history() {
+    let arguments = r#"{"query":"中文 query[0-9]+","is_regex":true}"#;
+    let history = AiReviewStep::ToolCall {
+        name: "search_code".into(), args_summary: "search_code 旧查询（正则）".into(),
+        result_excerpt: "原始工具结果".into(), error: false,
+    };
+    for system in [Language::ZhCn, Language::En] {
+        for output in [Language::ZhCn, Language::En] {
+            let languages = TaskLanguages { system, output };
+            assert_eq!(tool_args_summary_in("search_code", arguments, languages.output),
+                match output {
+                    Language::ZhCn => "search_code 中文 query[0-9]+（正则）",
+                    Language::En => "search_code 中文 query[0-9]+ (regex)",
+                });
+            assert_eq!(tool_args_summary_in("search_code", r#"{"query":"用户 query","is_regex":false}"#, languages.output),
+                "search_code 用户 query");
+            assert_eq!(history.summary_in(languages.output), "search_code 旧查询（正则）");
+        }
+    }
 }
 
 #[test]

@@ -94,6 +94,13 @@ impl KitFieldInput {
         }
     }
 
+    fn set_placeholder(&self, value: SharedString, window: &mut Window, cx: &mut App) {
+        match self {
+            Self::Single(state) => state.update(cx, |state, cx| state.set_placeholder(value, window, cx)),
+            Self::Multi(state) => state.update(cx, |state, cx| state.set_placeholder(value, window, cx)),
+        }
+    }
+
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         match self {
             Self::Single(state) => Focusable::focus_handle(state.read(cx), cx),
@@ -169,6 +176,16 @@ fn kit_field_needs_rebind(
     truth_placeholder: &SharedString,
 ) -> bool {
     host.uid != truth_uid || host.placeholder != *truth_placeholder
+}
+
+fn localized_field_needs_rebind(
+    host: &KitFieldIdentity,
+    truth_uid: u64,
+    placeholder: &SharedString,
+    localized: bool,
+) -> bool {
+    if localized { host.uid != truth_uid }
+    else { kit_field_needs_rebind(host, truth_uid, placeholder) }
 }
 
 impl KitField {
@@ -278,6 +295,7 @@ impl RepositoryView {
         }
         self.reconcile_dynamic_kit_fields(window, cx);
         self.ensure_ai_api_type_select(window, cx);
+        self.ensure_language_selects(window, cx);
     }
 
     /// 动态字段宿主的多退少补：宿主集合精确等于当前活跃的动态字段集合。
@@ -404,7 +422,7 @@ impl RepositoryView {
     }
 
     fn spawn_kit_field(&mut self, id: FieldId, window: &mut Window, cx: &mut Context<Self>) {
-        let placeholder = self.field(id).placeholder.clone();
+        let placeholder = self.field(id).displayed_placeholder();
         let secret = self.field(id).secret;
         let initial = self.field(id).value.clone();
         let caret = self.field(id).caret;
@@ -467,13 +485,23 @@ impl RepositoryView {
         let Some(host) = self.kit_field(id) else {
             return;
         };
-        let needs_rebind = kit_field_needs_rebind(&host.identity, truth.uid, &truth.placeholder);
+        let placeholder = truth.displayed_placeholder();
+        // 同一业务对象的语言变化只更新提示，不能清空撤销历史、光标或 IME。
+        let localized = truth.has_localized_placeholder();
+        let needs_rebind = localized_field_needs_rebind(&host.identity, truth.uid, &placeholder, localized);
+        let placeholder_changed = host.identity.placeholder != placeholder;
         if host.input.has_ime_composition(window, cx) {
             return;
         }
         if needs_rebind {
             self.rebind_kit_field(id, window, cx);
             return;
+        }
+        if localized && placeholder_changed {
+            if let Some((_, host)) = self.kit_fields.iter_mut().find(|(field_id, _)| *field_id == id) {
+                host.input.set_placeholder(placeholder.clone(), window, cx);
+                host.identity.placeholder = placeholder;
+            }
         }
         let Some(field) = self.kit_field(id) else {
             return;

@@ -58,6 +58,15 @@ fn textarea_press_enter_never_submits_after_mutating_the_value() {
     assert!(kit_press_enter_submits(false));
 }
 
+#[test]
+fn language_only_placeholder_update_keeps_the_editing_entity() {
+    let host = super::KitFieldIdentity { uid: 7, placeholder: "提交信息".into() };
+    assert!(!super::localized_field_needs_rebind(&host, 7, &"Commit message".into(), true));
+    // 换语言不重建实体，但不同仓库/表单对象仍须隔离撤销历史。
+    assert!(super::localized_field_needs_rebind(&host, 8, &"Commit message".into(), true));
+    assert!(super::localized_field_needs_rebind(&host, 7, &"另一个字段".into(), false));
+}
+
 /// 宿主身份决定「同一个输入框」还是「同一个位置换了内容」。文本比较
 /// 看不出来的是 uid：两份业务字段恰好同文本时，只有 uid 变化才需要
 /// 完整重绑（审查 R5：切换模板后 Ctrl+Z 不得回到前一模板的编辑）。

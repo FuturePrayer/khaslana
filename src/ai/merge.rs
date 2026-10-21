@@ -1,10 +1,11 @@
+use crate::ai::messages::ai_error;
 // AI 冲突合并建议的纯函数层：diff3 文本分段、多段对话滑动窗口、
 // 响应清洗与冲突标记检测。
 //
 // 所有函数都是纯函数，不依赖网络/Git/GPUI，方便单元测试。
 
 use super::prompt::ChatMessage;
-use crate::types::{GitError, Result};
+use crate::types::Result;
 
 /// 整文件单请求模式的 diff3 文本字符上限。按主流 ~200K token 上下文窗口、
 /// 代码约 3-4 字符/token 保守估算：60K 字符约 15-20K 输入 token，为输出
@@ -75,9 +76,7 @@ pub fn split_diff3_text(
     }
     // 输入保证标记配对（来自 merge_file_from_index）；兜底防御。
     if in_block {
-        return Err(GitError::Message(
-            "冲突文本标记不配对，无法分段生成合并建议".into(),
-        ));
+        return Err(ai_error!("ai.merge.3383ca7b2356", "冲突文本标记不配对，无法分段生成合并建议", "Conflict markers are unpaired; cannot generate segmented merge suggestions"));
     }
 
     // 贪心装段。
@@ -88,9 +87,7 @@ pub fn split_diff3_text(
     for unit in units {
         let unit_chars = unit.text.chars().count();
         if unit_chars > max_unit_chars {
-            return Err(GitError::Message(format!(
-                "单个冲突块超过 {max_unit_chars} 字符，暂不支持 AI 合并建议，请手动解决或使用外部合并工具"
-            )));
+            return Err(ai_error!("ai.merge.ca7030f0aca1", "单个冲突块超过 {max_unit_chars} 字符，暂不支持 AI 合并建议，请手动解决或使用外部合并工具", "A conflict block exceeds {max_unit_chars} characters; resolve it manually or use an external merge tool", "max_unit_chars" => max_unit_chars));
         }
         // 当前段装不下下一个单元：先冲刷；单元本身超上限（只可能是
         // 冲突块）时也作为独立段放行。

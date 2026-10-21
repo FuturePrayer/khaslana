@@ -78,7 +78,7 @@ fn malformed_and_non_object_parameters_are_rejected() {
     }
     action = InvokeEditorData::new_action("js.run", "a");
     action.set(WorkflowStepSlot::JsInput, "{broken".into());
-    assert!(action.build().unwrap_err().contains("脚本输入"));
+    assert!(khaslana::ui_i18n::resolve_in(khaslana::language::Language::ZhCn, &action.build().unwrap_err()).contains("脚本输入"));
 }
 
 #[test]

@@ -1,3 +1,4 @@
+use khaslana::types::domain_ui_resources;
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -74,7 +75,7 @@ pub(crate) fn panic_message(payload: Box<dyn Any + Send>) -> String {
     } else if let Some(message) = payload.downcast_ref::<String>() {
         message.clone()
     } else {
-        "未知原因".to_string()
+        khaslana::ui_i18n::text(domain_ui_resources::UNKNOWN_REASON).to_string()
     }
 }
 

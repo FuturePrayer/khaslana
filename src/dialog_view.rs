@@ -1,12 +1,21 @@
 //! RepositoryView 的应用级对话框渲染。
 
+#[path = "ui_resources/dialog_view_messages.rs"]
+mod messages;
+
 use crate::*;
 use gpui_kit::base::FocusTrapElement;
 use gpui_kit::component::setting::{SettingGroup, SettingItem};
 use gpui_kit::component::{Disableable, Sizable, Size, button::Button, menu::DropdownMenu};
 
-/// 凭据表冻结操作列宽度（按钮区 112px + 行右内边距 8px）。
-const CREDENTIAL_TABLE_OP_COL_W: f32 = 120.0;
+/// 冻结操作列须容纳两个不可收缩的按钮，不能依靠溢出绘制侵入左侧数据栏。
+/// 每个标签预留 48px（覆盖 12px 字号的中英文 Test / Delete），另计按钮两侧
+/// 各 12px 内边距与 1px 边框、4px 按钮间距、行两侧各 8px 内边距。
+const CREDENTIAL_TABLE_OP_COL_W: f32 = credential_actions_column_width(48.0, 48.0);
+
+const fn credential_actions_column_width(test_label_width: f32, delete_label_width: f32) -> f32 {
+    test_label_width + delete_label_width + 2.0 * (24.0 + 2.0) + 4.0 + 16.0
+}
 /// 凭据表数据列最小总宽：固定列 512px + 列间距 40px + 行内边距 16px +
 /// 「站点 / 远端」列最小 120px；窄视口时经横向滚动查看完整内容。
 const CREDENTIAL_TABLE_DATA_MIN_W: f32 = 688.0;
@@ -200,12 +209,12 @@ impl RepositoryView {
     fn render_clone_dialog(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let preview = infer_clone_target_path(&self.clone_url.value, &self.clone_path.value)
             .map(|path| path.display().to_string());
-        self.dialog_panel("克隆仓库", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::CLONE_REPOSITORY), cx)
             .child(self.input(FieldId::CloneUrl, false, window, cx))
             .child(self.input(FieldId::ClonePath, false, window, cx))
             .child(self.toggle_row(
                 "clone-recursive-submodules",
-                "递归克隆子模块",
+                khaslana::ui_i18n::text(messages::CLONE_SUBMODULES_RECURSIVELY),
                 self.clone_recursive_submodules,
                 |this, _, _| this.clone_recursive_submodules = !this.clone_recursive_submodules,
                 cx,
@@ -220,7 +229,7 @@ impl RepositoryView {
                         ui_theme::CONTENT_SECONDARY
                     }))
                     .child(preview.unwrap_or_else(|| {
-                        "填写远程仓库 URL 和父文件夹后显示最终代码路径".to_string()
+                        khaslana::ui_i18n::text(messages::ENTER_A_REMOTE_REPOSITORY_URL_AND_PARENT_FOLDER_TO_SEE).to_string()
                     })),
             )
             .child(
@@ -229,7 +238,7 @@ impl RepositoryView {
                     .justify_between()
                     .gap_2()
                     .child(self.button(
-                        "选择目录",
+                        khaslana::ui_i18n::text(messages::SELECT_FOLDER),
                         !self.busy,
                         |this, _, _| this.browse_clone_target(),
                         cx,
@@ -239,13 +248,13 @@ impl RepositoryView {
                             .flex()
                             .gap_2()
                             .child(self.button(
-                                "取消",
+                                khaslana::ui_i18n::text(messages::CANCEL),
                                 !self.busy,
                                 |this, _, _| this.close_dialog(),
                                 cx,
                             ))
                             .child(self.primary_button(
-                                "克隆",
+                                khaslana::ui_i18n::text(messages::CLONE),
                                 !self.busy,
                                 |this, _, _| this.clone_repo(),
                                 cx,
@@ -255,31 +264,31 @@ impl RepositoryView {
     }
 
     fn render_confirm_window_close_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        self.dialog_panel("关闭 Khaslana", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::CLOSE_KHASLANA), cx)
             .w(px(520.0))
             .child(
                 div()
                     .text_size(px(13.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child("要直接退出应用，还是让 Khaslana 继续在系统托盘中运行？"),
+                    .child(khaslana::ui_i18n::text(messages::EXIT_THE_APPLICATION_OR_KEEP_KHASLANA_RUNNING_IN_THE_SYSTEM)),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("缩小到托盘后，可点击托盘图标恢复主窗口，或从托盘菜单退出。"),
+                    .child(khaslana::ui_i18n::text(messages::WHEN_MINIMIZED_TO_THE_TRAY_CLICK_THE_TRAY_ICON_TO)),
             )
             .child(
                 dialog_actions()
-                    .child(self.button("取消", true, |this, _, _| this.cancel_window_close(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), true, |this, _, _| this.cancel_window_close(), cx))
                     .child(self.primary_button(
-                        "缩小到托盘",
+                        khaslana::ui_i18n::text(messages::MINIMIZE_TO_TRAY),
                         true,
                         |this, window, cx| this.minimize_to_tray(window, cx),
                         cx,
                     ))
                     .child(self.danger_button(
-                        "直接退出",
+                        khaslana::ui_i18n::text(messages::EXIT),
                         true,
                         |this, _, cx| this.exit_application(cx),
                         cx,
@@ -288,34 +297,32 @@ impl RepositoryView {
     }
 
     fn render_portable_migration_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        self.dialog_panel("迁移到便携目录", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::MIGRATE_TO_PORTABLE_DIRECTORY), cx)
             .w(px(540.0))
             .child(
                 div()
                     .text_size(px(13.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child("检测到应用数据当前存放在 C 盘系统目录，是否迁移到程序所在目录？"),
+                    .child(khaslana::ui_i18n::text(messages::APPLICATION_DATA_IS_CURRENTLY_IN_A_SYSTEM_DIRECTORY_ON_DRIVE)),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
                     .child(
-                        "迁移后，数据库、更新缓存和工作流模板将统一保存在可执行文件同级的 \
-                         data/ 目录，便于整体备份并减少 C 盘占用。点击「迁移并重启」后应用将关闭，\
-                         并在下次启动时自动完成数据搬运。若选择「保持现状」，后续可在「设置」-「更新设置」中手动执行迁移。",
+                        khaslana::ui_i18n::text(messages::PORTABLE_MIGRATION_DETAILS),
                     ),
             )
             .child(
                 dialog_actions()
                     .child(self.button(
-                        "保持现状",
+                        khaslana::ui_i18n::text(messages::KEEP_CURRENT_LOCATION),
                         true,
                         |this, _, _| this.dismiss_portable_migration(),
                         cx,
                     ))
                     .child(self.primary_button(
-                        "迁移并重启",
+                        khaslana::ui_i18n::text(messages::MIGRATE_AND_RESTART),
                         true,
                         |this, _, _| this.confirm_portable_migration(),
                         cx,
@@ -330,24 +337,17 @@ impl RepositoryView {
         let risk = khaslana::current_exe_location_risk();
         let risk_text = match risk {
             khaslana::ExeLocationRisk::Volatile => {
-                "检测到程序当前位于可能被自动清理的目录（临时目录或聊天软件的接收文件目录）。\
-                 这类目录会被系统或聊天软件的清理功能定期清空，届时程序与其中的数据都会丢失。"
+                khaslana::ui_i18n::text(messages::VOLATILE_LOCATION_WARNING)
             }
             _ => {
-                "检测到程序当前位于下载文件夹。下载文件夹可能被系统「存储感知」\
-                或清理工具定期清空，届时程序与其中的数据都会丢失。"
+                khaslana::ui_i18n::text(messages::DOWNLOAD_LOCATION_WARNING)
             }
         };
         let data_at_risk = khaslana::portable_database_path().is_some_and(|path| path.exists());
-        let data_note = if data_at_risk {
-            "数据目前也存放在该目录中，强烈建议立即移动。"
-        } else {
-            "你的数据已保存在安全位置，仅程序本体存在丢失风险。"
-        };
         let target_label = khaslana::exe_relocation_target_dir()
             .map(|dir| dir.display().to_string())
-            .unwrap_or_else(|| "未知".to_string());
-        self.dialog_panel("移动到安全目录", cx)
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::UNKNOWN).to_string());
+        self.dialog_panel(khaslana::ui_i18n::text(messages::MOVE_TO_A_SAFE_DIRECTORY), cx)
             .w(px(540.0))
             .child(
                 div()
@@ -359,18 +359,18 @@ impl RepositoryView {
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child(format!("{data_note}点击「移动并重启」后应用将关闭，程序与数据会被搬到 {target_label} 并从新位置重新启动。若选择「保持现状」，之后可在「设置」-「更新设置」中手动执行移动。")),
+                    .child(khaslana::ui_i18n::format(if data_at_risk { messages::MOVE_PROGRAM_AND_DATA } else { messages::MOVE_PROGRAM_ONLY }, &[("target_label", &target_label)])),
             )
             .child(
                 dialog_actions()
                     .child(self.button(
-                        "保持现状",
+                        khaslana::ui_i18n::text(messages::KEEP_CURRENT_LOCATION),
                         true,
                         |this, _, _| this.dismiss_exe_relocation(),
                         cx,
                     ))
                     .child(self.primary_button(
-                        "移动并重启",
+                        khaslana::ui_i18n::text(messages::MOVE_AND_RESTART),
                         true,
                         |this, _, _| this.confirm_exe_relocation(),
                         cx,
@@ -399,7 +399,7 @@ impl RepositoryView {
             .unwrap_or_default();
         let selected_base = self.create_branch_base.clone();
         let disabled = self.busy;
-        self.dialog_panel("新建分支", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::CREATE_BRANCH), cx)
             .child(self.input(FieldId::BranchName, false, window, cx))
             .child(
                 div()
@@ -410,16 +410,16 @@ impl RepositoryView {
                         div()
                             .text_size(px(12.0))
                             .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                            .child("基于分支"),
+                            .child(khaslana::ui_i18n::text(messages::BASE_BRANCH)),
                     )
                     .child(
                         Button::new("create-branch-base-select")
                             .label(
                                 selected_base
                                     .clone()
-                                    .unwrap_or_else(|| "当前 HEAD".to_string()),
+                                    .unwrap_or_else(|| khaslana::ui_i18n::text(messages::CURRENT_HEAD).to_string()),
                             )
-                            .accessibility_label("选择基础分支")
+                            .accessibility_label(khaslana::ui_i18n::text(messages::SELECT_BASE_BRANCH))
                             .outline()
                             .dropdown_caret(true)
                             .disabled(disabled)
@@ -448,16 +448,16 @@ impl RepositoryView {
             )
             .child(self.toggle_row(
                 "create-branch-checkout",
-                "创建成功后切换到新分支",
+                khaslana::ui_i18n::text(messages::SWITCH_TO_THE_NEW_BRANCH_AFTER_CREATION),
                 self.create_branch_checkout,
                 |this, _, _| this.create_branch_checkout = !this.create_branch_checkout,
                 cx,
             ))
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.primary_button(
-                        "创建",
+                        khaslana::ui_i18n::text(messages::CREATE),
                         self.repo_path.is_some() && !self.busy,
                         |this, _, _| this.create_branch(),
                         cx,
@@ -471,19 +471,19 @@ impl RepositoryView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("重命名分支", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::RENAME_BRANCH), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child(format!("当前分支：{branch}")),
+                    .child(khaslana::ui_i18n::format(messages::CURRENT_BRANCH_BRANCH, &[("branch", &(branch).to_string())])),
             )
             .child(self.input(FieldId::BranchRename, false, window, cx))
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.primary_button(
-                        "重命名",
+                        khaslana::ui_i18n::text(messages::RENAME),
                         !self.busy,
                         {
                             let branch = branch.clone();
@@ -501,31 +501,29 @@ impl RepositoryView {
         mode: ResetMode,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let mode_label = reset_mode_label(mode);
-        let mode_help = reset_mode_help(mode);
-        self.dialog_panel("确认重置分支", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::CONFIRM_BRANCH_RESET), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("目标提交：{} {}", short_oid(&oid), summary)),
+                    .child(khaslana::ui_i18n::format(messages::TARGET_COMMIT_OID_SUMMARY, &[("oid", &(short_oid(&oid)).to_string()), ("summary", &(summary).to_string())])),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child(format!("将当前分支重置到该提交。{mode_label}：{mode_help}")),
+                    .child(khaslana::ui_i18n::text(match mode { ResetMode::Soft => messages::RESET_SOFT_DESCRIPTION, ResetMode::Mixed => messages::RESET_MIXED_DESCRIPTION, ResetMode::Hard => messages::RESET_HARD_DESCRIPTION })),
             )
             .when(mode == ResetMode::Hard, |this| {
                 this.child(danger_callout(
-                    "强制重置会移动当前分支，目标提交之后的已提交代码会从分支历史中移除。确认前请确保目标提交正确。",
+                    khaslana::ui_i18n::text(messages::A_HARD_RESET_MOVES_THE_CURRENT_BRANCH_AND_REMOVES_LATER),
                 ))
             })
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.danger_button(
-                        "确认重置",
+                        khaslana::ui_i18n::text(messages::CONFIRM_RESET),
                         !self.busy,
                         {
                             let oid = oid.clone();
@@ -542,24 +540,24 @@ impl RepositoryView {
         summary: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("确认回滚提交", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::CONFIRM_REVERT_COMMIT), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("目标提交：{} {}", short_oid(&oid), summary)),
+                    .child(khaslana::ui_i18n::format(messages::TARGET_COMMIT_OID_SUMMARY, &[("oid", &(short_oid(&oid)).to_string()), ("summary", &(summary).to_string())])),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("确认后会创建一个新的提交，用于撤销该提交引入的修改。"),
+                    .child(khaslana::ui_i18n::text(messages::THIS_CREATES_A_NEW_COMMIT_THAT_REVERTS_THE_CHANGES_INTRODUCED)),
             )
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.danger_button(
-                        "确认回滚",
+                        khaslana::ui_i18n::text(messages::CONFIRM_REVERT),
                         !self.busy,
                         {
                             let oid = oid.clone();
@@ -576,33 +574,33 @@ impl RepositoryView {
         summary: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("确认撤销合并提交", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::CONFIRM_REVERT_MERGE_COMMIT), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("目标提交：{} {}", short_oid(&oid), summary)),
+                    .child(khaslana::ui_i18n::format(messages::TARGET_COMMIT_OID_SUMMARY, &[("oid", &(short_oid(&oid)).to_string()), ("summary", &(summary).to_string())])),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("确认后会创建一个新的提交，用于撤销这次合并相对主线引入的修改。"),
+                    .child(khaslana::ui_i18n::text(messages::THIS_CREATES_A_NEW_COMMIT_THAT_REVERTS_THE_CHANGES_INTRODUCED_2)),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("该操作不会删除原合并提交，也不会重写分支历史；若产生冲突，请在冲突解决中心处理后手动提交。"),
+                    .child(khaslana::ui_i18n::text(messages::THE_ORIGINAL_MERGE_COMMIT_IS_RETAINED_AND_HISTORY_IS_NOT)),
             )
             .child(danger_callout(
-                "这等价于 git revert -m 1，表示保留合并提交的第一父提交一侧。后续再次合并同一分支时，Git 会认为这次合并的改动曾被主动撤销。",
+                khaslana::ui_i18n::text(messages::THIS_IS_EQUIVALENT_TO_GIT_REVERT_M_PRESERVING_THE_FIRST),
             ))
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.danger_button(
-                        "确认撤销合并",
+                        khaslana::ui_i18n::text(messages::CONFIRM_REVERT_MERGE),
                         !self.busy,
                         {
                             let oid = oid.clone();
@@ -619,30 +617,30 @@ impl RepositoryView {
         summary: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("确认还原到暂存区", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::CONFIRM_UNDO_TO_STAGING), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("目标提交：{} {}", short_oid(&oid), summary)),
+                    .child(khaslana::ui_i18n::format(messages::TARGET_COMMIT_OID_SUMMARY, &[("oid", &(short_oid(&oid)).to_string()), ("summary", &(summary).to_string())])),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("确认后会撤销该提交记录，并把该提交引入的修改保留在暂存区。"),
+                    .child(khaslana::ui_i18n::text(messages::THIS_REMOVES_THE_COMMIT_AND_KEEPS_ITS_CHANGES_IN_THE)),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("该操作只支持当前分支最新且尚未推送的普通提交。"),
+                    .child(khaslana::ui_i18n::text(messages::ONLY_THE_LATEST_UNPUSHED_NON_MERGE_COMMIT_ON_THE_CURRENT)),
             )
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.danger_button(
-                        "确认还原",
+                        khaslana::ui_i18n::text(messages::CONFIRM_UNDO),
                         !self.busy,
                         {
                             let oid = oid.clone();
@@ -658,36 +656,36 @@ impl RepositoryView {
         and_push: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("修补已推送的提交", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::AMEND_A_PUSHED_COMMIT), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child("当前最新提交已推送到远端。"),
+                    .child(khaslana::ui_i18n::text(messages::THE_LATEST_COMMIT_HAS_ALREADY_BEEN_PUSHED_TO_THE_REMOTE)),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("修补会重写这条提交，之后必须用强制推送才能覆盖远端历史；当前版本暂不支持强推，其他协作者的本地历史会与远端分叉。"),
+                    .child(khaslana::ui_i18n::text(messages::AMENDING_REWRITES_THIS_COMMIT_UPDATING_THE_REMOTE_THEN_REQUIRES_A)),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("建议仅对尚未推送的提交使用修补。"),
+                    .child(khaslana::ui_i18n::text(messages::AMEND_ONLY_COMMITS_THAT_HAVE_NOT_BEEN_PUSHED)),
             )
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.danger_button(
-                        if and_push { "仍要修补并推送" } else { "仍要修补" },
+                        if and_push { khaslana::ui_i18n::text(messages::AMEND_AND_PUSH_ANYWAY) } else { khaslana::ui_i18n::text(messages::AMEND_ANYWAY) },
                         !self.busy,
                         move |this, _, _| {
                             let message = this.commit_message.value.trim().to_string();
                             if and_push {
                                 let Some(remote) = this.current_remote() else {
-                                    this.last_error = Some("当前仓库没有远端".into());
+                                    this.last_error = Some(khaslana::ui_i18n::encode(messages::THIS_REPOSITORY_HAS_NO_REMOTE, &[]));
                                     return;
                                 };
                                 this.perform_amend_and_push(message, remote);
@@ -710,11 +708,11 @@ impl RepositoryView {
     ) -> impl IntoElement {
         let target_label = match (&target_oid, &target_summary) {
             (Some(oid), summary) => {
-                format!("目标提交：{} {}", short_oid(oid), summary)
+                khaslana::ui_i18n::format(messages::TARGET_COMMIT_OID_SUMMARY, &[("oid", &(short_oid(oid)).to_string()), ("summary", &(summary).to_string())])
             }
-            (None, _) => "目标提交：HEAD（当前分支最新提交）".to_string(),
+            (None, _) => khaslana::ui_i18n::text(messages::TARGET_COMMIT_HEAD_LATEST_COMMIT_ON_THE_CURRENT_BRANCH).to_string(),
         };
-        self.dialog_panel("创建标签", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::CREATE_TAG), cx)
             .child(self.input(FieldId::TagName, false, window, cx))
             .child(
                 div()
@@ -724,7 +722,7 @@ impl RepositoryView {
             )
             .child(self.toggle_row(
                 "tag-annotated-toggle",
-                "创建附注标签（记录标签信息与创建者，发布推荐）",
+                khaslana::ui_i18n::text(messages::CREATE_ANNOTATED_TAG_RECORDS_MESSAGE_AND_CREATOR_RECOMMENDED_FOR_RELEASES),
                 self.tag_annotated,
                 |this, _, _| this.tag_annotated = !this.tag_annotated,
                 cx,
@@ -734,9 +732,9 @@ impl RepositoryView {
             })
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.primary_button(
-                        "创建",
+                        khaslana::ui_i18n::text(messages::CREATE),
                         self.repo_path.is_some() && !self.busy,
                         |this, _, _| this.create_tag(),
                         cx,
@@ -763,19 +761,19 @@ impl RepositoryView {
         let disabled = remotes.is_empty() || self.busy;
         let trigger_label = selected_remote
             .clone()
-            .unwrap_or_else(|| "选择远端".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::SELECT_REMOTE).to_string());
         let menu_remotes = remotes.clone();
-        self.dialog_panel("推送标签", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::PUSH_TAG), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("标签：{tag}")),
+                    .child(khaslana::ui_i18n::format(messages::TAG_TAG, &[("tag", &(tag).to_string())])),
             )
             .child(
                 Button::new("tag-push-remote-select")
                     .label(trigger_label)
-                    .accessibility_label("选择远端")
+                    .accessibility_label(khaslana::ui_i18n::text(messages::SELECT_REMOTE))
                     .outline()
                     .dropdown_caret(true)
                     .disabled(disabled)
@@ -798,9 +796,9 @@ impl RepositoryView {
             )
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.primary_button(
-                        "推送",
+                        khaslana::ui_i18n::text(messages::PUSH),
                         !remotes.is_empty() && !self.busy,
                         {
                             let tag = tag.clone();
@@ -816,24 +814,24 @@ impl RepositoryView {
         tag: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("删除标签", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::DELETE_TAG), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("标签：{tag}")),
+                    .child(khaslana::ui_i18n::format(messages::TAG_TAG, &[("tag", &(tag).to_string())])),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("确认后删除本地标签，不影响远端标签。"),
+                    .child(khaslana::ui_i18n::text(messages::THIS_DELETES_THE_LOCAL_TAG_ONLY_REMOTE_TAGS_ARE_NOT)),
             )
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.danger_button(
-                        "确认删除",
+                        khaslana::ui_i18n::text(messages::CONFIRM_DELETION),
                         !self.busy,
                         {
                             let tag = tag.clone();
@@ -850,24 +848,24 @@ impl RepositoryView {
         tag: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("删除远端标签", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::DELETE_REMOTE_TAG), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("远端标签：{remote}/{tag}")),
+                    .child(khaslana::ui_i18n::format(messages::REMOTE_TAG_REMOTE_TAG, &[("remote", &(remote).to_string()), ("tag", &(tag).to_string())])),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("确认后从远端删除该标签，已发布的版本引用将不可再用，删除后无法恢复。"),
+                    .child(khaslana::ui_i18n::text(messages::THIS_DELETES_THE_TAG_FROM_THE_REMOTE_PUBLISHED_VERSION_REFERENCES)),
             )
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.danger_button(
-                        "确认删除",
+                        khaslana::ui_i18n::text(messages::CONFIRM_DELETION),
                         !self.busy,
                         {
                             let remote = remote.clone();
@@ -888,23 +886,23 @@ impl RepositoryView {
     ) -> impl IntoElement {
         let count = paths.len();
         let target_label = match target {
-            DiscardTarget::Single => "目标文件".to_string(),
-            DiscardTarget::Selected => format!("选定文件（{count} 个）"),
+            DiscardTarget::Single => khaslana::ui_i18n::text(messages::TARGET_FILE).to_string(),
+            DiscardTarget::Selected => khaslana::ui_i18n::format(messages::SELECTED_FILES_COUNT, &[("count", &(count).to_string())]),
             DiscardTarget::All => match scope {
-                DiffScope::Staged => format!("暂存区全部文件（{count} 个）"),
-                DiffScope::Unstaged => format!("修改区全部文件（{count} 个）"),
+                DiffScope::Staged => khaslana::ui_i18n::format(messages::ALL_STAGED_FILES_COUNT, &[("count", &(count).to_string())]),
+                DiffScope::Unstaged => khaslana::ui_i18n::format(messages::ALL_UNSTAGED_FILES_COUNT, &[("count", &(count).to_string())]),
             },
         };
         let preview = discard_paths_preview(&paths);
         let help = match scope {
             DiffScope::Staged => {
-                "将丢弃这些文件全部未提交更改，包括暂存区和工作区。新增文件会被删除，删除文件会被恢复。此操作无法从 Khaslana 内撤销。"
+                khaslana::ui_i18n::text(messages::DISCARD_ALL_UNCOMMITTED_CHANGES_IN_THESE_FILES_BOTH_STAGED_AND)
             }
             DiffScope::Unstaged => {
-                "将仅丢弃这些文件尚未暂存的更改，已暂存内容会保留。未跟踪新增文件会被删除。此操作无法从 Khaslana 内撤销。"
+                khaslana::ui_i18n::text(messages::DISCARD_ONLY_UNSTAGED_CHANGES_IN_THESE_FILES_STAGED_CHANGES_ARE)
             }
         };
-        self.dialog_panel("确认回滚更改", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::CONFIRM_DISCARD_CHANGES), cx)
             .child(
                 div()
                     .text_size(px(12.0))
@@ -925,9 +923,9 @@ impl RepositoryView {
             )
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.danger_button(
-                        "确认回滚",
+                        khaslana::ui_i18n::text(messages::CONFIRM_REVERT),
                         !self.busy,
                         {
                             let paths = paths.clone();
@@ -946,7 +944,7 @@ impl RepositoryView {
         path: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("覆盖现有冲突处理？", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::OVERWRITE_EXISTING_CONFLICT_RESOLUTION), cx)
             .child(
                 div()
                     .text_size(px(12.0))
@@ -957,21 +955,21 @@ impl RepositoryView {
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("该文件的草稿已有块处理或手工修改，生成 AI 合并建议会覆盖这些内容。"),
+                    .child(khaslana::ui_i18n::text(messages::THIS_DRAFT_ALREADY_CONTAINS_BLOCK_RESOLUTIONS_OR_MANUAL_EDITS_GENERATING)),
             )
             .child(danger_callout(
-                "覆盖后已接受的块、忽略操作和手工编辑都会丢失，需要重新处理。",
+                khaslana::ui_i18n::text(messages::ACCEPTED_BLOCKS_IGNORED_BLOCKS_AND_MANUAL_EDITS_WILL_BE_LOST),
             ))
             .child(
                 dialog_actions()
                     .child(self.button(
-                        "返回保留现状",
+                        khaslana::ui_i18n::text(messages::GO_BACK_AND_KEEP_CHANGES),
                         !self.busy,
                         |this, _, _| this.close_dialog(),
                         cx,
                     ))
                     .child(self.danger_button(
-                        "覆盖并生成",
+                        khaslana::ui_i18n::text(messages::OVERWRITE_AND_GENERATE),
                         !self.busy,
                         move |this, _, _| {
                             this.close_dialog();
@@ -991,9 +989,9 @@ impl RepositoryView {
         let path = pending
             .as_ref()
             .map(|item| item.path.clone())
-            .unwrap_or_else(|| "当前冲突文件".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::CURRENT_CONFLICT_FILE).to_string());
 
-        self.dialog_panel("仍有未处理代码块", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::UNRESOLVED_BLOCKS_REMAIN), cx)
             .child(
                 div()
                     .text_size(px(12.0))
@@ -1004,23 +1002,21 @@ impl RepositoryView {
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child(format!(
-                        "还有 {unresolved_count} 个代码块未处理，是否继续标记已解决？"
-                    )),
+                    .child(khaslana::ui_i18n::format(messages::UNRESOLVED_COUNT_BLOCKS_ARE_STILL_UNRESOLVED_MARK_THIS_FILE_AS, &[("unresolved_count", &(unresolved_count).to_string())])),
             )
             .child(danger_callout(
-                "继续后会直接把当前结果写入工作区并从索引中移除冲突标记。",
+                khaslana::ui_i18n::text(messages::THE_CURRENT_RESULT_WILL_BE_WRITTEN_TO_THE_WORKING_TREE),
             ))
             .child(
                 dialog_actions()
                     .child(self.button(
-                        "返回继续处理",
+                        khaslana::ui_i18n::text(messages::GO_BACK_TO_RESOLVING),
                         !self.busy,
                         |this, _, _| this.cancel_pending_conflict_resolve(),
                         cx,
                     ))
                     .child(self.danger_button(
-                        "继续解决",
+                        khaslana::ui_i18n::text(messages::RESOLVE_ANYWAY),
                         !self.busy,
                         |this, _, _| this.confirm_pending_conflict_resolve(),
                         cx,
@@ -1053,7 +1049,7 @@ impl RepositoryView {
                 .map(|asset| format_byte_size(asset.size))
                 .unwrap_or_default();
             let notes = if manifest.notes.trim().is_empty() {
-                "（此版本未附版本说明）".to_string()
+                khaslana::ui_i18n::text(messages::NO_RELEASE_NOTES_FOR_THIS_VERSION).to_string()
             } else {
                 manifest.notes.clone()
             };
@@ -1069,7 +1065,7 @@ impl RepositoryView {
         let migration_available = self.portable_migration_available();
         let current_db_label = khaslana::default_database_path()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "未知".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::UNKNOWN).to_string());
         // 程序位于临时/聊天软件接收/下载目录时，常驻「移动到安全目录」入口；
         // dismiss 标记只抑制启动时的自动弹窗，不影响此处手动入口。
         let relocation_available = self.exe_relocation_available();
@@ -1080,15 +1076,15 @@ impl RepositoryView {
             .skipped_version
             .clone()
             .map(|v| format!("v{v}"))
-            .unwrap_or_else(|| "无".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::NONE).to_string());
 
         let update_group = SettingGroup::new()
             .item(crate::settings_center::settings_group_heading(
-                "更新",
-                Some("启动时自动检查与手动检查；跳过版本只影响自动提示。".into()),
+                khaslana::ui_i18n::text(messages::UPDATES),
+                Some(khaslana::ui_i18n::text(messages::AUTOMATIC_CHECKS_AT_STARTUP_AND_MANUAL_CHECKS_SKIPPED_VERSIONS_ONLY).into()),
             ))
             .item(crate::settings_center::settings_item_row(
-                "当前版本",
+                khaslana::ui_i18n::text(messages::CURRENT_VERSION),
                 None,
                 {
                     let view = cx.entity();
@@ -1103,7 +1099,7 @@ impl RepositoryView {
                 },
             ))
             .item(crate::settings_center::settings_switch_row(
-                "自动检查更新",
+                khaslana::ui_i18n::text(messages::CHECK_FOR_UPDATES_AUTOMATICALLY),
                 None,
                 {
                     let view = cx.entity();
@@ -1123,8 +1119,8 @@ impl RepositoryView {
             // 测试版（Beta）更新渠道：勾选后检测/安装所有版本（含预发布），
             // 未勾选只走正式版清单（与旧版本行为一致）。切换后下次检查生效。
             .item(crate::settings_center::settings_switch_row(
-                "接收测试版（Beta）更新",
-                Some("开启后同时检测并安装测试版；测试版可能不稳定"),
+                khaslana::ui_i18n::text(messages::RECEIVE_BETA_UPDATES),
+                Some(khaslana::ui_i18n::text(messages::ALSO_CHECK_FOR_AND_INSTALL_BETA_RELEASES_THEY_MAY_BE)),
                 {
                     let view = cx.entity();
                     move |cx: &App| view.read(cx).update_preferences.include_beta
@@ -1141,7 +1137,7 @@ impl RepositoryView {
                 },
             ))
             .item(crate::settings_center::settings_item_row(
-                "已跳过版本",
+                khaslana::ui_i18n::text(messages::SKIPPED_VERSION),
                 None,
                 {
                     let view = cx.entity();
@@ -1161,13 +1157,13 @@ impl RepositoryView {
                     view.update(cx, |this, cx| {
                         dialog_actions()
                             .child(this.primary_button(
-                                "立即检查",
+                                khaslana::ui_i18n::text(messages::CHECK_NOW),
                                 !this.update_checking && !this.busy,
                                 |this, _, _| this.start_update_check(UpdateCheckTrigger::Manual),
                                 cx,
                             ))
                             .child(this.button(
-                                "清除跳过",
+                                khaslana::ui_i18n::text(messages::CLEAR_SKIPPED_VERSION),
                                 this.update_preferences.skipped_version.is_some(),
                                 |this, _, _| this.clear_skipped_version(),
                                 cx,
@@ -1178,8 +1174,8 @@ impl RepositoryView {
 
         let mut channel_group = SettingGroup::new()
             .item(crate::settings_center::settings_group_heading(
-                "渠道与迁移",
-                Some("待安装的新版本，以及数据目录与程序位置的迁移入口。".into()),
+                khaslana::ui_i18n::text(messages::CHANNELS_AND_MIGRATION),
+                Some(khaslana::ui_i18n::text(messages::PENDING_UPDATES_DATA_DIRECTORY_MIGRATION_AND_APPLICATION_RELOCATION).into()),
             ));
         // 检测到新版本：页内常驻展示版本信息 + 版本说明 + 立即更新入口。
         if let Some((update_version, update_published_at, update_notes, update_size)) =
@@ -1210,7 +1206,7 @@ impl RepositoryView {
                                         div()
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
                                             .text_color(rgb(ui_theme::PRIMARY))
-                                            .child(format!("发现新版本 v{update_version}")),
+                                            .child(khaslana::ui_i18n::format(messages::NEW_VERSION_V_UPDATE_VERSION_AVAILABLE, &[("update_version", &(update_version).to_string())])),
                                     )
                                     .child(
                                         div()
@@ -1219,8 +1215,8 @@ impl RepositoryView {
                                             .gap_2()
                                             .text_size(px(11.0))
                                             .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                            .child(format!("发布于 {update_published_at}"))
-                                            .child(format!("包大小 {update_size}")),
+                                            .child(khaslana::ui_i18n::format(messages::RELEASED_UPDATE_PUBLISHED_AT, &[("update_published_at", &(update_published_at).to_string())]))
+                                            .child(khaslana::ui_i18n::format(messages::PACKAGE_SIZE_UPDATE_SIZE, &[("update_size", &(update_size).to_string())])),
                                     ),
                             )
                             .child(
@@ -1241,7 +1237,7 @@ impl RepositoryView {
                                     .items_center()
                                     .gap_2()
                                     .child(this.primary_button(
-                                        "立即更新",
+                                        khaslana::ui_i18n::text(messages::UPDATE_NOW),
                                         !this.update_downloading,
                                         |this, _window, cx| {
                                             this.start_update_download();
@@ -1257,7 +1253,7 @@ impl RepositoryView {
                                                 .child(
                                                     this.update_download_progress
                                                         .clone()
-                                                        .unwrap_or_else(|| "准备下载...".into()),
+                                                        .unwrap_or_else(|| khaslana::ui_i18n::text(messages::PREPARING_DOWNLOAD).into()),
                                                 ),
                                         )
                                     }),
@@ -1279,22 +1275,22 @@ impl RepositoryView {
                             .child(
                                 div()
                                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                                    .child("数据目录"),
+                                    .child(khaslana::ui_i18n::text(messages::DATA_DIRECTORY)),
                             )
                             .child(
                                 div()
                                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                    .child(format!("当前：{current_db_label}")),
+                                    .child(khaslana::ui_i18n::format(messages::CURRENT_CURRENT_DB_LABEL, &[("current_db_label", &(current_db_label).to_string())])),
                             )
                             .child(
                                 div()
                                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
                                     .child(
-                                        "可将数据从 C 盘系统目录迁移到程序所在目录，便于整体备份并减少 C 盘占用。",
+                                        khaslana::ui_i18n::text(messages::MOVE_DATA_FROM_THE_SYSTEM_DIRECTORY_ON_DRIVE_C_TO),
                                     ),
                             )
                             .child(this.primary_button(
-                                "迁移到便携目录",
+                                khaslana::ui_i18n::text(messages::MIGRATE_TO_PORTABLE_DIRECTORY),
                                 true,
                                 |this, _, _| {
                                     this.active_dialog = Some(DialogState::PortableMigrationPrompt);
@@ -1318,21 +1314,20 @@ impl RepositoryView {
                             .child(
                                 div()
                                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                                    .child("程序位置"),
+                                    .child(khaslana::ui_i18n::text(messages::APPLICATION_LOCATION)),
                             )
                             .child(
                                 div()
                                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                    .child(format!("当前：{relocation_db_label}")),
+                                    .child(khaslana::ui_i18n::format(messages::CURRENT_RELOCATION_DB_LABEL, &[("relocation_db_label", &(relocation_db_label).to_string())])),
                             )
                             .child(
                                 div().text_color(rgb(ui_theme::CONTENT_SECONDARY)).child(
-                                    "程序当前位于可能被清理的目录（临时/聊天软件接收/下载目录），\
-                                     建议把程序与数据移动到独立的安全目录。",
+                                    khaslana::ui_i18n::text(messages::RELOCATION_DETAILS),
                                 ),
                             )
                             .child(this.primary_button(
-                                "移动到安全目录",
+                                khaslana::ui_i18n::text(messages::MOVE_TO_A_SAFE_DIRECTORY),
                                 true,
                                 |this, _, _| {
                                     this.active_dialog = Some(DialogState::ExeRelocationPrompt);
@@ -1358,12 +1353,12 @@ impl RepositoryView {
         let size_mb = size as f64 / 1_048_576.0;
         let version_owned = version.to_string();
 
-        self.dialog_panel(format!("发现新版本 v{version}"), cx)
+        self.dialog_panel(khaslana::ui_i18n::format(messages::NEW_VERSION_V_VERSION_AVAILABLE, &[("version", &(version).to_string())]), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child(format!("发布于 {published_at}")),
+                    .child(khaslana::ui_i18n::format(messages::RELEASED_PUBLISHED_AT, &[("published_at", &(published_at).to_string())])),
             )
             .child(
                 // 版本说明：Markdown 渲染，多行可滚动（内容多时可翻看）。
@@ -1380,12 +1375,12 @@ impl RepositoryView {
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child(format!("包大小：{:.1} MB", size_mb)),
+                    .child(khaslana::ui_i18n::format(messages::PACKAGE_SIZE_SIZE_MB_MB, &[("size_mb", &format!("{:.1}", size_mb))])),
             )
             .child(
                 dialog_actions()
                     .child(self.primary_button(
-                        "立即更新",
+                        khaslana::ui_i18n::text(messages::UPDATE_NOW),
                         !self.update_downloading && !self.busy,
                         |this, _, _| {
                             this.active_dialog = None;
@@ -1394,12 +1389,12 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.button(
-                        "跳过此版本",
+                        khaslana::ui_i18n::text(messages::SKIP_THIS_VERSION),
                         !self.update_downloading,
                         move |this, _, _| this.skip_version(&version_owned),
                         cx,
                     ))
-                    .child(self.button("稍后", true, |this, _, _| this.close_dialog(), cx)),
+                    .child(self.button(khaslana::ui_i18n::text(messages::LATER), true, |this, _, _| this.close_dialog(), cx)),
             )
     }
 
@@ -1411,33 +1406,31 @@ impl RepositoryView {
         let staging_dir = self.staging_dir_for_install.clone();
         let version_owned = version.to_string();
 
-        self.dialog_panel("更新准备就绪", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::UPDATE_READY), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!(
-                        "版本 v{version} 已下载并校验通过，应用将重启以完成安装。"
-                    )),
+                    .child(khaslana::ui_i18n::format(messages::VERSION_V_VERSION_HAS_BEEN_DOWNLOADED_AND_VERIFIED_THE_APPLICATION, &[("version", &(version).to_string())])),
             )
             .child(danger_callout(
-                "安装过程中应用会自动退出并重启，请确保没有未保存的工作。",
+                khaslana::ui_i18n::text(messages::THE_APPLICATION_EXITS_AND_RESTARTS_DURING_INSTALLATION_SAVE_YOUR_WORK),
             ))
             .child(
                 dialog_actions()
                     .child(self.primary_button(
-                        "立即重启",
+                        khaslana::ui_i18n::text(messages::RESTART_NOW),
                         true,
                         move |this, _, cx| {
                             if let Some(dir) = staging_dir.clone() {
                                 this.install_update(&dir, &version_owned, cx);
                             } else {
-                                this.update_error = Some("staging 目录丢失".into());
+                                this.update_error = Some(khaslana::ui_i18n::encode(messages::THE_STAGING_DIRECTORY_IS_MISSING, &[]));
                             }
                         },
                         cx,
                     ))
-                    .child(self.button("稍后", true, |this, _, _| this.close_dialog(), cx)),
+                    .child(self.button(khaslana::ui_i18n::text(messages::LATER), true, |this, _, _| this.close_dialog(), cx)),
             )
     }
 
@@ -1446,21 +1439,19 @@ impl RepositoryView {
         version: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("无法自动更新", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::CANNOT_UPDATE_AUTOMATICALLY), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!(
-                        "当前目录没有写入权限，无法自动安装新版本（v{version}）。请手动下载新版本："
-                    )),
+                    .child(khaslana::ui_i18n::format(messages::THE_CURRENT_DIRECTORY_IS_NOT_WRITABLE_SO_VERSION_V_VERSION, &[("version", &(version).to_string())])),
             )
             .child(
                 div()
                     .flex()
                     .gap_2()
                     .child(self.button(
-                        "打开 CNB 下载页",
+                        khaslana::ui_i18n::text(messages::OPEN_CNB_DOWNLOADS),
                         true,
                         |_, _, _| {
                             open_url("https://cnb.cool/suhoan/khaslana-release");
@@ -1468,7 +1459,7 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.button(
-                        "打开 GitHub Release",
+                        khaslana::ui_i18n::text(messages::OPEN_GITHUB_RELEASE),
                         true,
                         |_, _, _| {
                             open_url("https://github.com/FuturePrayer/khaslana/releases");
@@ -1477,7 +1468,7 @@ impl RepositoryView {
                     )),
             )
             .child(dialog_actions().child(self.button(
-                "关闭",
+                khaslana::ui_i18n::text(messages::CLOSE),
                 true,
                 |this, _, _| this.close_dialog(),
                 cx,
@@ -1495,7 +1486,7 @@ impl RepositoryView {
             .map(|snapshot| snapshot.remotes.clone())
             .unwrap_or_default();
         let rows = if remotes.is_empty() {
-            vec![placeholder_row("暂无远端。可以点击“新增远端”添加。").into_any_element()]
+            vec![placeholder_row(khaslana::ui_i18n::text(messages::NO_REMOTES_YET_CLICK_ADD_REMOTE_TO_CREATE_ONE)).into_any_element()]
         } else {
             remotes
                 .into_iter()
@@ -1542,10 +1533,10 @@ impl RepositoryView {
                             .text_size(px(14.0))
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                            .child("远端管理"),
+                            .child(khaslana::ui_i18n::text(messages::MANAGE_REMOTES)),
                     )
                     .child(self.primary_button(
-                        "新增远端",
+                        khaslana::ui_i18n::text(messages::ADD_REMOTE),
                         self.repo_path.is_some() && !self.busy,
                         |this, _, _| this.open_remote_form(None),
                         cx,
@@ -1555,7 +1546,7 @@ impl RepositoryView {
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("远端地址会同时作为 fetch 和 push URL；凭据只从已保存凭据中选择。"),
+                    .child(khaslana::ui_i18n::text(messages::THE_REMOTE_ADDRESS_IS_USED_FOR_BOTH_FETCH_AND_PUSH)),
             )
             .child(
                 div()
@@ -1594,7 +1585,7 @@ impl RepositoryView {
                     }),
             )
             .child(div().flex().justify_end().child(self.button(
-                "关闭",
+                khaslana::ui_i18n::text(messages::CLOSE),
                 !self.busy,
                 |this, _, _| this.close_dialog(),
                 cx,
@@ -1615,10 +1606,10 @@ impl RepositoryView {
             .text_size(px(11.0))
             .font_weight(gpui::FontWeight::BOLD)
             .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-            .child(div().flex_none().w(px(104.0)).child("名称"))
-            .child(div().flex_1().min_w(px(0.0)).child("地址"))
-            .child(div().flex_none().w(px(180.0)).child("凭据"))
-            .child(div().flex_none().w(px(106.0)).child("操作"))
+            .child(div().flex_none().w(px(104.0)).child(khaslana::ui_i18n::text(messages::NAME)))
+            .child(div().flex_1().min_w(px(0.0)).child(khaslana::ui_i18n::text(messages::ADDRESS)))
+            .child(div().flex_none().w(px(180.0)).child(khaslana::ui_i18n::text(messages::CREDENTIALS)))
+            .child(div().flex_none().w(px(106.0)).child(khaslana::ui_i18n::text(messages::ACTIONS)))
     }
 
     fn remote_manager_row(&self, remote: RemoteInfo, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1632,17 +1623,17 @@ impl RepositoryView {
             })
             .unwrap_or(RemoteCredentialPolicy::AutoMatch);
         let credential_label = match policy {
-            RemoteCredentialPolicy::NoCredential => "无凭据".to_string(),
+            RemoteCredentialPolicy::NoCredential => khaslana::ui_i18n::text(messages::NO_CREDENTIALS).to_string(),
             RemoteCredentialPolicy::Record(record_id) => self
                 .credential_records
                 .iter()
                 .find(|record| record.id == record_id)
                 .map(credential_record_label)
-                .unwrap_or_else(|| "凭据不存在".to_string()),
+                .unwrap_or_else(|| khaslana::ui_i18n::text(messages::CREDENTIAL_RECORD_MISSING).to_string()),
             RemoteCredentialPolicy::AutoMatch => self
                 .matching_credential_for_remote_url(&remote.url)
-                .map(|record| format!("自动：{}", credential_record_label(record)))
-                .unwrap_or_else(|| "自动匹配".to_string()),
+                .map(|record| khaslana::ui_i18n::format(messages::AUTOMATIC_RECORD, &[("record", &(credential_record_label(record)).to_string())]))
+                .unwrap_or_else(|| khaslana::ui_i18n::text(messages::AUTOMATIC_MATCH).to_string()),
         };
 
         div()
@@ -1689,13 +1680,13 @@ impl RepositoryView {
                     .flex()
                     .gap_1()
                     .child(self.button(
-                        "编辑",
+                        khaslana::ui_i18n::text(messages::EDIT),
                         !self.busy,
                         move |this, _, _| this.open_remote_form(Some(edit_name.clone())),
                         cx,
                     ))
                     .child(self.danger_button(
-                        "删除",
+                        khaslana::ui_i18n::text(messages::DELETE),
                         !self.busy,
                         move |this, _, _| this.open_delete_remote_confirm(delete_name.clone()),
                         cx,
@@ -1710,9 +1701,9 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let title = if editing.is_some() {
-            "编辑远端"
+            khaslana::ui_i18n::text(messages::EDIT_REMOTE)
         } else {
-            "新增远端"
+            khaslana::ui_i18n::text(messages::ADD_REMOTE)
         };
         self.dialog_panel(title, cx)
             .w(px(560.0))
@@ -1727,7 +1718,7 @@ impl RepositoryView {
                         div()
                             .text_size(px(12.0))
                             .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                            .child("绑定凭据"),
+                            .child(khaslana::ui_i18n::text(messages::BIND_CREDENTIALS)),
                     )
                     .child(self.remote_credential_picker(cx)),
             )
@@ -1737,7 +1728,7 @@ impl RepositoryView {
                     .justify_end()
                     .gap_2()
                     .child(self.button(
-                        "取消",
+                        khaslana::ui_i18n::text(messages::CANCEL),
                         !self.busy,
                         |this, _, _| {
                             this.active_dialog = Some(DialogState::RemoteManager);
@@ -1745,7 +1736,7 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.primary_button(
-                        "保存",
+                        khaslana::ui_i18n::text(messages::SAVE),
                         !self.busy,
                         move |this, _, _| this.save_remote(editing.clone()),
                         cx,
@@ -1759,7 +1750,7 @@ impl RepositoryView {
         rows.push(
             self.remote_credential_option(
                 RemoteCredentialPolicy::AutoMatch,
-                "自动匹配保存凭据".to_string(),
+                khaslana::ui_i18n::text(messages::AUTOMATICALLY_MATCH_SAVED_CREDENTIALS).to_string(),
                 true,
                 cx,
             )
@@ -1768,7 +1759,7 @@ impl RepositoryView {
         rows.push(
             self.remote_credential_option(
                 RemoteCredentialPolicy::NoCredential,
-                "无凭据".to_string(),
+                khaslana::ui_i18n::text(messages::NO_CREDENTIALS).to_string(),
                 true,
                 cx,
             )
@@ -1796,7 +1787,7 @@ impl RepositoryView {
                         label = format!("{label} ({})", credential_display_target(&record));
                     }
                     if !compatible {
-                        label.push_str("（不匹配）");
+                        label.push_str(khaslana::ui_i18n::text(messages::NOT_A_MATCH));
                     }
                     self.remote_credential_option(
                         RemoteCredentialPolicy::Record(record.id),
@@ -1890,18 +1881,18 @@ impl RepositoryView {
         name: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("删除远端", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::DELETE_REMOTE), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("确认删除远端：{name}")),
+                    .child(khaslana::ui_i18n::format(messages::DELETE_REMOTE_NAME, &[("name", &(name).to_string())])),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("这只会删除当前仓库的远端配置，不会删除任何已保存凭据。"),
+                    .child(khaslana::ui_i18n::text(messages::THIS_ONLY_REMOVES_THE_REMOTE_CONFIGURATION_FROM_THIS_REPOSITORY_SAVED)),
             )
             .child(
                 div()
@@ -1909,7 +1900,7 @@ impl RepositoryView {
                     .justify_end()
                     .gap_2()
                     .child(self.button(
-                        "取消",
+                        khaslana::ui_i18n::text(messages::CANCEL),
                         !self.busy,
                         |this, _, _| {
                             this.active_dialog = Some(DialogState::RemoteManager);
@@ -1917,7 +1908,7 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.danger_button(
-                        "确认删除",
+                        khaslana::ui_i18n::text(messages::CONFIRM_DELETION),
                         !self.busy,
                         move |this, _, _| this.delete_remote(name.clone()),
                         cx,
@@ -1932,19 +1923,19 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let full_name = format!("{remote}/{branch}");
-        self.dialog_panel("删除远端分支", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::DELETE_REMOTE_BRANCH), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("确认删除远端分支：{full_name}")),
+                    .child(khaslana::ui_i18n::format(messages::DELETE_REMOTE_BRANCH_FULL_NAME, &[("full_name", &(full_name).to_string())])),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
                     .child(
-                        "这会删除远端仓库上的分支，并刷新本地远端分支列表；不会删除同名本地分支。",
+                        khaslana::ui_i18n::text(messages::THIS_DELETES_THE_BRANCH_ON_THE_REMOTE_AND_REFRESHES_LOCAL),
                     ),
             )
             .child(
@@ -1952,9 +1943,9 @@ impl RepositoryView {
                     .flex()
                     .justify_end()
                     .gap_2()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.danger_button(
-                        "确认删除",
+                        khaslana::ui_i18n::text(messages::CONFIRM_DELETION),
                         !self.busy,
                         move |this, _, _| this.delete_remote_branch(remote.clone(), branch.clone()),
                         cx,
@@ -2027,7 +2018,7 @@ impl RepositoryView {
                             .text_size(px(12.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                            .child("快速登录"),
+                            .child(khaslana::ui_i18n::text(messages::QUICK_SIGN_IN)),
                     )
                     .child(self.oauth_brand_button(
                         OauthBrand::Github,
@@ -2056,9 +2047,7 @@ impl RepositoryView {
                             div()
                                 .text_size(px(11.0))
                                 .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                .child(format!(
-                                    "已在浏览器打开{provider_label}，请确认验证码后完成登录："
-                                )),
+                                .child(khaslana::ui_i18n::format(messages::PROVIDER_LABEL_IS_OPEN_IN_YOUR_BROWSER_VERIFY_THE_CODE, &[("provider_label", &(provider_label).to_string())])),
                         )
                         .child(
                             div()
@@ -2074,7 +2063,7 @@ impl RepositoryView {
                                         .child(code),
                                 )
                                 .child(self.button(
-                                    "取消",
+                                    khaslana::ui_i18n::text(messages::CANCEL),
                                     !self.busy,
                                     |this, _, _| this.cancel_oauth_login(),
                                     cx,
@@ -2087,7 +2076,7 @@ impl RepositoryView {
                     div()
                         .text_size(px(11.0))
                         .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                        .child(format!("请在浏览器中完成{provider_label}登录...")),
+                        .child(khaslana::ui_i18n::format(messages::COMPLETE_PROVIDER_LABEL_SIGN_IN_IN_YOUR_BROWSER, &[("provider_label", &(provider_label).to_string())])),
                 );
             }
         } else if !oauth::is_gitee_configured() {
@@ -2096,7 +2085,7 @@ impl RepositoryView {
                     .text_size(px(11.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
                     .child(
-                        "Gitee 登录需由维护者部署令牌交换服务（见 AGENTS.md）；GitHub 可直接使用。",
+                        khaslana::ui_i18n::text(messages::GITEE_SIGN_IN_REQUIRES_A_MAINTAINER_DEPLOYED_TOKEN_EXCHANGE_SERVICE),
                     ),
             );
         }
@@ -2130,14 +2119,14 @@ impl RepositoryView {
                     .clone()
                     .unwrap_or_else(|| record.username.clone())
             })
-            .unwrap_or_else(|| "未知记录".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::UNKNOWN_RECORD).to_string());
         let testing = self.busy || self.global_busy_tab.is_some();
-        self.dialog_panel("测试凭据连接", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::TEST_CREDENTIAL_CONNECTION), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("凭据：{record_label}")),
+                    .child(khaslana::ui_i18n::format(messages::CREDENTIAL_RECORD_LABEL, &[("record_label", &(record_label).to_string())])),
             )
             .child(self.input(FieldId::CredentialTestUrl, false, window, cx))
             .child(
@@ -2145,7 +2134,7 @@ impl RepositoryView {
                     .text_size(px(11.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
                     .child(
-                        "将使用此地址发起一次 Git 连接验证凭据。建议填写真实仓库地址；                         裸站点地址（如 https://gitee.com）可能因服务器不发起认证而无法验证凭据。",
+                        khaslana::ui_i18n::text(messages::THIS_ADDRESS_IS_USED_FOR_A_GIT_CONNECTION_TO_VERIFY),
                     ),
             )
             .when_some(self.credential_test_error.clone(), |this, error| {
@@ -2153,16 +2142,16 @@ impl RepositoryView {
                     div()
                         .text_size(px(11.0))
                         .text_color(rgb(ui_theme::FEEDBACK_ERROR_TEXT))
-                        .child(error),
+                        .child(credential_test_error_text(&error)),
                 )
             })
             .child(
                 dialog_actions()
                     .child(
-                        self.button("取消", true, |this, _, _| this.close_dialog(), cx),
+                        self.button(khaslana::ui_i18n::text(messages::CANCEL), true, |this, _, _| this.close_dialog(), cx),
                     )
                     .child(self.primary_button(
-                        "开始测试",
+                        khaslana::ui_i18n::text(messages::START_TEST),
                         !testing,
                         |this, _, _| this.confirm_test_credential(),
                         cx,
@@ -2176,7 +2165,7 @@ impl RepositoryView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("添加凭据", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::ADD_CREDENTIALS), cx)
             .w(px(680.0))
             .max_h(px(760.0))
             .child(
@@ -2188,7 +2177,7 @@ impl RepositoryView {
                         div()
                             .text_size(px(12.0))
                             .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                            .child("类型"),
+                            .child(khaslana::ui_i18n::text(messages::TYPE)),
                     )
                     .child(self.credential_kind_button("HTTPS", CredentialFormMode::Https, cx))
                     .child(self.credential_kind_button("SSH", CredentialFormMode::Ssh, cx)),
@@ -2212,11 +2201,11 @@ impl RepositoryView {
                         div()
                             .text_size(px(11.0))
                             .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                            .child("推荐优先使用 SSH Agent；使用私钥文件时，应用只保存路径，密码短语仍存入系统 Keyring。"),
+                            .child(khaslana::ui_i18n::text(messages::PREFER_SSH_AGENT_WHEN_USING_A_PRIVATE_KEY_FILE_ONLY)),
                     )
                     .child(self.toggle_row(
                         "credential-form-use-ssh-agent",
-                        "使用 SSH Agent（不保存私钥路径）",
+                        khaslana::ui_i18n::text(messages::USE_SSH_AGENT_DO_NOT_SAVE_A_PRIVATE_KEY_PATH),
                         self.credential_use_ssh_agent,
                         |this, _, _| {
                             this.credential_use_ssh_agent = !this.credential_use_ssh_agent;
@@ -2245,7 +2234,7 @@ impl RepositoryView {
                                         )),
                                 )
                                 .child(self.button(
-                                    "选择私钥文件",
+                                    khaslana::ui_i18n::text(messages::SELECT_PRIVATE_KEY_FILE),
                                     !self.busy,
                                     |this, _, _| this.browse_credential_ssh_key(),
                                     cx,
@@ -2269,15 +2258,15 @@ impl RepositoryView {
                         div()
                             .text_size(px(12.0))
                             .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                            .child("复用范围"),
+                            .child(khaslana::ui_i18n::text(messages::REUSE_SCOPE)),
                     )
                     .child(self.credential_scope_button(
-                        "仅此远端",
+                        khaslana::ui_i18n::text(messages::THIS_REMOTE_ONLY),
                         CredentialScope::RemoteUrl,
                         true,
                         cx,
                     ))
-                    .child(self.credential_scope_button("同站点", CredentialScope::Host, true, cx)),
+                    .child(self.credential_scope_button(khaslana::ui_i18n::text(messages::SAME_HOST), CredentialScope::Host, true, cx)),
             )
             .child(
                 div()
@@ -2285,13 +2274,13 @@ impl RepositoryView {
                     .justify_end()
                     .gap_2()
                     .child(self.button(
-                        "取消",
+                        khaslana::ui_i18n::text(messages::CANCEL),
                         !self.busy,
                         |this, _, _| this.close_credential_form(),
                         cx,
                     ))
                     .child(self.primary_button(
-                        "保存",
+                        khaslana::ui_i18n::text(messages::SAVE),
                         !self.busy,
                         |this, _, _| this.save_credential_form(),
                         cx,
@@ -2315,9 +2304,9 @@ impl RepositoryView {
     pub(crate) fn settings_credentials_groups(&self, cx: &mut Context<Self>) -> Vec<SettingGroup> {
         let group = SettingGroup::new()
             .item(crate::settings_center::settings_group_heading(
-                "凭据",
+                khaslana::ui_i18n::text(messages::CREDENTIALS),
                 Some(
-                    "密文仅保存在系统凭据管理器；这里不显示、不复制密码、PAT 或 SSH 密码短语。"
+                    khaslana::ui_i18n::text(messages::SECRETS_ARE_STORED_ONLY_IN_THE_SYSTEM_CREDENTIAL_MANAGER_PASSWORDS)
                         .into(),
                 ),
             ))
@@ -2330,15 +2319,15 @@ impl RepositoryView {
                             .items_center()
                             .gap_2()
                             .child(this.primary_button(
-                                "添加凭据",
+                                khaslana::ui_i18n::text(messages::ADD_CREDENTIALS),
                                 !this.busy,
                                 |this, _, _| this.open_credential_form(),
                                 cx,
                             ))
                             .child(this.button(
-                                "刷新",
+                                khaslana::ui_i18n::text(messages::REFRESH),
                                 !this.busy,
-                                |this, _, _| this.reload_credential_records("凭据列表已刷新"),
+                                |this, _, _| this.reload_credential_records(khaslana::ui_i18n::text(messages::CREDENTIAL_LIST_REFRESHED)),
                                 cx,
                             ))
                     })
@@ -2354,7 +2343,7 @@ impl RepositoryView {
                         if empty {
                             data_rows.push(
                                 placeholder_row(
-                                    "暂无已保存凭据。远程操作时勾选保存后会出现在这里。",
+                                    khaslana::ui_i18n::text(messages::NO_SAVED_CREDENTIALS_SAVE_CREDENTIALS_DURING_A_REMOTE_OPERATION_TO),
                                 )
                                 .into_any_element(),
                             );
@@ -2425,7 +2414,7 @@ impl RepositoryView {
                                             .items_center()
                                             .justify_center()
                                             .py_2()
-                                            .child("操作"),
+                                            .child(khaslana::ui_i18n::text(messages::ACTIONS)),
                                     ),
                             )
                             // 主体：左栏数据列横向滚动，右栏操作列横向冻结；
@@ -2514,16 +2503,16 @@ impl RepositoryView {
             .cloned()
         else {
             return self
-                .dialog_panel("凭据详情", cx)
+                .dialog_panel(khaslana::ui_i18n::text(messages::CREDENTIAL_DETAILS), cx)
                 .w(px(560.0))
                 .child(
                     div()
                         .text_size(px(12.0))
                         .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                        .child("凭据记录不存在，可能已经被删除。"),
+                        .child(khaslana::ui_i18n::text(messages::THIS_CREDENTIAL_RECORD_DOES_NOT_EXIST_IT_MAY_HAVE_BEEN)),
                 )
                 .child(div().flex().justify_end().child(self.button(
-                    "关闭",
+                    khaslana::ui_i18n::text(messages::CLOSE),
                     !self.busy,
                     |this, _, _| this.open_credential_manager(),
                     cx,
@@ -2541,7 +2530,7 @@ impl RepositoryView {
             .map(timestamp_label)
             .unwrap_or_else(|| "-".to_string());
 
-        self.dialog_panel("凭据详情", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::CREDENTIAL_DETAILS), cx)
             .w(px(640.0))
             .max_h(px(620.0))
             .child(
@@ -2550,34 +2539,34 @@ impl RepositoryView {
                     .flex_col()
                     .gap_2()
                     .text_size(px(12.0))
-                    .child(self.credential_detail_row("名称", display_name))
+                    .child(self.credential_detail_row(khaslana::ui_i18n::text(messages::NAME), display_name))
                     .child(self.credential_detail_row(
-                        "类型",
+                        khaslana::ui_i18n::text(messages::TYPE),
                         credential_kind_label(record.kind).to_string(),
                     ))
                     .child(self.credential_detail_row(
-                        "复用范围",
+                        khaslana::ui_i18n::text(messages::REUSE_SCOPE),
                         credential_scope_label(record.scope).to_string(),
                     ))
-                    .child(self.credential_detail_row("站点 / 远端", target))
-                    .child(self.credential_detail_row("用户名", record.username))
-                    .child(self.credential_detail_row("SSH Key 路径", key_path))
+                    .child(self.credential_detail_row(khaslana::ui_i18n::text(messages::HOST_REMOTE), target))
+                    .child(self.credential_detail_row(khaslana::ui_i18n::text(messages::USERNAME), record.username))
+                    .child(self.credential_detail_row(khaslana::ui_i18n::text(messages::SSH_KEY_PATH), key_path))
                     .child(
-                        self.credential_detail_row("创建时间", timestamp_label(record.created_at)),
+                        self.credential_detail_row(khaslana::ui_i18n::text(messages::CREATED), timestamp_label(record.created_at)),
                     )
                     .child(
-                        self.credential_detail_row("更新时间", timestamp_label(record.updated_at)),
+                        self.credential_detail_row(khaslana::ui_i18n::text(messages::UPDATED), timestamp_label(record.updated_at)),
                     )
-                    .child(self.credential_detail_row("最后使用时间", last_used)),
+                    .child(self.credential_detail_row(khaslana::ui_i18n::text(messages::LAST_USED), last_used)),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("密码、PAT 和 SSH 密码短语不会在这里显示。"),
+                    .child(khaslana::ui_i18n::text(messages::PASSWORDS_PATS_AND_SSH_PASSPHRASES_ARE_NEVER_DISPLAYED_HERE)),
             )
             .child(div().flex().justify_end().child(self.button(
-                "关闭",
+                khaslana::ui_i18n::text(messages::CLOSE),
                 !self.busy,
                 |this, _, _| this.open_credential_manager(),
                 cx,
@@ -2615,19 +2604,19 @@ impl RepositoryView {
             .py_2()
             .min_w(px(CREDENTIAL_TABLE_DATA_MIN_W))
             .flex_1()
-            .child(div().flex_none().w(px(112.0)).truncate().child("名称"))
-            .child(div().flex_none().w(px(88.0)).truncate().child("类型"))
-            .child(div().flex_none().w(px(64.0)).truncate().child("范围"))
+            .child(div().flex_none().w(px(112.0)).truncate().child(khaslana::ui_i18n::text(messages::NAME)))
+            .child(div().flex_none().w(px(88.0)).truncate().child(khaslana::ui_i18n::text(messages::TYPE)))
+            .child(div().flex_none().w(px(64.0)).truncate().child(khaslana::ui_i18n::text(messages::SCOPE)))
             .child(
                 div()
                     .flex_1()
                     .min_w(px(CREDENTIAL_TABLE_TARGET_MIN_W))
                     .truncate()
-                    .child("站点 / 远端"),
+                    .child(khaslana::ui_i18n::text(messages::HOST_REMOTE)),
             )
-            .child(div().flex_none().w(px(72.0)).truncate().child("用户名"))
+            .child(div().flex_none().w(px(72.0)).truncate().child(khaslana::ui_i18n::text(messages::USERNAME)))
             .child(div().flex_none().w(px(68.0)).truncate().child("SSH Key"))
-            .child(div().flex_none().w(px(108.0)).truncate().child("更新时间"))
+            .child(div().flex_none().w(px(108.0)).truncate().child(khaslana::ui_i18n::text(messages::UPDATED)))
     }
 
     /// 凭据表数据行（左栏）：随横向滚动；点击打开详情、右键打开上下文菜单。
@@ -2768,6 +2757,7 @@ impl RepositoryView {
             .child(
                 div()
                     .flex()
+                    .flex_none()
                     .justify_end()
                     .gap_1()
                     .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
@@ -2777,7 +2767,7 @@ impl RepositoryView {
                         cx.stop_propagation();
                     })
                     .child(self.button(
-                        "测试",
+                        khaslana::ui_i18n::text(messages::TEST),
                         !self.busy,
                         move |this, _, cx| {
                             cx.stop_propagation();
@@ -2786,7 +2776,7 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.danger_button(
-                        "删除",
+                        khaslana::ui_i18n::text(messages::DELETE),
                         !self.busy,
                         move |this, _, cx| {
                             cx.stop_propagation();
@@ -2803,18 +2793,18 @@ impl RepositoryView {
         label: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("删除凭据", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::DELETE_CREDENTIALS), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("确认删除凭据：{label}")),
+                    .child(khaslana::ui_i18n::format(messages::DELETE_CREDENTIAL_LABEL, &[("label", &(label).to_string())])),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("删除会同时移除非敏感索引和系统凭据管理器中的密文。"),
+                    .child(khaslana::ui_i18n::text(messages::THIS_REMOVES_BOTH_THE_NON_SENSITIVE_INDEX_RECORD_AND_THE)),
             )
             .child(
                 div()
@@ -2822,7 +2812,7 @@ impl RepositoryView {
                     .justify_end()
                     .gap_2()
                     .child(self.button(
-                        "取消",
+                        khaslana::ui_i18n::text(messages::CANCEL),
                         !self.busy,
                         |this, _, _| {
                             this.open_credential_manager();
@@ -2830,7 +2820,7 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.danger_button(
-                        "确认删除",
+                        khaslana::ui_i18n::text(messages::CONFIRM_DELETION),
                         !self.busy,
                         move |this, _, _| this.delete_credential_record(record_id.clone()),
                         cx,
@@ -2846,3 +2836,12 @@ impl RepositoryView {
         ui_dialog_panel(title)
     }
 }
+
+// 验证器返回结构化消息；在最后显示边界解析，不能把编码交给文本元素。
+fn credential_test_error_text(error: &str) -> String {
+    khaslana::ui_i18n::resolve(error)
+}
+
+#[cfg(test)]
+#[path = "tests/dialog_view.rs"]
+mod tests;

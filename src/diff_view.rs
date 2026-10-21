@@ -7,13 +7,16 @@
 //!    libgit2 会把整份文件作为上下文输出，改动行依旧按 Added/Removed 高亮。
 //!    这意味着全文视图能复用现有的差异渲染、编码检测、虚拟列表与横向滚动能力。
 //!    当文件体积超过 `FULL_FILE_MAX_BYTES` 时，GitService 层在分配逐行 String 之前
-//!    就会返回 `FULL_FILE_TOO_LARGE_MESSAGE` 错误，UI 据此自动回退到紧凑差异。
+//!    就会返回 `domain.full_file_too_large` 身份的错误，UI 据此自动回退到紧凑差异。
 //!
 //! 2. **共享差异渲染**（`diff_section_header` / `render_virtual_diff` /
 //!    `render_diff_row` / `render_encoding_dropdown`）。M5 按重构计划 §5 从
 //!    `repository_ui.rs` 原样搬来：数据模型、虚拟列表、宽度测量、语法高亮槽位、
 //!    部分暂存交互全部保持不变，只是把归属收到差异模块，让 `repository_ui.rs`
 //!    回到「与具体页面无关的通用 UI」职责。**搬运过程不改 patch 算法。**
+
+#[path = "ui_resources/diff_view_messages.rs"]
+mod messages;
 
 use gpui::{
     Context, IntoElement, ListHorizontalSizingBehavior, ListSizingBehavior, MouseButton,
@@ -31,6 +34,26 @@ use crate::{
 };
 use std::sync::Arc;
 
+/// String 事件边界保留可触发 UI 回退的领域身份，不从当前语言的错误正文反推。
+pub(crate) fn diff_task_error(error: khaslana::GitError) -> String {
+    if error.is_message("domain.full_file_too_large")
+        && let khaslana::GitError::Localized(message) = &error
+    {
+        let args: Vec<_> = message.args.iter()
+            .map(|(key, value)| (key.as_str(), value.as_str())).collect();
+        return khaslana::ui_i18n::encode(message.message, &args);
+    }
+    error.to_string()
+}
+
+pub(crate) fn full_file_fallback_status() -> String {
+    khaslana::ui_i18n::encode(messages::FILE_IS_TOO_LARGE_SWITCHED_BACK_TO_DIFF_VIEW, &[])
+}
+
+pub(crate) fn is_full_file_too_large_error(error: &str) -> bool {
+    khaslana::ui_i18n::message_key(error).as_deref() == Some("domain.full_file_too_large")
+}
+
 impl RepositoryView {
     /// 全文/差异切换按钮，放在差异区域标题栏编码按钮旁。
     /// 激活（全文）态使用强调色高亮，非激活态使用弱化样式。
@@ -41,7 +64,7 @@ impl RepositoryView {
     ) -> impl IntoElement {
         let active = self.full_file_view;
         // 按钮文案表达"点击后切换到的模式"
-        let label = if active { "差异" } else { "全文" };
+        let label = if active { khaslana::ui_i18n::text(messages::DIFF) } else { khaslana::ui_i18n::text(messages::FULL_FILE) };
         diff_header_tool_button(
             match target {
                 EncodingMenuTarget::Worktree => "worktree-full-file-toggle",
@@ -70,9 +93,9 @@ impl RepositoryView {
     pub(crate) fn toggle_full_file_view(&mut self, cx: &mut Context<Self>) {
         self.full_file_view = !self.full_file_view;
         self.status = if self.full_file_view {
-            "已切换为全文视图".to_string()
+            khaslana::ui_i18n::encode(messages::SWITCHED_TO_FULL_FILE_VIEW, &[])
         } else {
-            "已切换为差异视图".to_string()
+            khaslana::ui_i18n::encode(messages::SWITCHED_TO_DIFF_VIEW, &[])
         };
         self.reload_visible_diffs_after_full_file_change();
         cx.notify();
@@ -110,11 +133,11 @@ impl RepositoryView {
         let is_too_large = self
             .last_error
             .as_deref()
-            .is_some_and(|err| err.contains(khaslana::FULL_FILE_TOO_LARGE_MESSAGE));
+            .is_some_and(is_full_file_too_large_error);
         if is_too_large && self.full_file_view {
             self.full_file_view = false;
             self.last_error = None;
-            self.status = "文件过大，已回退到差异视图".to_string();
+            self.status = full_file_fallback_status();
             self.reload_visible_diffs_after_full_file_change();
         }
     }
@@ -128,12 +151,12 @@ impl RepositoryView {
         }
         let current = self.current_diff_encoding_choice();
         let title = match target {
-            EncodingMenuTarget::Worktree => "工作区差异编码",
-            EncodingMenuTarget::History => "提交差异编码",
-            EncodingMenuTarget::Recovery => "恢复差异编码",
-            EncodingMenuTarget::Stash => "贮藏差异编码",
-            EncodingMenuTarget::Browse => "浏览编码",
-            EncodingMenuTarget::Blame => "追溯编码",
+            EncodingMenuTarget::Worktree => khaslana::ui_i18n::text(messages::WORKING_TREE_DIFF_ENCODING),
+            EncodingMenuTarget::History => khaslana::ui_i18n::text(messages::COMMIT_DIFF_ENCODING),
+            EncodingMenuTarget::Recovery => khaslana::ui_i18n::text(messages::RECOVERY_DIFF_ENCODING),
+            EncodingMenuTarget::Stash => khaslana::ui_i18n::text(messages::STASH_DIFF_ENCODING),
+            EncodingMenuTarget::Browse => khaslana::ui_i18n::text(messages::BROWSE_ENCODING),
+            EncodingMenuTarget::Blame => khaslana::ui_i18n::text(messages::ATTRIBUTION_ENCODING),
         };
 
         glass_menu()
@@ -321,9 +344,9 @@ impl RepositoryView {
         match row {
             DiffRenderRow::HeaderToggle => {
                 let summary = if headers_expanded {
-                    "Diff 元信息（点击折叠）"
+                    khaslana::ui_i18n::text(messages::DIFF_METADATA_CLICK_TO_COLLAPSE)
                 } else {
-                    "Diff 元信息（点击展开）"
+                    khaslana::ui_i18n::text(messages::DIFF_METADATA_CLICK_TO_EXPAND)
                 };
                 diff_header_toggle(summary, header_target, cx).into_any_element()
             }
@@ -346,9 +369,9 @@ impl RepositoryView {
                             .map(|diff| diff.scope == DiffScope::Unstaged)
                             .unwrap_or(true);
                         let label: &'static str = if is_stage {
-                            "暂存此块"
+                            khaslana::ui_i18n::text(messages::STAGE_HUNK)
                         } else {
-                            "取消暂存此块"
+                            khaslana::ui_i18n::text(messages::UNSTAGE_HUNK)
                         };
                         let hunk_index = line.hunk_index;
                         return div()
@@ -434,9 +457,9 @@ impl RepositoryView {
                 let message = diff
                     .map(|diff| {
                         if diff.is_binary {
-                            "二进制文件仅显示元信息"
+                            khaslana::ui_i18n::text(messages::ONLY_METADATA_IS_SHOWN_FOR_BINARY_FILES)
                         } else {
-                            "没有可显示的文本差异"
+                            khaslana::ui_i18n::text(messages::NO_TEXT_DIFFERENCES_TO_DISPLAY)
                         }
                     })
                     .unwrap_or(empty_message);
@@ -481,9 +504,9 @@ impl RepositoryView {
                         .map(|diff| diff.scope == DiffScope::Unstaged)
                         .unwrap_or(true);
                     let label = if is_stage {
-                        format!("暂存选中行({count})")
+                        khaslana::ui_i18n::format(messages::STAGE_SELECTED_LINES_COUNT, &[("count", &(count).to_string())])
                     } else {
-                        format!("取消暂存选中行({count})")
+                        khaslana::ui_i18n::format(messages::UNSTAGE_SELECTED_LINES_COUNT, &[("count", &(count).to_string())])
                     };
                     this.child(
                         diff_header_tool_button("stage-selected-diff-lines-button", label, true)
@@ -506,7 +529,7 @@ impl RepositoryView {
                         .map(|diff| diff.path.clone())
                         .unwrap_or_default();
                     this.child(
-                        diff_header_tool_button("worktree-diff-blame-button", "追溯", true)
+                        diff_header_tool_button("worktree-diff-blame-button", khaslana::ui_i18n::text(messages::ATTRIBUTION), true)
                             .on_click(cx.listener(move |this, _event, _window, cx| {
                                 this.open_blame_file(path.clone());
                                 cx.notify();
@@ -541,7 +564,7 @@ impl RepositoryView {
         let requested = self.current_diff_encoding_choice();
         let label = diff
             .map(diff_encoding_label)
-            .unwrap_or_else(|| format!("编码：{}", requested.label()));
+            .unwrap_or_else(|| khaslana::ui_i18n::format(messages::ENCODING_LABEL, &[("label", &(requested.label()).to_string())]));
         diff_header_tool_button(
             match target {
                 EncodingMenuTarget::Worktree => "worktree-diff-encoding",
@@ -593,3 +616,7 @@ fn diff_header_tool_button(
         .hover(|this| this.bg(rgb(ui_theme::WB_ROW_HOVER)))
         .child(label.into())
 }
+
+#[cfg(test)]
+#[path = "tests/diff_view.rs"]
+mod tests;
