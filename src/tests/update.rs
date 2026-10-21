@@ -6,11 +6,11 @@ use crate::storage::UpdatePreferences;
 #[test]
 fn current_version_is_valid_semver() {
     let v = current_version();
-    // 当前 Cargo.toml version = "3.0.1-beta.1"（发版时同步更新本断言）
+    // 当前 Cargo.toml version = "3.0.1-beta.2"（发版时同步更新本断言）
     assert_eq!(v.major, 3);
     assert_eq!(v.minor, 0);
     assert_eq!(v.patch, 1);
-    assert_eq!(v.pre.as_str(), "beta.1");
+    assert_eq!(v.pre.as_str(), "beta.2");
 }
 
 #[test]
@@ -19,7 +19,10 @@ fn default_sources_cnb_before_github() {
     assert!(sources[0].contains("cnb.cool"));
     assert!(sources[0].contains("/-/git/raw/"));
     assert!(!sources[0].contains("/-/raw/"));
-    assert!(sources[1].contains("github.com"));
+    assert_eq!(
+        sources[1],
+        "https://github.com/Neglecton/khaslana/releases/latest/download/khaslana-update.json"
+    );
     // 正式清单的 GitHub 兜底必须走 releases/latest（旧客户端同源，
     // latest 天然只解析非 prerelease 版本，不会被测试版污染）。
     assert!(sources[1].contains("releases/latest/download"));

@@ -90,7 +90,7 @@ pub fn default_manifest_sources() -> Vec<String> {
     vec![
         "https://cnb.cool/suhoan/khaslana-release/-/git/raw/master/khaslana-update.json"
             .to_string(),
-        "https://github.com/FuturePrayer/khaslana/releases/latest/download/khaslana-update.json"
+        "https://github.com/Neglecton/khaslana/releases/latest/download/khaslana-update.json"
             .to_string(),
     ]
 }

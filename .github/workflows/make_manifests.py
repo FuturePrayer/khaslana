@@ -37,7 +37,7 @@ manifest = {
                 f"releases/v{version}/{zip_name}.zip"
             ),
             "fallback_archive_url": (
-                "https://github.com/FuturePrayer/khaslana/releases/download/"
+                "https://github.com/Neglecton/khaslana/releases/download/"
                 f"{tag}/{zip_name}.zip"
             ),
             "sha256": sha,
