@@ -70,6 +70,33 @@ fn filter_matches_name_or_path_case_insensitive() {
     assert!(!code_index_entry_matches_filter(&e, "gpui"));
 }
 
+#[test]
+fn filtered_order_is_stable_with_disabled_data_first() {
+    let entries = vec![entry("A", "a"), entry("B", "b"), entry("C", "c"), entry("D", "d")];
+    let stats = HashMap::from([("b".into(), Default::default()), ("d".into(), Default::default())]);
+    let ordered = code_index_filtered_entries(&entries, &stats, "");
+    assert_eq!(ordered.iter().map(|e| e.repo_key.as_str()).collect::<Vec<_>>(), ["b", "d", "a", "c"]);
+    assert_eq!(code_index_filtered_entries(&entries, &stats, " B ")[0].repo_key, "b");
+}
+
+#[test]
+fn cancel_request_keeps_active_identity_until_terminal() {
+    let mut active = Some(task("a", true));
+    let mut queue = crate::code_index_queue::CodeIndexQueue::default();
+    queue.push("b", true, true, true);
+    active.as_ref().unwrap().cancel.store(true, Ordering::Relaxed);
+    assert_eq!(code_index_task_ownership(active.as_ref(), "a", 1), (true, true));
+    assert_eq!(take_code_index_terminal(&mut active, "b", 1), None);
+    assert_eq!(take_code_index_terminal(&mut active, "a", 0), None);
+    assert!(active.is_some());
+    assert_eq!(queue.position("b"), Some(1));
+    assert_eq!(take_code_index_terminal(&mut active, "a", 1), Some(true));
+    assert!(active.is_none());
+    assert_eq!(queue.pop().unwrap().repo_key, "b");
+    assert!(matches!(code_index_task_event(1, "a", || Ok(RunOutcome::Unchanged)),
+        Some(UiEvent::CodeIndexFinished { task_id: 1, stats: None, .. })));
+}
+
 // ---------------------------------------------------------------------------
 // 显示名推导
 // ---------------------------------------------------------------------------
@@ -152,7 +179,35 @@ fn index_panic_reports_failure_with_the_original_task_identity() {
     let mut current = task(&repo_path, true);
     current.task_id = task_id;
     assert_eq!(code_index_task_ownership(Some(&current), &repo_path, task_id), (true, true));
-    assert!(code_index_task_event(7, &repo_path, || Ok(RunOutcome::Cancelled)).is_none());
+    assert!(matches!(code_index_task_event(7, &repo_path, || Ok(RunOutcome::Cancelled)),
+        Some(UiEvent::CodeIndexCancelled { task_id: 7, repo_path: repo }) if repo == repo_path));
+}
+
+#[test]
+fn every_terminal_releases_only_matching_active_slot() {
+    let events = [
+        code_index_task_event(1, "a", || Ok(RunOutcome::Completed(IndexRunStats::default()))),
+        code_index_task_event(1, "a", || Ok(RunOutcome::Unchanged)),
+        code_index_task_event(1, "a", || Ok(RunOutcome::Cancelled)),
+        code_index_task_event(1, "a", || panic!("terminal panic")),
+    ];
+    for event in events {
+        let (id, repo) = match event.unwrap() {
+            UiEvent::CodeIndexFinished { task_id, repo_path, .. }
+            | UiEvent::CodeIndexFailed { task_id, repo_path, .. }
+            | UiEvent::CodeIndexCancelled { task_id, repo_path } => (task_id, repo_path),
+            _ => panic!("必须是索引终态"),
+        };
+        let mut active = Some(task("a", false));
+        let mut queue = crate::code_index_queue::CodeIndexQueue::default();
+        queue.push("b", true, true, true);
+        assert_eq!(take_code_index_terminal(&mut active, &repo, id + 1), None);
+        assert!(active.is_some());
+        assert_eq!(take_code_index_terminal(&mut active, &repo, id), Some(false));
+        assert!(active.is_none());
+        assert_eq!(queue.pop().unwrap().repo_key, "b");
+        assert_eq!(take_code_index_terminal(&mut active, &repo, id), None);
+    }
 }
 
 #[test]

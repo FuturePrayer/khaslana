@@ -10,6 +10,7 @@ mod browse_view;
 mod chrome_view;
 mod checkout_carry_view;
 mod code_index_view;
+mod code_index_queue;
 mod code_palette_view;
 mod commit_graph_view;
 mod conflicts;
@@ -2710,6 +2711,10 @@ pub(crate) enum UiEvent {
         repo_path: String,
         stats: Option<khaslana::code_index::IndexRunStats>,
     },
+    CodeIndexCancelled {
+        task_id: u64,
+        repo_path: String,
+    },
     CodeIndexFailed {
         task_id: u64,
         repo_path: String,
@@ -3782,6 +3787,7 @@ pub(crate) struct RepositoryView {
     // ── 代码索引 ──
     /// 在途索引任务（UI 全局单任务，后台按数据库互斥）。
     pub(crate) code_index_task: Option<CodeIndexTaskState>,
+    pub(crate) code_index_queue: code_index_queue::CodeIndexQueue,
     /// 各仓库最近一次索引统计缓存（事件回填；设置页打开时也会后台查库刷新）。
     pub(crate) code_index_stats: HashMap<String, khaslana::code_index::IndexStats>,
     /// 按仓库记录最新统计请求；删除或重新索引后丢弃迟到回填。

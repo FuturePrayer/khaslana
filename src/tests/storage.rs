@@ -7,6 +7,28 @@ fn temp_storage() -> (tempfile::TempDir, AppStorage) {
 }
 
 #[test]
+fn code_index_batch_is_atomic_on_mid_batch_failure() {
+    let (_temp, storage) = temp_storage();
+    storage.set_code_index_enabled("a", false).unwrap();
+    storage.lock_conn().unwrap().execute_batch(
+        "CREATE TRIGGER reject_index_preference BEFORE INSERT ON code_index_preferences
+         WHEN NEW.repo_path = 'fail' BEGIN SELECT RAISE(ABORT, 'injected'); END;"
+    ).unwrap();
+    assert!(storage.set_code_index_enabled_batch(&["a".into(), "b".into(), "fail".into()], true).is_err());
+    let prefs = storage.load_code_index_preferences().unwrap();
+    assert_eq!(prefs.repositories.len(), 1);
+    assert_eq!(prefs.repositories.get("a"), Some(&false));
+    storage.set_code_index_enabled_batch(&["a".into(), "b".into()], true).unwrap();
+    let prefs = storage.load_code_index_preferences().unwrap();
+    assert_eq!(prefs.repositories.get("a"), Some(&true));
+    assert_eq!(prefs.repositories.get("b"), Some(&true));
+    storage.set_code_index_enabled_batch(&["b".into()], false).unwrap();
+    let prefs = storage.load_code_index_preferences().unwrap();
+    assert_eq!(prefs.repositories.get("a"), Some(&true));
+    assert_eq!(prefs.repositories.get("b"), Some(&false));
+}
+
+#[test]
 fn session_state_round_trip() {
     let (_temp, storage) = temp_storage();
     let state = SessionState {

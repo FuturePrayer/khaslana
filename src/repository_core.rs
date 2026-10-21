@@ -275,6 +275,7 @@ impl RepositoryView {
                 last_key: std::cell::Cell::new((usize::MAX, usize::MAX)),
             }),
             code_index_task: None,
+            code_index_queue: Default::default(),
             code_index_stats: HashMap::new(),
             code_index_stats_requests: HashMap::new(),
             code_index_filter: TextFieldState::new(cx, "按名称或路径过滤"),
