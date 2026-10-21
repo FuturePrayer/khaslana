@@ -283,14 +283,21 @@ impl AppStorage {
 
     /// 设置单个仓库的代码索引开关（upsert，设置页开关即时生效）。
     pub fn set_code_index_enabled(&self, repo_path: &str, enabled: bool) -> Result<()> {
-        let conn = self.lock_conn()?;
-        conn.execute(
-            "INSERT INTO code_index_preferences (repo_path, enabled, updated_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(repo_path) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at",
-            params![repo_path, i64::from(enabled), now_seconds()],
-        )
-        .map_err(storage_error)?;
-        Ok(())
+        self.set_code_index_enabled_batch(&[repo_path.to_string()], enabled)
+    }
+
+    /// 批量开关必须原子提交，调用方仅在成功后更新缓存和调度状态。
+    pub fn set_code_index_enabled_batch(&self, repo_paths: &[String], enabled: bool) -> Result<()> {
+        let mut conn = self.lock_conn()?;
+        let tx = conn.transaction().map_err(storage_error)?;
+        for repo_path in repo_paths {
+            tx.execute(
+                "INSERT INTO code_index_preferences (repo_path, enabled, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(repo_path) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at",
+                params![repo_path, i64::from(enabled), now_seconds()],
+            ).map_err(storage_error)?;
+        }
+        tx.commit().map_err(storage_error)
     }
 
     pub fn save_diff_encoding_preferences(

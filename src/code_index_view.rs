@@ -25,11 +25,13 @@ use khaslana::code_index::{
     IndexRunStats, PipelineOptions, RunOutcome, open_index_db_path, read_index_stats, run_index,
 };
 
-/// 仓库卡片状态徽标（互斥四态，设计见设计稿 code_index_settings.pen）。
+/// 仓库卡片状态徽标：活跃任务优先于等待与数据状态。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum CodeIndexEntryStatus {
     /// 该仓库的索引任务正在运行。
     Running,
+    Queued(usize),
+    Cancelling,
     /// 已启用且存在索引数据。
     Indexed,
     /// 已停用但索引数据保留（开关关闭不删数据）。
@@ -39,13 +41,15 @@ pub(crate) enum CodeIndexEntryStatus {
 }
 
 impl CodeIndexEntryStatus {
-    fn label(self) -> &'static str {
+    fn label(self) -> String {
         match self {
+            CodeIndexEntryStatus::Queued(n) => return format!("排队中 · 第 {n} 位"),
+            CodeIndexEntryStatus::Cancelling => "取消中",
             CodeIndexEntryStatus::Running => "索引中",
             CodeIndexEntryStatus::Indexed => "已索引",
             CodeIndexEntryStatus::DisabledWithData => "已停用",
             CodeIndexEntryStatus::NotIndexed => "未索引",
-        }
+        }.to_string()
     }
 }
 
@@ -71,6 +75,18 @@ fn code_index_entry_matches_filter(entry: &CodeIndexListEntry, filter: &str) -> 
         return true;
     }
     entry.name.to_lowercase().contains(&needle) || entry.path.to_lowercase().contains(&needle)
+}
+
+/// 显示与批量操作共用同一筛选快照；稳定排序保留有数据/无数据组内原顺序。
+fn code_index_filtered_entries<'a>(
+    entries: &'a [CodeIndexListEntry],
+    stats: &HashMap<String, khaslana::code_index::IndexStats>,
+    filter: &str,
+) -> Vec<&'a CodeIndexListEntry> {
+    let mut entries: Vec<_> = entries.iter()
+        .filter(|entry| code_index_entry_matches_filter(entry, filter)).collect();
+    entries.sort_by_key(|entry| !stats.contains_key(&entry.repo_key));
+    entries
 }
 
 /// 显示名：路径末段（保留原大小写）。
@@ -154,11 +170,7 @@ impl RepositoryView {
             .and_then(|tab| tab.repo_path.as_ref())
             .map(|p| p.to_string_lossy().to_string());
         let filter = self.code_index_filter.value.clone();
-        let entries: Vec<&CodeIndexListEntry> = self
-            .code_index_list_entries
-            .iter()
-            .filter(|entry| code_index_entry_matches_filter(entry, &filter))
-            .collect();
+        let entries = code_index_filtered_entries(&self.code_index_list_entries, &self.code_index_stats, &filter);
         // 配置片段为多仓库形态（零仓库耦合，一条配置服务所有已索引仓库）。
         // 单仓库高级用法可在 args 末尾追加 "<仓库路径>"。
         let mcp_config = {
@@ -263,6 +275,28 @@ impl RepositoryView {
                     })
                 },
             ));
+        let view = cx.entity();
+        repo_group = repo_group.item(SettingItem::render(move |_options, _window, cx| {
+            view.update(cx, |this, cx| {
+                use crate::ui::components::{settings_command_button, SettingsButtonTone};
+                let enabled = !this.current_code_index_batch_keys().is_empty();
+                let mut row = div().flex().flex_wrap().items_center().gap_2().w_full().min_w(px(0.0));
+                for (value, label, id) in [(true, "全部开启", "code-index-enable-all"), (false, "全部关闭", "code-index-disable-all")] {
+                    let view = view.clone();
+                    row = row.child(settings_command_button(id, label,
+                        if value { SettingsButtonTone::Primary } else { SettingsButtonTone::Secondary }, enabled, cx)
+                        .on_click(move |_, _, cx| {
+                            view.update(cx, |this, cx| {
+                                // Kit 可保留条目闭包；业务对象必须按点击时的筛选与统计取快照。
+                                let keys = this.current_code_index_batch_keys();
+                                this.batch_code_index_enabled(&keys, value, cx);
+                            });
+                        }));
+                }
+                row.child(div().text_size(px(12.0)).text_color(rgb(ui_theme::CONTENT_SECONDARY))
+                    .child(if enabled { "仅作用于当前筛选结果；关闭保留索引数据" } else { "没有匹配仓库，无法批量操作" }))
+            })
+        }).keywords(["全部开启", "全部关闭", "批量索引"]));
         for entry in &entries {
             // CodeIndexListEntry 未 derive Clone，而 render 闭包要求 'static：
             // 按字段克隆构造一份移入闭包。
@@ -333,13 +367,24 @@ impl RepositoryView {
             .is_some_and(|task| task.repo_path == entry.repo_key);
         let enabled = self.code_index_enabled_cache.contains(&entry.repo_key);
         let stats = self.code_index_stats.get(&entry.repo_key);
-        let status = code_index_entry_status(running, enabled, stats.is_some());
+        let cancelling = running && self.code_index_task.as_ref()
+            .is_some_and(|t| t.cancel.load(Ordering::Relaxed));
+        let queued = self.code_index_queue.position(&entry.repo_key);
+        let status = if cancelling {
+            CodeIndexEntryStatus::Cancelling
+        } else if running {
+            CodeIndexEntryStatus::Running
+        } else if let Some(position) = queued {
+            CodeIndexEntryStatus::Queued(position)
+        } else {
+            code_index_entry_status(false, enabled, stats.is_some())
+        };
 
         // 开关：切换该仓库偏好；开启且无在途任务时立即全量建索引。
         let toggle_repo = entry.repo_key.clone();
 
-        // 全局单任务守卫：任一任务运行时，其它仓库（及本仓库非取消操作）禁用。
-        let actions_free = self.code_index_task.is_none();
+        // 其他仓库运行不妨碍入队；同仓库运行/等待复用已有请求。
+        let actions_free = !running && queued.is_none();
 
         let mut card = div()
             .flex()
@@ -394,7 +439,7 @@ impl RepositoryView {
         );
         // 状态行。
         card = card.child(match (status, stats) {
-            (CodeIndexEntryStatus::Running, _) => div()
+            (CodeIndexEntryStatus::Running | CodeIndexEntryStatus::Cancelling, _) => div()
                 .flex()
                 .flex_col()
                 .gap_1()
@@ -445,6 +490,12 @@ impl RepositoryView {
                     .into_any_element()
             }
         });
+        if running {
+            if let Some(stats) = stats {
+                card = card.child(div().text_size(px(11.0))
+                    .text_color(rgb(ui_theme::CONTENT_SECONDARY)).child(code_index_stats_line(stats)));
+            }
+        }
         // 按钮行（按状态给出可用动作）。Fn 闭包可被多次调用，捕获的仓库键
         // 在闭包体内克隆后传入；每个按钮包一层唯一 id 容器隔离元素状态
         //（app_button 以 label 作元素 id，多卡同帧渲染会冲突）。
@@ -550,6 +601,19 @@ impl RepositoryView {
                     ),
                 ),
             ],
+            CodeIndexEntryStatus::Cancelling => vec![
+                self.button("取消中…", false, |_, _, _| {}, cx).into_any_element(),
+            ],
+            CodeIndexEntryStatus::Queued(_) => vec![
+                code_index_interactive_host(&entry.repo_key, "rebuild-queued",
+                    self.button("重建索引", stats.is_some(), move |this, _, cx| {
+                        this.start_code_index_task_for_repo(&repo_rebuild, true, cx);
+                    }, cx)),
+                code_index_interactive_host(&entry.repo_key, "delete-queued",
+                    self.danger_button("删除索引数据", stats.is_some(), move |this, _, _| {
+                        this.request_delete_code_index(display_delete.clone(), repo_delete.clone());
+                    }, cx)),
+            ],
             CodeIndexEntryStatus::NotIndexed => vec![],
         };
         if !buttons.is_empty() {
@@ -590,19 +654,60 @@ impl RepositoryView {
                 return;
             }
         }
+        self.apply_code_index_enabled(repo_key, enabled, cx);
+        self.advance_code_index_queue(cx);
+        cx.notify();
+    }
+
+    fn apply_code_index_enabled(&mut self, repo_key: &str, enabled: bool, cx: &mut Context<Self>) {
         if enabled {
+            let was_enabled = self.code_index_enabled_cache.contains(repo_key);
             self.code_index_enabled_cache.insert(repo_key.to_string());
-            if self.code_index_task.is_none() {
-                // 开关是用户主动动作：开启后的全量建索引算主动触发。
-                self.spawn_code_index_task_for(repo_key, true, true, cx);
-            } else {
-                self.status = "已有索引任务在进行中，请稍后手动增量更新".into();
+            let busy = self.code_index_task.as_ref().is_some_and(|t|
+                t.repo_path == repo_key && !t.cancel.load(Ordering::Relaxed));
+            if !busy && (!was_enabled || self.code_index_queue.position(repo_key).is_none()) {
+                self.code_index_queue.push(repo_key,
+                    !was_enabled || !self.code_index_stats.contains_key(repo_key), true, true);
             }
         } else {
             self.code_index_enabled_cache.remove(repo_key);
+            self.code_index_queue.remove(repo_key);
+            if self.code_index_task.as_ref().is_some_and(|t| t.repo_path == repo_key) {
+                self.cancel_code_index(cx);
+            }
             self.status = "代码索引已关闭（已有索引数据保留）".into();
         }
+    }
+
+    fn current_code_index_batch_keys(&self) -> Vec<String> {
+        code_index_filtered_entries(&self.code_index_list_entries, &self.code_index_stats,
+            &self.code_index_filter.value).into_iter().map(|entry| entry.repo_key.clone()).collect()
+    }
+
+    fn batch_code_index_enabled(&mut self, repo_keys: &[String], enabled: bool, cx: &mut Context<Self>) {
+        if let Err(err) = self.storage.set_code_index_enabled_batch(repo_keys, enabled) {
+            self.notify_error(format!("保存索引设置失败：{err}"), cx);
+            return;
+        }
+        for repo in repo_keys {
+            self.apply_code_index_enabled(repo, enabled, cx);
+        }
+        self.advance_code_index_queue(cx);
         cx.notify();
+    }
+
+    fn advance_code_index_queue(&mut self, cx: &mut Context<Self>) {
+        while self.code_index_task.is_none() {
+            let Some(request) = self.code_index_queue.pop() else { break };
+            if !request.eligible(self.code_index_enabled_cache.contains(&request.repo_key)) {
+                continue;
+            }
+            if !Path::new(&request.repo_key).is_dir() {
+                self.status = format!("跳过索引：仓库路径不可用 {}", request.repo_key);
+                continue;
+            }
+            self.spawn_code_index_task_for(&request.repo_key, request.force_full, request.user_initiated, cx);
+        }
     }
 
     /// 设置页列表按钮入口（显式仓库键；全局单任务守卫）。
@@ -612,11 +717,12 @@ impl RepositoryView {
         force_full: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.code_index_task.is_some() {
-            self.notify_error("已有索引任务在进行中", cx);
+        if self.code_index_task.as_ref().is_some_and(|t| t.repo_path == repo_key) {
             return;
         }
-        self.spawn_code_index_task_for(repo_key, force_full, true, cx);
+        self.code_index_queue.push(repo_key, force_full, true, false);
+        self.advance_code_index_queue(cx);
+        cx.notify();
     }
 
     /// 「删除索引数据」按钮：打开按仓库键寻址的确认弹窗。
@@ -662,24 +768,24 @@ impl RepositoryView {
         let tx = self.tx.clone();
         let task_repo = repo_key.to_string();
         self.tasks.spawn(TaskKind::Index, move || {
-            let progress_tx = tx.clone();
-            let event_repo = task_repo.clone();
-            let mut options = PipelineOptions::new(
-                Arc::clone(&cancel),
-                Box::new(move |progress| {
-                    send_ui_event(
-                        &progress_tx,
-                        UiEvent::CodeIndexProgress {
-                            task_id,
-                            repo_path: event_repo.clone(),
-                            message: progress.message,
-                            done: progress.done,
-                            total: progress.total,
-                        },
-                    );
-                }),
-            );
             let event = code_index_task_event(task_id, &task_repo, || {
+                let progress_tx = tx.clone();
+                let event_repo = task_repo.clone();
+                let mut options = PipelineOptions::new(
+                    Arc::clone(&cancel),
+                    Box::new(move |progress| {
+                        send_ui_event(
+                            &progress_tx,
+                            UiEvent::CodeIndexProgress {
+                                task_id,
+                                repo_path: event_repo.clone(),
+                                message: progress.message,
+                                done: progress.done,
+                                total: progress.total,
+                            },
+                        );
+                    }),
+                );
                 run_index(Path::new(&task_repo), &db_path, force_full, &mut options)
             });
             if let Some(event) = event {
@@ -689,38 +795,56 @@ impl RepositoryView {
         cx.notify();
     }
 
-    /// 自动触发（仓库加载完成后 / 工作区操作后）：仅在偏好启用且无在途任务时
-    /// 发起增量检查；否则静默跳过。
+    /// 自动触发与手动请求共用 FIFO；运行期间至多合并一个后续增量检查。
     pub(crate) fn maybe_auto_code_index_refresh(
         &mut self,
         repo_path: Option<&Path>,
         cx: &mut Context<Self>,
     ) {
-        if self.code_index_task.is_some() {
-            return;
-        }
         let Some(path) = repo_path else { return };
         let repo_key = normalize_repo_path(path);
         if !self.code_index_enabled_cache.contains(&repo_key) {
             return;
         }
         // 自动触发来自后台事件，目标仓库可能不是活动 tab——按显式键构造。
-        self.spawn_code_index_task_for(&repo_key, false, false, cx);
+        if self.code_index_task.as_ref().is_some_and(|t|
+            t.repo_path == repo_key && t.cancel.load(Ordering::Relaxed)) {
+            return;
+        }
+        self.code_index_queue.push(&repo_key, false, false, true);
+        self.advance_code_index_queue(cx);
+        cx.notify();
     }
 
-    pub(crate) fn cancel_code_index(&mut self, _cx: &mut Context<Self>) {
-        if let Some(task) = self.code_index_task.take() {
-            task.cancel
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.code_index_progress_message.clear();
-            self.code_index_progress_done = 0;
-            self.code_index_progress_total = 0;
-            self.status = "代码索引已取消".into();
+    pub(crate) fn cancel_code_index(&mut self, cx: &mut Context<Self>) {
+        if let Some(task) = self.code_index_task.as_ref() {
+            self.code_index_queue.remove(&task.repo_path);
+            task.cancel.store(true, Ordering::Relaxed);
+            self.status = "正在取消代码索引…".into();
+            cx.notify();
         }
+    }
+
+    pub(crate) fn handle_code_index_cancelled(&mut self, task_id: u64, repo_path: String, cx: &mut Context<Self>) {
+        if take_code_index_terminal(&mut self.code_index_task, &repo_path, task_id).is_none() {
+            return;
+        }
+        self.code_index_progress_message.clear();
+        self.code_index_progress_done = 0;
+        self.code_index_progress_total = 0;
+        self.status = "代码索引已取消".into();
+        self.request_code_index_stats(&repo_path);
+        self.advance_code_index_queue(cx);
+        cx.notify();
     }
 
     pub(crate) fn confirm_delete_code_index_now(&mut self, repo_key: &str, cx: &mut Context<Self>) {
         self.active_dialog = None;
+        if self.code_index_task.as_ref().is_some_and(|t| t.repo_path == repo_key) {
+            self.notify_error("索引运行或取消中，暂不能删除数据", cx);
+            return;
+        }
+        self.code_index_queue.remove(repo_key);
         let Some(db_path) = Self::index_db_path(repo_key) else {
             return;
         };
@@ -857,10 +981,7 @@ impl RepositoryView {
         stats: Option<IndexRunStats>,
         cx: &mut Context<Self>,
     ) {
-        let (was_tracked, user_initiated) =
-            code_index_task_ownership(self.code_index_task.as_ref(), &repo_path, task_id);
-        if !was_tracked { return; }
-        self.code_index_task = None;
+        let Some(user_initiated) = take_code_index_terminal(&mut self.code_index_task, &repo_path, task_id) else { return };
         self.code_index_progress_message.clear();
         self.code_index_progress_done = 0;
         self.code_index_progress_total = 0;
@@ -894,6 +1015,7 @@ impl RepositoryView {
         }
         // 即使内容未变，也需替换任务开始前失效的统计请求；精确字段从库中回填。
         self.request_code_index_stats(&repo_path);
+        self.advance_code_index_queue(cx);
         cx.notify();
     }
 
@@ -904,10 +1026,7 @@ impl RepositoryView {
         error: String,
         cx: &mut Context<Self>,
     ) {
-        let (was_tracked, user_initiated) =
-            code_index_task_ownership(self.code_index_task.as_ref(), &repo_path, task_id);
-        if !was_tracked { return; }
-        self.code_index_task = None;
+        let Some(user_initiated) = take_code_index_terminal(&mut self.code_index_task, &repo_path, task_id) else { return };
         self.code_index_progress_message.clear();
         self.code_index_progress_done = 0;
         self.code_index_progress_total = 0;
@@ -921,6 +1040,8 @@ impl RepositoryView {
                 self.status = format!("代码索引失败:{error}");
             }
         }
+        self.request_code_index_stats(&repo_path);
+        self.advance_code_index_queue(cx);
         cx.notify();
     }
 
@@ -975,6 +1096,14 @@ fn code_index_task_ownership(
         .map_or((false, false), |t| (true, t.user_initiated))
 }
 
+/// 所有后台终态共用身份化释放；请求取消不经过这里，仍占用活跃槽。
+fn take_code_index_terminal(task: &mut Option<CodeIndexTaskState>, repo: &str, id: u64) -> Option<bool> {
+    let (owned, user_initiated) = code_index_task_ownership(task.as_ref(), repo, id);
+    if !owned { return None; }
+    *task = None;
+    Some(user_initiated)
+}
+
 /// 索引 panic 按原任务身份收尾，不能借用全局异常事件清空其他任务状态。
 fn code_index_task_event(
     task_id: u64,
@@ -988,8 +1117,8 @@ fn code_index_task_event(
     match result {
         Ok(RunOutcome::Completed(stats)) => Some(UiEvent::CodeIndexFinished { task_id, repo_path, stats: Some(stats) }),
         Ok(RunOutcome::Unchanged) => Some(UiEvent::CodeIndexFinished { task_id, repo_path, stats: None }),
-        // 取消由 UI 侧置位时同步复位，无需事件。
-        Ok(RunOutcome::Cancelled) => None,
+        // 只有后台已退出才释放 GUI 活跃槽，不能在请求取消时抢跑下一项。
+        Ok(RunOutcome::Cancelled) => Some(UiEvent::CodeIndexCancelled { task_id, repo_path }),
         Err(error) => Some(UiEvent::CodeIndexFailed { task_id, repo_path, error }),
     }
 }
@@ -997,7 +1126,7 @@ fn code_index_task_event(
 /// 状态徽标 pill（圆点 + 文字）。
 fn code_index_status_pill(status: CodeIndexEntryStatus) -> gpui::AnyElement {
     let (bg, text) = match status {
-        CodeIndexEntryStatus::Running => (ui_theme::PRIMARY_SUBTLE, ui_theme::PRIMARY),
+        CodeIndexEntryStatus::Running | CodeIndexEntryStatus::Queued(_) | CodeIndexEntryStatus::Cancelling => (ui_theme::PRIMARY_SUBTLE, ui_theme::PRIMARY),
         CodeIndexEntryStatus::Indexed => {
             (ui_theme::COLOR_SUCCESS, ui_theme::COLOR_SUCCESS_FOREGROUND)
         }

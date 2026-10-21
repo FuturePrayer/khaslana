@@ -1291,6 +1291,9 @@ impl RepositoryView {
             UiEvent::CodeIndexFinished { task_id, repo_path, stats } => {
                 self.handle_code_index_finished(task_id, repo_path, stats, cx);
             }
+            UiEvent::CodeIndexCancelled { task_id, repo_path } => {
+                self.handle_code_index_cancelled(task_id, repo_path, cx);
+            }
             UiEvent::CodeIndexFailed { task_id, repo_path, error } => {
                 self.handle_code_index_failed(task_id, repo_path, error, cx);
             }
