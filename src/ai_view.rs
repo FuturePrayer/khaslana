@@ -3,6 +3,9 @@
 // 复杂 AI 逻辑（HTTP 请求、prompt 构造）在 src/ai/ 中实现；
 // 这里只负责组合布局、状态、交互和渲染。
 
+#[path = "ai_view_resources.rs"]
+mod messages;
+
 use std::sync::Arc;
 
 use async_channel::Sender;
@@ -75,8 +78,8 @@ impl RepositoryView {
                     }
                 }
             }
-            self.status = "已有 AI 生成任务进行中，请等待完成后重试".to_string();
-            self.last_error = Some("已有 AI 生成任务进行中".to_string());
+            self.status = khaslana::ui_i18n::encode(messages::AI_GENERATION_ALREADY_RUNNING_RETRY, &[]);
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::AI_GENERATION_ALREADY_RUNNING, &[]));
             return;
         }
         let task_id = self.next_ai_thinking_task_id;
@@ -100,6 +103,7 @@ impl RepositoryView {
             .proxy_url_for_target(&settings.normalized_base_url());
         let tx = self.tx.clone();
         let task_tx = tx.clone();
+        let output_language = self.ui_language;
         self.tasks.spawn(crate::TaskKind::Long, move || {
             // panic 兜底（第二层）：TaskExecutor 的 catch_unwind 只发全局
             // BackgroundTaskPanicked（无法区分任务种类，不复位本业务的
@@ -128,9 +132,7 @@ impl RepositoryView {
                 Err(payload) => {
                     let message = crate::tasks::panic_message(payload);
                     tracing::error!(target: "khaslana::ai", "AI 思考任务 panic：{message}");
-                    Err(khaslana::GitError::Message(format!(
-                        "AI 任务异常终止：{message}"
-                    )))
+                    Err(khaslana::GitError::Message(khaslana::ui_i18n::format_in(output_language, messages::AI_TASK_PANICKED, &[("message", &message)])))
                 }
             };
             match outcome {
@@ -143,7 +145,7 @@ impl RepositoryView {
                         &tx,
                         UiEvent::AiRequestFailed {
                             task_id,
-                            error: err.to_string(),
+                            error: err.display_in(output_language),
                         },
                     );
                 }
@@ -198,7 +200,7 @@ impl RepositoryView {
         let Some(overlay) = &self.ai_thinking_overlay else {
             return div().into_any_element();
         };
-        let title = overlay.title.clone();
+        let title = khaslana::ui_i18n::resolve(&overlay.title);
         let reasoning = overlay.reasoning.clone();
         let content_text = overlay.content.clone();
         let handle = self.scroll_handle("ai-thinking-scroll");
@@ -238,7 +240,7 @@ impl RepositoryView {
                 )
             })
             // 空白兜底：尚未产出第一片时给出提示，避免空面板。
-            .when(!has_live, |this| this.child("模型思考中…".to_string()))
+            .when(!has_live, |this| this.child(khaslana::ui_i18n::text(messages::MODEL_IS_THINKING).to_string()))
             // 钉底跟随：末位零绘制 canvas 的 prepaint 按内容长度变化键
             // 门控 set_offset（同帧生效 + refresh_windows 补一帧，与冲突
             // 工作台三栏同步同一模式）。键不变（用户滚动引发的重绘）不
@@ -314,7 +316,7 @@ impl RepositoryView {
                                     .child(title),
                             )
                             .child(self.button(
-                                "后台运行",
+                                khaslana::ui_i18n::text(messages::RUN_IN_BACKGROUND),
                                 true,
                                 |this, _, _| {
                                     // 仅收起弹窗不终止任务：结果仍会经事件回传
@@ -353,16 +355,16 @@ impl RepositoryView {
     pub(crate) fn render_ai_commit_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let enabled = self.ai_commit_button_enabled();
         let label = if self.ai_commit_loading {
-            "生成中..."
+            khaslana::ui_i18n::text(messages::GENERATING)
         } else {
-            "AI 生成"
+            khaslana::ui_i18n::text(messages::GENERATE_WITH_AI)
         };
         div().flex().items_center().child(self.ghost_button(
             label,
             ToolbarIcon::Ai,
             enabled,
             // 未配置供应商是禁用主因：tooltip 直接给出去设置中心的指引。
-            Some("请先在 AI 设置中配置并启用供应商"),
+            Some(khaslana::ui_i18n::text(messages::CONFIGURE_AND_ENABLE_A_PROVIDER_IN_AI_SETTINGS_FIRST)),
             |this, _, _| this.generate_ai_commit_message(),
             cx,
         ))
@@ -374,20 +376,20 @@ impl RepositoryView {
             return;
         }
         if !self.ai_settings.is_usable() {
-            self.last_error = Some("请先在 AI 设置中配置并启用供应商".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::PROVIDER_REQUIRED, &[]));
             return;
         }
         let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::REPOSITORY_REQUIRED, &[]));
             return;
         };
         let Some(repo_path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::REPOSITORY_REQUIRED, &[]));
             return;
         };
         let staged_paths = self.change_paths(DiffScope::Staged);
         if staged_paths.is_empty() {
-            self.last_error = Some("暂存区没有文件，无法生成提交信息".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::STAGED_FILES_REQUIRED, &[]));
             return;
         }
 
@@ -397,8 +399,9 @@ impl RepositoryView {
         let service = self.service_for_tab(tab_id);
         let staged_paths = staged_paths;
         let field_uid = self.commit_message.uid;
+        let languages = khaslana::language::TaskLanguages::new(self.ui_language, self.language_preferences.prompt);
         self.start_ai_thinking_task(
-            "正在生成提交信息",
+            &khaslana::ui_i18n::encode(messages::GENERATING_COMMIT_MESSAGE, &[]),
             crate::AiThinkingTaskKind::CommitMessage,
             move |task_id, message| crate::UiEvent::AiCommitMessageGenerated { task_id, tab_id, field_uid, message },
             move |client, _proxy_url, _tx, on_delta| {
@@ -412,7 +415,8 @@ impl RepositoryView {
                 let mut budget_left = COMMIT_DIFF_TOTAL_BUDGET;
                 for path in &staged_paths {
                     if budget_left == 0 {
-                        diff_text.push_str(&format!("--- {}（已达输入预算，未包含）\n", path));
+                        diff_text.push_str(&format!("--- {} ({})\n", path,
+                            khaslana::ai::prompt::text(languages.system, "已达输入预算，未包含", "input budget reached; omitted")));
                         continue;
                     }
                     let file_diff = service.diff_for_path(
@@ -423,7 +427,8 @@ impl RepositoryView {
                         DiffEncodingChoice::Utf8,
                     )?;
                     if file_diff.is_binary {
-                        diff_text.push_str(&format!("--- {} (二进制文件)\n", path));
+                        diff_text.push_str(&format!("--- {} ({})\n", path,
+                            khaslana::ai::prompt::text(languages.system, "二进制文件", "binary file")));
                         continue;
                     }
                     let patch = khaslana::ai::file_diff_to_patch_text(&file_diff);
@@ -436,7 +441,8 @@ impl RepositoryView {
                         }
                         diff_text.push_str(&format!("--- a/{}\n", path));
                         diff_text.push_str(&patch[..end]);
-                        diff_text.push_str("\n（此文件差异过长已截断）\n");
+                        diff_text.push_str(khaslana::ai::prompt::text(languages.system,
+                            "\n（此文件差异过长已截断）\n", "\n(file diff truncated)\n"));
                         budget_left = budget_left.saturating_sub(end);
                     } else {
                         diff_text.push_str(&format!("--- a/{}\n", path));
@@ -444,7 +450,7 @@ impl RepositoryView {
                         budget_left = budget_left.saturating_sub(patch.len());
                     }
                 }
-                let (system, user) = khaslana::ai::commit_message_prompts(&diff_text, None);
+                let (system, user) = khaslana::ai::commit_message_prompts_with_languages(&diff_text, None, languages);
                 // 全部增量（正文/思维链）经公共执行器转发到思考弹窗；
                 // 弹窗遮挡输入框，正文在完成后由 Generated 事件一次填入。
                 let result = client.request_stream(&[system, user], &mut |delta| {
@@ -454,8 +460,8 @@ impl RepositoryView {
                 // 或完全为空时，避免按钮恢复后输入框无内容也无报错。
                 khaslana::ai::validate_generated_content(
                     &result,
-                    "AI 返回的提交信息为空，请重试或检查模型配置",
-                    "AI 未返回提交信息正文（仅返回了思考过程），请重试或更换模型",
+                    khaslana::ai::prompt::text(languages.output, "AI 返回的提交信息为空，请重试或检查模型配置", "AI returned an empty commit message. Retry or check model configuration."),
+                    khaslana::ai::prompt::text(languages.output, "AI 未返回提交信息正文（仅返回了思考过程），请重试或更换模型", "AI returned only reasoning, not a commit message. Retry or change models."),
                 )?;
                 Ok(result.content)
             },
@@ -474,19 +480,19 @@ impl RepositoryView {
             return;
         }
         if !self.ai_settings.is_usable() {
-            self.last_error = Some("请先在 AI 设置中配置并启用供应商".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::PROVIDER_REQUIRED, &[]));
             return;
         }
         let Some(path) = self.conflict_workbench.selected_path.clone() else {
-            self.last_error = Some("请先选择一个冲突文件".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::CONFLICT_FILE_REQUIRED, &[]));
             return;
         };
         let Some(view) = self.conflict_workbench.files.get(&path) else {
-            self.last_error = Some("请先选择一个冲突文件".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::CONFLICT_FILE_REQUIRED, &[]));
             return;
         };
         if view.kind != khaslana::ConflictFileKind::Text {
-            self.last_error = Some("该冲突文件不是文本冲突，不支持 AI 合并建议".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::TEXT_CONFLICT_REQUIRED, &[]));
             return;
         }
         if view.has_local_edits() {
@@ -506,15 +512,15 @@ impl RepositoryView {
             return;
         }
         if !self.ai_settings.is_usable() {
-            self.last_error = Some("请先在 AI 设置中配置并启用供应商".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::PROVIDER_REQUIRED, &[]));
             return;
         }
         let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::REPOSITORY_REQUIRED, &[]));
             return;
         };
         let Some(repo_path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::REPOSITORY_REQUIRED, &[]));
             return;
         };
 
@@ -523,11 +529,12 @@ impl RepositoryView {
 
         let service = self.service_for_tab(tab_id);
         let base_settings = self.ai_settings.clone();
+        let languages = khaslana::language::TaskLanguages::new(self.ui_language, self.language_preferences.prompt);
         let task_path = path.clone();
         let session_id = self.conflict_workbench.session_id;
         let original_draft = self.conflict_workbench.files.get(&path).map(|v| v.draft.clone()).unwrap_or_default();
         self.start_ai_thinking_task(
-            "正在生成 AI 合并建议",
+            &khaslana::ui_i18n::encode(messages::GENERATING_MERGE_SUGGESTION, &[]),
             crate::AiThinkingTaskKind::ConflictMerge { path: path.clone() },
             move |task_id, draft| crate::UiEvent::AiConflictMergeGenerated {
                 task_id,
@@ -569,10 +576,11 @@ impl RepositoryView {
                         continue;
                     }
                     request_done += 1;
-                    let (system, user) = khaslana::conflict_merge_prompts(
+                    let (system, user) = khaslana::ai::conflict_merge_prompts_with_languages(
                         &path,
                         &segment.text,
                         (request_segments > 1).then_some((request_done, request_segments)),
+                        languages,
                     );
                     let messages = if history.is_empty() {
                         vec![system, user.clone()]
@@ -589,14 +597,12 @@ impl RepositoryView {
                         segment_client.request_stream(&messages, &mut |delta| on_delta(delta))?;
                     let content = khaslana::validate_generated_content(
                         &result,
-                        "AI 返回的合并结果为空，请重试或检查模型配置",
-                        "AI 未返回合并结果正文（仅返回了思考过程），请重试或更换模型",
+                        khaslana::ai::prompt::text(languages.output, "AI 返回的合并结果为空，请重试或检查模型配置", "AI returned an empty merge result. Retry or check model configuration."),
+                        khaslana::ai::prompt::text(languages.output, "AI 未返回合并结果正文（仅返回了思考过程），请重试或更换模型", "AI returned only reasoning, not a merge result. Retry or change models."),
                     )?;
                     let content = khaslana::strip_code_fence(&content);
                     if khaslana::response_contains_conflict_markers(&content) {
-                        return Err(khaslana::GitError::Message(format!(
-                            "AI 返回的第 {request_done}/{request_segments} 段仍包含冲突标记，已放弃本次结果"
-                        )));
+                        return Err(khaslana::GitError::Message(khaslana::ui_i18n::format_in(languages.output, messages::MERGE_SEGMENT_HAS_CONFLICTS, &[("segment", &request_done.to_string()), ("total", &request_segments.to_string())])));
                     }
                     // 段按行切分，非末段的输出必须以换行收尾，否则拼接处
                     // 会把两行挤成一行。
@@ -642,31 +648,32 @@ impl RepositoryView {
             }
         };
         self.ai_extensions.save_error = None;
+        let languages = khaslana::language::TaskLanguages::new(self.ui_language, self.language_preferences.prompt);
         let request_id = self.ai_extensions.connection_test.begin(settings.clone());
         if self.busy || self.global_busy_tab.is_some() {
-            self.ai_extensions.connection_test.finish(request_id, Err("已有操作正在运行".into()));
+            self.ai_extensions.connection_test.finish(request_id, Err(khaslana::ui_i18n::encode(messages::OPERATION_ALREADY_RUNNING, &[])));
             return;
         }
         if let Err(err) = settings.validate() {
             self.ai_extensions.connection_test.finish(request_id, Err(err.to_string()));
             return;
         }
-        self.begin_global_test_busy("正在测试 AI 连接");
+        self.begin_global_test_busy(&khaslana::ui_i18n::encode(messages::TESTING_AI_CONNECTION, &[]));
         let proxy_url = self.proxy_settings.proxy_url_for_target(&settings.normalized_base_url());
         let tx = self.tx.clone();
         self.tasks.spawn(crate::TaskKind::Long, move || {
             // 外层调度器会捕获 panic，但 UI 仍需要一个带身份的事件来收尾。
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let client = ChatClient::new(settings, proxy_url);
-                let test_message = ChatMessage { role: ChatRole::User, content: "请回复 OK".into() };
-                client.request(&[test_message]).map_err(|err| err.to_string()).and_then(|result| {
+                let test_message = ChatMessage { role: ChatRole::User, content: khaslana::ai::prompt::text(languages.system, "请回复 OK", "Reply OK").into() };
+                client.request(&[test_message]).map_err(|err| err.display_in(languages.output)).and_then(|result| {
                     if result.content.trim().is_empty() {
-                        Err("AI 连接返回空内容，请检查模型与接口配置".into())
+                        Err(khaslana::ai::prompt::text(languages.output, "AI 连接返回空内容，请检查模型与接口配置", "AI connection returned empty content. Check model and endpoint configuration.").into())
                     } else {
-                        Ok(format!("AI 连接测试通过：{}", result.content.chars().take(50).collect::<String>()))
+                        Ok(khaslana::ui_i18n::format_in(languages.output, messages::CONNECTION_TEST_PASSED, &[("reply", &result.content.chars().take(50).collect::<String>())]))
                     }
                 })
-            })).unwrap_or_else(|payload| Err(format!("连接测试异常：{}", crate::tasks::panic_message(payload))));
+            })).unwrap_or_else(|payload| Err(khaslana::ui_i18n::format_in(languages.output, messages::CONNECTION_TEST_PANICKED, &[("error", &crate::tasks::panic_message(payload))])));
             let event = match result {
                 Ok(message) => crate::UiEvent::AiConnectionTested { request_id, message },
                 Err(error) => crate::UiEvent::AiConnectionTestFailed { request_id, error },
@@ -692,33 +699,30 @@ impl RepositoryView {
             return;
         }
         if !self.ai_settings.is_usable() {
-            self.last_error = Some("请先在 AI 设置中配置并启用供应商".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::PROVIDER_REQUIRED, &[]));
             return;
         }
         // 并发上限：在途任务（含后台分离的）达到上限时阻止新开。
         if self.ai_review_running_tasks >= crate::MAX_CONCURRENT_AI_REVIEWS {
-            let message = format!(
-                "已有 {} 个 AI 评审任务在进行中，请等待完成或取消后再试",
-                crate::MAX_CONCURRENT_AI_REVIEWS
-            );
+            let message = khaslana::ui_i18n::encode(messages::REVIEW_TASK_LIMIT, &[("count", &crate::MAX_CONCURRENT_AI_REVIEWS.to_string())]);
             self.last_error = Some(message.clone());
             self.notify_error(message, cx);
             return;
         }
         let Some(target) = self.browse.target.clone() else {
-            self.last_error = Some("请先进入分支比较模式".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::BRANCH_COMPARISON_REQUIRED, &[]));
             return;
         };
         if self.browse.compare_files.is_empty() {
-            self.last_error = Some("当前分支比较没有差异文件".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::NO_COMPARISON_CHANGES, &[]));
             return;
         }
         let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::REPOSITORY_REQUIRED, &[]));
             return;
         };
         let Some(repo_path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::REPOSITORY_REQUIRED, &[]));
             return;
         };
         let service = self.service_for_tab(tab_id);
@@ -738,12 +742,12 @@ impl RepositoryView {
         self.ai_review_live_reasoning.clear();
         self.ai_review_live_content.clear();
         self.ai_review_loaded_label = None;
-        self.ai_review_progress = Some("正在准备评审上下文…".into());
+        self.ai_review_progress = Some(khaslana::ui_i18n::encode(messages::PREPARING_REVIEW_CONTEXT_STATUS, &[]));
         // 生成期间自动占满右侧区域，实时展示思维链与工具轨迹。
         self.ai_review_expanded = true;
         self.scroll_handle("ai-review-scroll")
             .set_offset(point(px(0.0), px(0.0)));
-        self.status = "正在生成 AI 评审".into();
+        self.status = khaslana::ui_i18n::encode(messages::GENERATING_REVIEW_STATUS, &[]);
         self.last_error = None;
 
         let settings = self.ai_settings.clone();
@@ -754,6 +758,7 @@ impl RepositoryView {
         let repo_path_string = repo_path.display().to_string();
         let file_count = self.browse.compare_files.len();
         let data_dir = khaslana::storage::active_data_dir();
+        let languages = khaslana::language::TaskLanguages::new(self.ui_language, self.language_preferences.prompt);
         let input = khaslana::ai::ReviewAgentInput {
             repo_path,
             target_display_name: target.display_name,
@@ -801,12 +806,13 @@ impl RepositoryView {
                     ),
                     khaslana::ai::AgentEvent::Done(_) => {}
                 };
-                match khaslana::ai::run_review_agent(
+                match khaslana::ai::review_agent::run_review_agent_with_languages(
                     &input,
                     &service,
                     &client,
                     &cancel_flag,
                     &mut on_event,
+                    languages,
                 ) {
                     Ok(Some(review)) => {
                         // 落盘在任务线程完成：即使 UI 已分离（切目标/退出浏览）
@@ -859,7 +865,7 @@ impl RepositoryView {
                             &tx,
                             crate::UiEvent::AiReviewFailed {
                                 generation,
-                                error: err.to_string(),
+                                error: err.display_in(languages.output),
                             },
                         );
                     }
@@ -872,7 +878,7 @@ impl RepositoryView {
                     &panic_tx,
                     crate::UiEvent::AiReviewFailed {
                         generation,
-                        error: format!("AI 评审任务异常终止：{message}"),
+                        error: khaslana::ui_i18n::format_in(languages.output, messages::REVIEW_TASK_PANICKED, &[("message", &message)]),
                     },
                 );
             }
@@ -902,13 +908,13 @@ impl RepositoryView {
 
         let status_text = if let Some(label) = &self.ai_review_loaded_label {
             // 历史记录展示态：标签优先于进度/完成文案。
-            label.clone()
+            khaslana::ui_i18n::resolve(label)
         } else if loading {
             self.ai_review_progress
-                .clone()
-                .unwrap_or_else(|| "生成中…".to_string())
+                .as_ref().map(|message| khaslana::ui_i18n::resolve(message))
+                .unwrap_or_else(|| khaslana::ui_i18n::text(messages::GENERATING_2).to_string())
         } else if let Some(review) = &review {
-            format!("完成 · 共 {} 个步骤", review.steps.len())
+            khaslana::ui_i18n::format(messages::COMPLETED_STEPS, &[("arg0", &(review.steps.len()).to_string())])
         } else {
             String::new()
         };
@@ -934,7 +940,7 @@ impl RepositoryView {
                             .text_size(px(ui_theme::TYPE_BODY))
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(rgb(ui_theme::PRIMARY))
-                            .child("AI 评审"),
+                            .child(khaslana::ui_i18n::text(messages::AI_REVIEW)),
                     )
                     .when(!status_text.is_empty(), |this| {
                         this.child(
@@ -954,7 +960,7 @@ impl RepositoryView {
                     .flex_none()
                     .when(review.is_some(), |this| {
                         this.child(self.button(
-                            "复制结论",
+                            khaslana::ui_i18n::text(messages::COPY_CONCLUSION),
                             true,
                             |this, _, cx| {
                                 let Some(review) = this.ai_review.clone() else {
@@ -963,7 +969,7 @@ impl RepositoryView {
                                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(
                                     review.content.clone(),
                                 ));
-                                this.status = "已复制评审结论".into();
+                                this.status = khaslana::ui_i18n::text(messages::REVIEW_CONCLUSION_COPIED).into();
                                 this.last_error = None;
                                 this.notify_success(this.status.clone(), cx);
                             },
@@ -971,7 +977,7 @@ impl RepositoryView {
                         ))
                     })
                     .child(self.button(
-                        "历史",
+                        khaslana::ui_i18n::text(messages::HISTORY),
                         true,
                         |this, _, _| {
                             this.close_popups();
@@ -981,7 +987,7 @@ impl RepositoryView {
                     ))
                     .when(loading, |this| {
                         this.child(self.button(
-                            "取消",
+                            khaslana::ui_i18n::text(messages::CANCEL),
                             true,
                             |this, _, _| {
                                 this.cancel_ai_review();
@@ -990,7 +996,7 @@ impl RepositoryView {
                         ))
                     })
                     .child(self.button(
-                        "收起",
+                        khaslana::ui_i18n::text(messages::COLLAPSE),
                         true,
                         |this, _, _| {
                             this.ai_review_expanded = false;
@@ -1000,7 +1006,7 @@ impl RepositoryView {
                     .when(!loading, |this| {
                         this.child(self.button(
                             if has_content {
-                                "重新生成"
+                                khaslana::ui_i18n::text(messages::REGENERATE)
                             } else {
                                 "AI Review"
                             },
@@ -1062,9 +1068,9 @@ impl RepositoryView {
                         .text_size(px(ui_theme::TYPE_META))
                         .text_color(rgb(ui_theme::CONTENT_SECONDARY))
                         .child(if has_steps {
-                            "工具执行中…"
+                            khaslana::ui_i18n::text(messages::RUNNING_TOOLS)
                         } else {
-                            "正在准备评审上下文…"
+                            khaslana::ui_i18n::text(messages::PREPARING_REVIEW_CONTEXT)
                         }),
                 )
             });
@@ -1091,11 +1097,11 @@ impl RepositoryView {
         let review = self.ai_review.clone();
         let has_content = review.is_some() || !self.ai_review_steps.is_empty();
         let preview = if let Some(label) = &self.ai_review_loaded_label {
-            label.clone()
+            khaslana::ui_i18n::resolve(label)
         } else if self.ai_review_loading {
             self.ai_review_progress
-                .clone()
-                .unwrap_or_else(|| "正在生成 AI 评审…".to_string())
+                .as_ref().map(|message| khaslana::ui_i18n::resolve(message))
+                .unwrap_or_else(|| khaslana::ui_i18n::text(messages::GENERATING_AI_REVIEW).to_string())
         } else if let Some(review) = &review {
             review
                 .content
@@ -1104,9 +1110,9 @@ impl RepositoryView {
                 .take(80)
                 .collect::<String>()
         } else if !self.ai_review_steps.is_empty() {
-            "评审未完成，可展开检查执行轨迹".to_string()
+            khaslana::ui_i18n::text(messages::REVIEW_INCOMPLETE_EXPAND_TO_INSPECT_THE_EXECUTION_TRACE).to_string()
         } else {
-            "未生成".to_string()
+            khaslana::ui_i18n::text(messages::NOT_GENERATED).to_string()
         };
 
         div()
@@ -1125,7 +1131,7 @@ impl RepositoryView {
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(rgb(ui_theme::PRIMARY))
                     .flex_none()
-                    .child("AI 评审"),
+                    .child(khaslana::ui_i18n::text(messages::AI_REVIEW)),
             )
             .child(
                 div()
@@ -1145,7 +1151,7 @@ impl RepositoryView {
                     .when(self.ai_review_loading, |this| {
                         // 生成中收起到底部条：可展开回去看进度，也可取消。
                         this.child(self.button(
-                            "展开",
+                            khaslana::ui_i18n::text(messages::EXPAND),
                             true,
                             |this, _, _| {
                                 this.ai_review_expanded = true;
@@ -1153,7 +1159,7 @@ impl RepositoryView {
                             cx,
                         ))
                         .child(self.button(
-                            "取消",
+                            khaslana::ui_i18n::text(messages::CANCEL),
                             true,
                             |this, _, _| {
                                 this.cancel_ai_review();
@@ -1163,7 +1169,7 @@ impl RepositoryView {
                     })
                     .when(!self.ai_review_loading, |this| {
                         this.child(self.button(
-                            "历史",
+                            khaslana::ui_i18n::text(messages::HISTORY),
                             true,
                             |this, _, _| {
                                 this.close_popups();
@@ -1173,7 +1179,7 @@ impl RepositoryView {
                         ))
                         .when(has_content, |this| {
                             this.child(self.button(
-                                "展开",
+                                khaslana::ui_i18n::text(messages::EXPAND),
                                 true,
                                 |this, _, _| {
                                     this.ai_review_expanded = true;
@@ -1183,7 +1189,7 @@ impl RepositoryView {
                         })
                         .child(self.button(
                             if review.is_some() {
-                                "重新生成"
+                                khaslana::ui_i18n::text(messages::REGENERATE)
                             } else {
                                 "AI Review"
                             },
@@ -1204,16 +1210,16 @@ impl RepositoryView {
 
         let body = if state.loading {
             panel_empty_row(
-                "正在加载评审记录…",
+                khaslana::ui_i18n::text(messages::LOADING_REVIEW_HISTORY),
                 ui_theme::ROW_HEIGHT_COMPACT * 2.0,
                 PlaceholderAlign::Start,
             )
             .into_any_element()
         } else if let Some(error) = &state.error {
-            inline_error_bubble(format!("加载失败：{error}")).into_any_element()
+            inline_error_bubble(khaslana::ui_i18n::format(messages::LOAD_FAILED, &[("error", &khaslana::ui_i18n::resolve(error))])).into_any_element()
         } else if state.records.is_empty() {
             panel_empty_row(
-                "暂无评审记录",
+                khaslana::ui_i18n::text(messages::NO_REVIEW_HISTORY),
                 ui_theme::ROW_HEIGHT_COMPACT * 2.0,
                 PlaceholderAlign::Start,
             )
@@ -1243,10 +1249,10 @@ impl RepositoryView {
                         .py_1()
                         .text_size(px(ui_theme::TYPE_META))
                         .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                        .child(div().w(px(92.0)).flex_none().child("完成时间"))
-                        .child(div().flex_1().min_w(px(0.0)).child("目标分支"))
-                        .child(div().w(px(110.0)).flex_none().child("模型"))
-                        .child(div().w(px(64.0)).flex_none().text_right().child("步骤")),
+                        .child(div().w(px(92.0)).flex_none().child(khaslana::ui_i18n::text(messages::COMPLETED_AT)))
+                        .child(div().flex_1().min_w(px(0.0)).child(khaslana::ui_i18n::text(messages::TARGET_BRANCH)))
+                        .child(div().w(px(110.0)).flex_none().child(khaslana::ui_i18n::text(messages::MODEL)))
+                        .child(div().w(px(64.0)).flex_none().text_right().child(khaslana::ui_i18n::text(messages::STEPS))),
                 )
                 .children(rows);
             scrollable_frame_when(
@@ -1303,7 +1309,7 @@ impl RepositoryView {
                                 div()
                                     .text_size(px(13.0))
                                     .font_weight(gpui::FontWeight::BOLD)
-                                    .child("评审历史"),
+                                    .child(khaslana::ui_i18n::text(messages::REVIEW_HISTORY)),
                             )
                             .child(
                                 gpui_kit::base::Button::new("ai-review-history-close")
@@ -1344,7 +1350,7 @@ impl RepositoryView {
                         .format("%m-%d %H:%M")
                         .to_string()
                 })
-                .unwrap_or_else(|| "时间未知".to_string());
+                .unwrap_or_else(|| khaslana::ui_i18n::text(messages::UNKNOWN_TIME).to_string());
         let target_display_name = record.target_display_name.clone();
         let model = record.model.clone();
         let step_count = record.result.steps.len();
@@ -1395,7 +1401,7 @@ impl RepositoryView {
                     .text_size(px(ui_theme::TYPE_META))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
                     .text_right()
-                    .child(format!("{step_count} 步")),
+                    .child(khaslana::ui_i18n::format(messages::STEPS_2, &[("step_count", &(step_count).to_string())])),
             )
             .into_any_element()
     }
@@ -1469,7 +1475,7 @@ impl RepositoryView {
                                             div()
                                                 .text_size(px(ui_theme::TYPE_META))
                                                 .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                                .child("思考中…"),
+                                                .child(khaslana::ui_i18n::text(messages::THINKING)),
                                         ),
                                 )
                                 .child(

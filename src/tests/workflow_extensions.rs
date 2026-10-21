@@ -316,6 +316,59 @@ fn skill_http_fixture() -> (String, std::thread::JoinHandle<serde_json::Value>) 
 }
 
 #[test]
+fn skill_catalog_wrapper_localizes_only_host_and_keeps_contract_data() {
+    use crate::ai::client::AgentChatMessage;
+    use crate::language::{Language, TaskLanguages};
+    let content = "---\nname: user-skill\ndescription: 中文 Keep English\n---\n用户指令原样";
+    let catalog = r#"[{"server":"custom","tool":"echo","description":"用户元数据 English","inputSchema":{"type":"object","properties":{"中文键":{"type":"string"}}}}]"#;
+    for system in [Language::ZhCn, Language::En] {
+        for output in [Language::ZhCn, Language::En] {
+            let languages = TaskLanguages { system, output };
+            let messages = extensions::skill_messages(content, "用户任务", "custom / echo", catalog, true, languages);
+            assert_eq!(messages.len(), 3);
+            let AgentChatMessage::System(host) = &messages[0] else { panic!("system expected") };
+            assert!(host.contains(content));
+            assert!(host.ends_with(languages.output_instruction()));
+            let AgentChatMessage::System(wrapper) = &messages[1] else { panic!("catalog expected") };
+            assert!(wrapper.ends_with(catalog));
+            assert_eq!(wrapper.starts_with("The following"), system == Language::En);
+            let AgentChatMessage::User(task) = &messages[2] else { panic!("task expected") };
+            assert_eq!(task, "用户任务");
+        }
+    }
+}
+
+#[test]
+fn skill_four_language_pairs_reach_registered_host_without_translating_package() {
+    use crate::language::{Language, TaskLanguages};
+    for system in [Language::ZhCn, Language::En] {
+        for output in [Language::ZhCn, Language::En] {
+            let languages = TaskLanguages { system, output };
+            let data_dir = tempfile::tempdir().unwrap();
+            test_skill(data_dir.path());
+            let mut grant = grant_for("{op:'invoke',id:'skill',uses:'skill.run',with:{skill:'fixture-skill',task:'用户原文 Keep English'}}");
+            grant.prepare_skills(data_dir.path()).unwrap();
+            let (base_url, server) = skill_http_fixture();
+            let mut registry = WorkflowActionRegistry::default();
+            extensions::register_external_actions_with_languages(
+                &mut registry, WorkflowMcpConfig::default(), Some(grant), Some(skill_settings(base_url)),
+                None, Some(data_dir.path()), std::sync::Arc::new(std::sync::Mutex::new(Vec::new())), languages,
+            ).unwrap();
+            let (_dir, mut repo, service) = git_support::init_repo();
+            registry.get("skill.run").unwrap().execute(&service, &mut repo,
+                &json!({"skill":"fixture-skill","task":"用户原文 Keep English"})).unwrap();
+            let request = server.join().unwrap();
+            let prompt = request["messages"][0]["content"].as_str().unwrap();
+            assert!(prompt.ends_with(languages.output_instruction()));
+            assert!(prompt.contains("---\nname: fixture-skill\ndescription: 测试工具循环\n---\n读取 fixture 工具。\n"));
+            assert_eq!(prompt.starts_with("You are"), system == Language::En);
+            assert_eq!(request["messages"][1]["content"], "用户原文 Keep English");
+            assert!(registry.finish().is_empty());
+        }
+    }
+}
+
+#[test]
 fn skill_without_tools_preserves_custom_budget_above_4096_and_completes() {
     let data_dir = tempfile::tempdir().unwrap();
     test_skill(data_dir.path());
@@ -382,6 +435,10 @@ fn mcp_command_only_config_saves_without_starting_or_installing_server() {
     let grant = grant_for("{op:'invoke',id:'read',uses:'mcp.call',with:{server:'uninstalled',tool:'new_tool'}}");
     assert_eq!(grant.permission_lines(&config).unwrap(),
         ["写入 MCP 工具：uninstalled / new_tool"]);
+    assert_eq!(grant.permission_lines_in(&config, crate::language::Language::ZhCn).unwrap(),
+        ["写入 MCP 工具：uninstalled / new_tool"]);
+    assert_eq!(grant.permission_lines_in(&config, crate::language::Language::En).unwrap(),
+        ["Write MCP tool: uninstalled / new_tool"]);
 }
 
 #[test]
@@ -571,6 +628,10 @@ fn mcp_read_write_schema_and_permission_are_enforced() {
     let permissions = grant.permission_lines(&config).unwrap();
     assert!(permissions.iter().any(|line| line.contains("读取 MCP 工具：fixture / echo")));
     assert!(permissions.iter().any(|line| line.contains("写入 MCP 工具：fixture / write_file")));
+    assert_eq!(grant.permission_lines_in(&config, crate::language::Language::ZhCn).unwrap(),
+        ["读取 MCP 工具：fixture / echo", "写入 MCP 工具：fixture / write_file"]);
+    assert_eq!(grant.permission_lines_in(&config, crate::language::Language::En).unwrap(),
+        ["Read MCP tool: fixture / echo", "Write MCP tool: fixture / write_file"]);
     let registry = make_registry(config.clone(), Some(grant));
     let (_repo_dir, mut repo, service) = git_support::init_repo();
     let control = WorkflowRunControl::new();
@@ -722,12 +783,45 @@ fn mcp_call_can_be_cancelled_while_server_is_waiting() {
 }
 
 #[test]
+fn external_stage_identity_preserves_unknown_side_effect_warning_in_both_languages() {
+    use crate::language::Language;
+    use super::extensions::ExternalStage;
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    for stage in [ExternalStage::Connect, ExternalStage::ToolList, ExternalStage::ToolCall] {
+        let result: Result<()> = runtime.block_on(super::extensions::wait_checked(
+            std::future::pending::<std::result::Result<(), ()>>(), &WorkflowRunControl::new(),
+            std::time::Instant::now(), stage,
+        ));
+        let error = result.unwrap_err();
+        assert!(error.message_key().is_some());
+        assert!(error.display_in(Language::En).contains("timed out"));
+        assert!(error.display_in(Language::ZhCn).contains("超时"));
+        assert_eq!(error.display_in(Language::En).contains("external effects are unknown"), stage == ExternalStage::ToolCall);
+        assert_eq!(error.display_in(Language::ZhCn).contains("外部操作结果未知"), stage == ExternalStage::ToolCall);
+    }
+}
+
+#[test]
+fn mcp_and_skill_base_errors_localize_only_owned_text() {
+    use crate::language::Language;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("workflow-mcp.json5"), "{ servers: { custom: { command: '' } } }").unwrap();
+    let error = load_user_mcp_config(dir.path()).unwrap_err();
+    assert!(error.message_key().is_some());
+    assert!(error.display_in(Language::En).contains("custom"));
+    assert!(!error.display_in(Language::En).chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)));
+    let error = preview_skill_folder(&dir.path().join("Invalid Name")).unwrap_err();
+    assert!(error.message_key().is_some());
+    assert!(error.display_in(Language::En).contains("lowercase"));
+}
+
+#[test]
 fn external_wait_stops_at_deadline() {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let control = WorkflowRunControl::new();
     let result: Result<()> = runtime.block_on(super::extensions::wait_checked(
         std::future::pending::<std::result::Result<(), ()>>(),
-        &control, std::time::Instant::now() + Duration::from_millis(100), "MCP 工具调用",
+        &control, std::time::Instant::now() + Duration::from_millis(100), super::extensions::ExternalStage::ToolCall,
     ));
     assert!(result.unwrap_err().to_string().contains("超时"));
 }

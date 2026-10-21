@@ -113,3 +113,22 @@ fn connection_snapshot_includes_protocol_and_every_advanced_parameter() {
         assert!(matches!(state.outcome_for(&edited), ConnectionTestOutcome::Idle));
     }
 }
+
+#[test]
+fn parser_errors_keep_identity_and_render_in_both_languages_without_global_changes() {
+    use super::{messages, state::parse_form_settings};
+    use khaslana::{language::Language, ui_i18n::{message_key, resolve_in}};
+    for (temperature, tokens, timeout, resource, zh, en) in [
+        ("invalid", "800", "60", messages::TEMPERATURE_PARSE_ERROR,
+            "温度必须是有限数值", "Temperature must be a finite number"),
+        ("0.3", "1.5", "60", messages::MAX_OUTPUT_PARSE_ERROR,
+            "最大输出必须是大于 0 的整数（不超过 4294967295）", "Maximum output must be a positive integer (at most 4294967295)"),
+        ("0.3", "800", "-1", messages::TIMEOUT_PARSE_ERROR,
+            "请求超时必须是大于 0 的整数秒数", "Request timeout must be a positive integer number of seconds"),
+    ] {
+        let error = parse_form_settings(settings(), temperature, tokens, timeout, "").unwrap_err();
+        assert_eq!(message_key(&error).as_deref(), Some(resource.key));
+        assert_eq!(resolve_in(Language::ZhCn, &error), zh);
+        assert_eq!(resolve_in(Language::En, &error), en);
+    }
+}

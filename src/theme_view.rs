@@ -1,3 +1,5 @@
+use khaslana::ui_i18n::text;
+use crate::main_ui_resources as messages;
 use gpui::{Context, FontWeight, Window, WindowAppearance, div, prelude::*, px, rgb as gpui_rgb};
 use gpui_kit::component::setting::SettingGroup;
 use khaslana::ThemeMode;
@@ -46,8 +48,8 @@ impl RepositoryView {
         window.refresh();
 
         match self.storage.save_theme_mode(mode) {
-            Ok(()) => self.notify_success(format!("外观已切换为{}", theme_mode_label(mode)), cx),
-            Err(err) => self.notify_error(format!("主题偏好保存失败：{err}"), cx),
+            Ok(()) => self.notify_success(khaslana::ui_i18n::encode(messages::THEME_CHANGED, &[("theme", theme_mode_label(mode))]), cx),
+            Err(err) => self.notify_error(khaslana::ui_i18n::encode(messages::THEME_SAVE_FAILED, &[("error", &err.to_string())]), cx),
         }
     }
 
@@ -63,13 +65,10 @@ impl RepositoryView {
         self.apply_theme_for_appearance(window.appearance(), cx);
         window.refresh();
 
-        let label = ui_theme::ACCENT_PRESETS
-            .get(index)
-            .map(|(name, _)| *name)
-            .unwrap_or("靛蓝");
+        let label = accent_label(index);
         match self.storage.save_theme_accent(index) {
-            Ok(()) => self.notify_success(format!("主题色已切换为{label}"), cx),
-            Err(err) => self.notify_error(format!("主题色保存失败：{err}"), cx),
+            Ok(()) => self.notify_success(khaslana::ui_i18n::encode(messages::ACCENT_CHANGED, &[("color", label)]), cx),
+            Err(err) => self.notify_error(khaslana::ui_i18n::encode(messages::ACCENT_SAVE_FAILED, &[("error", &err.to_string())]), cx),
         }
     }
 
@@ -86,15 +85,16 @@ impl RepositoryView {
         let modes = [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark];
 
         vec![
+            self.language_settings_group(false, cx),
             SettingGroup::new()
                 .item(crate::settings_center::settings_group_heading(
-                    "显示模式",
-                    Some("选择应用主题。跟随系统会在操作系统外观变化时自动切换。".into()),
+                    text(messages::DISPLAY_MODE),
+                    Some(text(messages::DISPLAY_DESCRIPTION).into()),
                 ))
                 .item({
                     let view = cx.entity();
                     crate::settings_center::settings_item_row(
-                        "主题模式",
+                        text(messages::THEME_MODE),
                         None,
                         move |_options, _window, cx| {
                             view.update(cx, |this, cx| {
@@ -121,13 +121,13 @@ impl RepositoryView {
                 }),
             SettingGroup::new()
                 .item(crate::settings_center::settings_group_heading(
-                    "主题色",
-                    Some("主题色影响按钮、选中态、链接和进度条等强调色。".into()),
+                    text(messages::ACCENT),
+                    Some(text(messages::ACCENT_DESCRIPTION).into()),
                 ))
                 .item({
                     let view = cx.entity();
                     crate::settings_center::settings_item_row(
-                        "强调色",
+                        text(messages::ACCENT_LABEL),
                         None,
                         move |_options, _window, cx| {
                             view.update(cx, |this, cx| {
@@ -137,7 +137,7 @@ impl RepositoryView {
                                     .w_full()
                                     .gap(px(ui_theme::SPACE_2))
                                     .children(ui_theme::ACCENT_PRESETS.iter().enumerate().map(
-                                        |(index, (name, palette))| {
+                                        |(index, (_, palette))| {
                                             let selected = this.theme_accent == index;
                                             // 色块展示预设的主色；选中态只用强调边框，不叠加卡片。
                                             let swatch_color = match active_variant {
@@ -173,7 +173,7 @@ impl RepositoryView {
                                                         } else {
                                                             rgb(ui_theme::CONTENT_SECONDARY)
                                                         })
-                                                        .child(*name),
+                                                        .child(accent_label(index)),
                                                 )
                                                 .when(selected, |this| {
                                                     this.border_1().border_color(rgb(ui_theme::PRIMARY))
@@ -188,11 +188,11 @@ impl RepositoryView {
                     )
                 }),
             SettingGroup::new()
-                .item(crate::settings_center::settings_group_heading("当前显示", None))
+                .item(crate::settings_center::settings_group_heading(text(messages::CURRENT_DISPLAY), None))
                 .item({
                     let view = cx.entity();
                     crate::settings_center::settings_item_row(
-                        "当前生效主题",
+                        text(messages::CURRENT_THEME),
                         None,
                         move |_options, _window, cx| {
                             view.update(cx, |_this, _cx| {
@@ -209,6 +209,10 @@ impl RepositoryView {
     }
 }
 
+fn accent_label(index: usize) -> &'static str {
+    text(*messages::ACCENTS.get(index).unwrap_or(&messages::ACCENTS[0]))
+}
+
 fn theme_mode_id(mode: ThemeMode) -> &'static str {
     match mode {
         ThemeMode::System => "system",
@@ -219,16 +223,16 @@ fn theme_mode_id(mode: ThemeMode) -> &'static str {
 
 fn theme_mode_label(mode: ThemeMode) -> &'static str {
     match mode {
-        ThemeMode::System => "跟随系统",
-        ThemeMode::Light => "浅色",
-        ThemeMode::Dark => "深色",
+        ThemeMode::System => text(messages::SYSTEM),
+        ThemeMode::Light => text(messages::LIGHT),
+        ThemeMode::Dark => text(messages::DARK),
     }
 }
 
 fn theme_variant_label(variant: ThemeVariant) -> &'static str {
     match variant {
-        ThemeVariant::Light => "浅色主题",
-        ThemeVariant::Dark => "深色主题",
+        ThemeVariant::Light => text(messages::LIGHT_THEME),
+        ThemeVariant::Dark => text(messages::DARK_THEME),
     }
 }
 

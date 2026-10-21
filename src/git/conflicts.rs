@@ -1,3 +1,4 @@
+use crate::types::domain_ui_resources;
 use std::fs;
 use std::path::Path;
 use std::str;
@@ -17,7 +18,7 @@ use crate::{
 
 impl GitService {
     pub fn conflict_file_view(&self, repo: &Repository, path: &Path) -> Result<ConflictFileView> {
-        ensure_worktree_relative_path(path, "不能读取冲突详情")?;
+        ensure_worktree_relative_path(path, crate::ui_i18n::text(domain_ui_resources::CANNOT_READ_CONFLICT_DETAILS))?;
         let git_path = path_to_git(path);
 
         if repo
@@ -27,10 +28,10 @@ impl GitService {
         {
             let workdir = repo
                 .workdir()
-                .ok_or_else(|| GitError::Message("裸仓库没有工作区".into()))?;
+                .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::A_BARE_REPOSITORY_HAS_NO_WORKING_TREE, &[])))?;
             let content = fs::read_to_string(workdir.join(path))?;
             if !super::stash::has_complete_conflict_markers(&content) {
-                return Err(GitError::Message(format!("该文件不存在冲突：{git_path}")));
+                return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_FILE_HAS_NO_CONFLICTS, &[("git_path", &format!("{}", git_path))])));
             }
             return Ok(ConflictFileView {
                 path: git_path,
@@ -41,7 +42,7 @@ impl GitService {
                 blocks: Vec::new(),
                 draft_status: ConflictDraftStatus::Clean,
                 fallback_reason: Some(
-                    "贮藏恢复在工作区写入了冲突标记，但 Git 索引没有冲突阶段。请在外部编辑器中打开此文件，处理 <<<<<<<、=======、>>>>>>> 标记后刷新仓库；原修改仍保留在贮藏中。".into(),
+                    crate::ui_i18n::text(domain_ui_resources::RESTORING_THE_STASH_WROTE_CONFLICT_MARKERS_TO_THE_WORKING_TREE_BUT_THE_GIT_INDEX_HAS).into(),
                 ),
             });
         }
@@ -55,7 +56,7 @@ impl GitService {
                 theirs_text: String::new(),
                 blocks: Vec::new(),
                 draft_status: ConflictDraftStatus::Clean,
-                fallback_reason: Some("该冲突缺少三方文本内容，请使用快捷解决按钮".into()),
+                fallback_reason: Some(crate::ui_i18n::text(domain_ui_resources::THREE_WAY_TEXT_IS_MISSING_FOR_THIS_CONFLICT_USE_THE_QUICK_RESOLUTION_BUTTONS).into()),
             }),
             ConflictMergeText::Binary => Ok(ConflictFileView {
                 path: git_path,
@@ -65,11 +66,11 @@ impl GitService {
                 theirs_text: String::new(),
                 blocks: Vec::new(),
                 draft_status: ConflictDraftStatus::Clean,
-                fallback_reason: Some("该冲突文件不能使用文本合并编辑器".into()),
+                fallback_reason: Some(crate::ui_i18n::text(domain_ui_resources::THE_TEXT_MERGE_EDITOR_CANNOT_OPEN_THIS_CONFLICT_FILE).into()),
             }),
             ConflictMergeText::Text(merged_bytes) => {
                 let merged_text = str::from_utf8(&merged_bytes).map_err(|_| {
-                    GitError::Message("该冲突文件不是 UTF-8 文本，暂不能使用可视化编辑器".into())
+                    GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_CONFLICT_FILE_IS_NOT_UTF_8_TEXT_THE_VISUAL_EDITOR_IS_UNAVAILABLE, &[]))
                 })?;
                 let (draft, projected_ours, projected_theirs, mut blocks) =
                     parse_diff3_conflict_text(merged_text)?;
@@ -78,11 +79,11 @@ impl GitService {
                 // 三栏必须从索引 blob 读取原文，再以 diff 行映射定位各冲突块。
                 let conflict = conflict_for_path(&repo.index()?, path)?;
                 let read_side = |entry: Option<&git2::IndexEntry>| -> Result<String> {
-                    let entry = entry.ok_or_else(|| GitError::Message("冲突阶段已失效".into()))?;
+                    let entry = entry.ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CONFLICT_STAGE_IS_NO_LONGER_VALID, &[])))?;
                     let blob = repo.find_blob(entry.id)?;
                     str::from_utf8(blob.content())
                         .map(str::to_owned)
-                        .map_err(|_| GitError::Message("冲突版本不是 UTF-8 文本".into()))
+                        .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CONFLICT_VERSION_IS_NOT_UTF_8_TEXT, &[])))
                 };
                 let ours_text = read_side(conflict.our.as_ref())?;
                 let theirs_text = read_side(conflict.their.as_ref())?;
@@ -106,17 +107,13 @@ impl GitService {
     /// 读取冲突文件的 diff3 原始文本（带 OURS/BASE/THEIRS 标记），
     /// 供 AI 合并建议构造 prompt 使用。
     pub fn conflict_diff3_text(&self, repo: &Repository, path: &Path) -> Result<String> {
-        ensure_worktree_relative_path(path, "不能生成 AI 合并建议")?;
+        ensure_worktree_relative_path(path, crate::ui_i18n::text(domain_ui_resources::CANNOT_GENERATE_AI_MERGE_SUGGESTIONS))?;
         match diff3_merge_text(repo, path)? {
-            ConflictMergeText::Unsupported => Err(GitError::Message(
-                "该冲突缺少三方文本内容，不支持 AI 合并建议".into(),
-            )),
-            ConflictMergeText::Binary => Err(GitError::Message(
-                "二进制冲突文件不支持 AI 合并建议，请使用快捷解决按钮".into(),
-            )),
+            ConflictMergeText::Unsupported => Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THREE_WAY_TEXT_IS_MISSING_FOR_THIS_CONFLICT_AI_MERGE_SUGGESTIONS_ARE_UNAVAILABLE, &[]))),
+            ConflictMergeText::Binary => Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::BINARY_CONFLICT_FILES_DO_NOT_SUPPORT_AI_MERGE_SUGGESTIONS_USE_THE_QUICK_RESOLUTION_BU, &[]))),
             ConflictMergeText::Text(bytes) => {
                 str::from_utf8(&bytes).map(str::to_string).map_err(|_| {
-                    GitError::Message("该冲突文件不是 UTF-8 文本，暂不支持 AI 合并建议".into())
+                    GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_CONFLICT_FILE_IS_NOT_UTF_8_TEXT_AI_MERGE_SUGGESTIONS_ARE_UNAVAILABLE, &[]))
                 })
             }
         }
@@ -128,13 +125,13 @@ impl GitService {
         path: &Path,
         draft: &str,
     ) -> Result<RepositorySnapshot> {
-        ensure_worktree_relative_path(path, "不能应用冲突草稿")?;
+        ensure_worktree_relative_path(path, crate::ui_i18n::text(domain_ui_resources::CANNOT_APPLY_THE_CONFLICT_DRAFT))?;
         self.progress
-            .emit(OperationEvent::Started("正在应用冲突草稿".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::APPLYING_CONFLICT_DRAFT).into()));
         conflict_for_path(&repo.index()?, path)?;
         write_conflict_draft(repo, path, draft)?;
         self.progress
-            .emit(OperationEvent::Finished("冲突草稿已应用到工作区".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::CONFLICT_DRAFT_APPLIED_TO_THE_WORKING_TREE).into()));
         self.snapshot_after_operation(repo)
     }
 
@@ -144,14 +141,14 @@ impl GitService {
         path: &Path,
         draft: &str,
     ) -> Result<RepositorySnapshot> {
-        ensure_worktree_relative_path(path, "不能应用并解决冲突")?;
+        ensure_worktree_relative_path(path, crate::ui_i18n::text(domain_ui_resources::CANNOT_APPLY_AND_RESOLVE_THE_CONFLICT))?;
         self.progress
-            .emit(OperationEvent::Started("正在应用结果并标记冲突解决".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::APPLYING_RESULT_AND_MARKING_CONFLICT_AS_RESOLVED).into()));
         conflict_for_path(&repo.index()?, path)?;
         write_conflict_draft(repo, path, draft)?;
         let snapshot = self.mark_conflict_resolved_inner(repo, path)?;
         self.progress
-            .emit(OperationEvent::Finished("冲突结果已应用并标记解决".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::CONFLICT_RESULT_APPLIED_AND_MARKED_AS_RESOLVED).into()));
         Ok(snapshot)
     }
 
@@ -173,16 +170,16 @@ impl GitService {
         path: &Path,
         settings: &ExternalMergeSettings,
     ) -> Result<RepositorySnapshot> {
-        ensure_worktree_relative_path(path, "不能使用 IntelliJ IDEA 解决冲突")?;
+        ensure_worktree_relative_path(path, crate::ui_i18n::text(domain_ui_resources::CANNOT_RESOLVE_CONFLICTS_USING_INTELLIJ_IDEA))?;
         self.progress.emit(OperationEvent::Started(
-            "正在等待 IntelliJ IDEA 合并完成".into(),
+            crate::ui_i18n::text(domain_ui_resources::WAITING_FOR_INTELLIJ_IDEA_TO_FINISH_MERGING).into(),
         ));
         conflict_for_path(&repo.index()?, path)?;
         let result = external_merge::run_intellij_idea_merge_with_settings(repo, path, settings)?;
         write_conflict_result_bytes(repo, path, &result)?;
         let snapshot = self.mark_conflict_resolved_inner(repo, path)?;
         self.progress.emit(OperationEvent::Finished(
-            "IntelliJ IDEA 合并结果已应用".into(),
+            crate::ui_i18n::text(domain_ui_resources::INTELLIJ_IDEA_MERGE_RESULT_APPLIED).into(),
         ));
         Ok(snapshot)
     }
@@ -193,13 +190,13 @@ impl GitService {
         path: &Path,
         side: ConflictResolutionSide,
     ) -> Result<RepositorySnapshot> {
-        ensure_worktree_relative_path(path, "不能解决冲突")?;
+        ensure_worktree_relative_path(path, crate::ui_i18n::text(domain_ui_resources::CANNOT_RESOLVE_THE_CONFLICT))?;
         let label = match side {
-            ConflictResolutionSide::Ours => "当前版本",
-            ConflictResolutionSide::Theirs => "传入版本",
+            ConflictResolutionSide::Ours => crate::ui_i18n::text(domain_ui_resources::CURRENT_VERSION),
+            ConflictResolutionSide::Theirs => crate::ui_i18n::text(domain_ui_resources::INCOMING_VERSION),
         };
         self.progress
-            .emit(OperationEvent::Started(format!("正在使用{label}解决冲突")));
+            .emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::RESOLVING_CONFLICT_USING_THE, &[("label", &format!("{}", label))])));
 
         let mut index = repo.index()?;
         let conflict = conflict_for_path(&index, path)?;
@@ -231,7 +228,7 @@ impl GitService {
             drop(index);
             let snapshot = self.mark_conflict_resolved_inner(repo, path)?;
             self.progress
-                .emit(OperationEvent::Finished(format!("已使用{label}解决冲突")));
+                .emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::CONFLICT_RESOLVED_USING_THE, &[("label", &format!("{}", label))])));
             return Ok(snapshot);
         }
 
@@ -241,7 +238,7 @@ impl GitService {
         index.write()?;
         drop(index);
         self.progress
-            .emit(OperationEvent::Finished(format!("已使用{label}解决冲突")));
+            .emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::CONFLICT_RESOLVED_USING_THE, &[("label", &format!("{}", label))])));
         self.snapshot_after_operation(repo)
     }
 
@@ -250,12 +247,12 @@ impl GitService {
         repo: &mut Repository,
         path: &Path,
     ) -> Result<RepositorySnapshot> {
-        ensure_worktree_relative_path(path, "不能标记冲突已解决")?;
+        ensure_worktree_relative_path(path, crate::ui_i18n::text(domain_ui_resources::CANNOT_MARK_THE_CONFLICT_AS_RESOLVED))?;
         self.progress
-            .emit(OperationEvent::Started("正在标记冲突已解决".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::MARKING_CONFLICT_AS_RESOLVED).into()));
         let snapshot = self.mark_conflict_resolved_inner(repo, path)?;
         self.progress
-            .emit(OperationEvent::Finished("冲突已标记为解决".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::CONFLICT_MARKED_AS_RESOLVED).into()));
         Ok(snapshot)
     }
 
@@ -269,14 +266,12 @@ impl GitService {
 
         let workdir = repo
             .workdir()
-            .ok_or_else(|| GitError::Message("裸仓库没有工作区，不能标记冲突已解决".into()))?;
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::A_BARE_REPOSITORY_HAS_NO_WORKING_TREE_CANNOT_MARK_CONFLICTS_AS_RESOLVED, &[])))?;
         let full_path = workdir.join(path);
         match fs::symlink_metadata(&full_path) {
             Ok(metadata) => {
                 if metadata.is_dir() && !metadata.file_type().is_symlink() {
-                    return Err(GitError::Message(
-                        "冲突路径是文件夹，不能标记为已解决".into(),
-                    ));
+                    return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CONFLICT_PATH_IS_A_DIRECTORY_IT_CANNOT_BE_MARKED_AS_RESOLVED, &[])));
                 }
                 index.conflict_remove(path)?;
                 index.add_path(path)?;
@@ -296,7 +291,7 @@ impl GitService {
 fn conflict_for_path(index: &git2::Index, path: &Path) -> Result<git2::IndexConflict> {
     index.conflict_get(path).map_err(|err| {
         if err.code() == ErrorCode::NotFound {
-            GitError::Message(format!("该文件不存在冲突：{}", path_to_git(path)))
+            GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_FILE_HAS_NO_CONFLICTS_2, &[("value0", &format!("{}", path_to_git(path)))]))
         } else {
             GitError::Git(err)
         }
@@ -351,7 +346,7 @@ fn write_conflict_draft(repo: &Repository, path: &Path, draft: &str) -> Result<(
 fn write_conflict_result_bytes(repo: &Repository, path: &Path, result: &[u8]) -> Result<()> {
     let workdir = repo
         .workdir()
-        .ok_or_else(|| GitError::Message("裸仓库没有工作区，不能写入冲突结果".into()))?;
+        .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::A_BARE_REPOSITORY_HAS_NO_WORKING_TREE_CANNOT_WRITE_CONFLICT_RESULTS, &[])))?;
     let full_path = workdir.join(path);
     if let Some(parent) = full_path.parent() {
         fs::create_dir_all(parent)?;
@@ -417,7 +412,7 @@ fn parse_diff3_conflict_text(
             index += 1;
         }
         if index >= lines.len() {
-            return Err(GitError::Message("冲突文本缺少 BASE 分隔标记".into()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CONFLICT_TEXT_IS_MISSING_THE_BASE_SEPARATOR, &[])));
         }
         let ours = lines[ours_start..index].concat();
 
@@ -427,7 +422,7 @@ fn parse_diff3_conflict_text(
             index += 1;
         }
         if index >= lines.len() {
-            return Err(GitError::Message("冲突文本缺少中间分隔标记".into()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CONFLICT_TEXT_IS_MISSING_THE_MIDDLE_SEPARATOR, &[])));
         }
         let base = lines[base_start..index].concat();
 
@@ -437,7 +432,7 @@ fn parse_diff3_conflict_text(
             index += 1;
         }
         if index >= lines.len() {
-            return Err(GitError::Message("冲突文本缺少 THEIRS 结束标记".into()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CONFLICT_TEXT_IS_MISSING_THE_THEIRS_END_MARKER, &[])));
         }
         let theirs = lines[theirs_start..index].concat();
         index += 1;

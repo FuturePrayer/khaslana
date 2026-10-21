@@ -1,4 +1,7 @@
 use std::collections::BTreeMap;
+#[path = "workflow_view_resources.rs"]
+mod messages;
+
 use std::fs;
 use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
@@ -28,7 +31,7 @@ use khaslana::workflow::remote_templates::{
     MANAGED_TEMPLATE_DIR, RemoteTemplateEntry, download_cnb_template, list_cnb_templates,
 };
 use khaslana::workflow::extensions::{
-    WorkflowExternalGrant, load_mcp_config, register_external_actions_with_ai, register_external_actions_with_cleanup,
+    WorkflowExternalGrant, load_mcp_config, register_external_actions_with_ai, register_external_actions_with_languages,
 };
 use khaslana::workflow::browser_runtime;
 
@@ -322,7 +325,7 @@ impl RepositoryView {
         self.workflow_templates_request_id = self.workflow_templates_request_id.wrapping_add(1);
         let request_id = self.workflow_templates_request_id;
         self.workflow_template_dir = workflow_templates_dir();
-        self.status = "正在刷新工作流模板".to_string();
+        self.status = khaslana::ui_i18n::encode(messages::REFRESHING_WORKFLOW_TEMPLATES, &[]);
         let tx = self.tx.clone();
         self.tasks.spawn(TaskKind::Short, move || {
             if let Some(data_dir) = khaslana::storage::active_data_dir() {
@@ -344,11 +347,11 @@ impl RepositoryView {
             return;
         }
         let Some(tab_id) = self.active_tab_id() else {
-            self.remote_workflow_error = Some("请先打开一个仓库".into());
+            self.remote_workflow_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         let Some(dir) = workflow_templates_dir() else {
-            self.remote_workflow_error = Some("无法定位工作流模板目录".into());
+            self.remote_workflow_error = Some(khaslana::ui_i18n::encode(messages::CANNOT_LOCATE_THE_WORKFLOW_TEMPLATE_DIRECTORY, &[]));
             return;
         };
         self.remote_workflow_catalog_request_id = self.remote_workflow_catalog_request_id.wrapping_add(1);
@@ -356,7 +359,7 @@ impl RepositoryView {
         self.remote_workflow_loading = true;
         self.remote_workflow_error = None;
         self.remote_workflow_catalog.clear();
-        self.status = "正在读取远端工作流模板目录".into();
+        self.status = khaslana::ui_i18n::encode(messages::LOADING_THE_REMOTE_WORKFLOW_TEMPLATE_DIRECTORY, &[]);
         let service = self.service_for_tab(tab_id);
         let tx = self.tx.clone();
         self.tasks.spawn(TaskKind::Long, move || {
@@ -377,12 +380,12 @@ impl RepositoryView {
         self.remote_workflow_loading = false;
         match result {
             Ok(catalog) => {
-                self.status = format!("远端共有 {} 个工作流模板", catalog.len());
+                self.status = khaslana::ui_i18n::encode(messages::WORKFLOW_TEMPLATES_AVAILABLE_REMOTELY, &[("arg0", &(catalog.len()).to_string())]);
                 self.remote_workflow_catalog = catalog;
                 self.remote_workflow_error = None;
             }
             Err(err) => {
-                self.status = format!("远端模板目录读取失败：{err}");
+                self.status = khaslana::ui_i18n::encode(messages::COULD_NOT_LOAD_THE_REMOTE_TEMPLATE_DIRECTORY, &[("err", &(err).to_string())]);
                 self.remote_workflow_error = Some(err);
             }
         }
@@ -397,7 +400,7 @@ impl RepositoryView {
             return;
         };
         let Some(dir) = workflow_templates_dir() else {
-            self.remote_workflow_error = Some("无法定位工作流模板目录".into());
+            self.remote_workflow_error = Some(khaslana::ui_i18n::encode(messages::CANNOT_LOCATE_THE_WORKFLOW_TEMPLATE_DIRECTORY, &[]));
             return;
         };
         self.remote_workflow_downloading = Some(file_name.clone());
@@ -422,11 +425,11 @@ impl RepositoryView {
             Ok(_) => {
                 self.remote_workflow_error = None;
                 self.refresh_workflow_templates();
-                self.notify_success(format!("工作流模板已下载：{file_name}"), cx);
+                self.notify_success(khaslana::ui_i18n::format(messages::WORKFLOW_TEMPLATE_DOWNLOADED, &[("file_name", &(file_name).to_string())]), cx);
             }
             Err(err) => {
                 self.remote_workflow_error = Some(err.clone());
-                self.notify_error(format!("工作流模板下载失败：{err}"), cx);
+                self.notify_error(khaslana::ui_i18n::format(messages::COULD_NOT_DOWNLOAD_WORKFLOW_TEMPLATE, &[("err", &(err).to_string())]), cx);
             }
         }
     }
@@ -454,7 +457,7 @@ impl RepositoryView {
                 // 仅在 Ok 分支执行：目录读取失败不代表文件已删除。
                 self.prune_workflow_shortcut_bindings_against_templates(cx);
                 self.last_error = None;
-                self.status = format!("已刷新，共 {count} 个工作流模板");
+                self.status = khaslana::ui_i18n::encode(messages::REFRESHED_WORKFLOW_TEMPLATES, &[("count", &(count).to_string())]);
             }
             Err(err) => {
                 self.workflow_templates.clear();
@@ -521,18 +524,18 @@ impl RepositoryView {
 
     pub(crate) fn open_workflow_template_dir(&mut self) {
         let Some(dir) = workflow_templates_dir() else {
-            self.last_error = Some("无法定位工作流模板目录".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::CANNOT_LOCATE_THE_WORKFLOW_TEMPLATE_DIRECTORY, &[]));
             return;
         };
         if let Err(err) = ensure_workflow_templates_dir(&dir) {
-            self.last_error = Some(format!("工作流模板目录创建失败：{err}"));
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::COULD_NOT_CREATE_THE_WORKFLOW_TEMPLATE_DIRECTORY, &[("err", &(err).to_string())]));
             return;
         }
         if let Err(err) = open_directory(&dir) {
-            self.last_error = Some(format!("工作流模板目录打开失败：{err}"));
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::COULD_NOT_OPEN_THE_WORKFLOW_TEMPLATE_DIRECTORY, &[("err", &(err).to_string())]));
             return;
         }
-        self.status = "工作流模板目录已打开".to_string();
+        self.status = khaslana::ui_i18n::encode(messages::WORKFLOW_TEMPLATE_DIRECTORY_OPENED, &[]);
         self.last_error = None;
     }
 
@@ -547,13 +550,13 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) {
         let Some(repo_path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         let content = match fs::read_to_string(&path) {
             Ok(content) => content,
             Err(err) => {
-                self.last_error = Some(format!("工作流文件读取失败：{err}"));
+                self.last_error = Some(khaslana::ui_i18n::encode(messages::COULD_NOT_READ_WORKFLOW_FILE, &[("err", &(err).to_string())]));
                 return;
             }
         };
@@ -591,7 +594,7 @@ impl RepositoryView {
         self.workflow_state.inputs = inputs;
         self.workflow_state.source_branch = source_branch;
         self.workflow_state.log.clear();
-        self.status = "工作流已加载".to_string();
+        self.status = khaslana::ui_i18n::encode(messages::WORKFLOW_LOADED, &[]);
         self.last_error = None;
         self.refresh_workflow_preview();
     }
@@ -617,23 +620,23 @@ impl RepositoryView {
     }
 
     pub(crate) fn run_workflow(&mut self) {
-        if !self.ensure_no_merge_in_progress("运行工作流") {
+        if !self.ensure_no_merge_in_progress(khaslana::ui_i18n::text(messages::RUN_WORKFLOW)) {
             return;
         }
         let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::REPOSITORY_REQUIRED, &[]));
             return;
         };
         let Some(repo_path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::REPOSITORY_REQUIRED, &[]));
             return;
         };
         let Some(definition) = self.workflow_state.definition.clone() else {
-            self.last_error = Some("请先选择工作流文件".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::WORKFLOW_FILE_REQUIRED, &[]));
             return;
         };
         if self.busy {
-            self.last_error = Some("已有操作正在运行".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPERATION_ALREADY_RUNNING, &[]));
             return;
         }
         for input in &self.workflow_state.inputs {
@@ -652,7 +655,7 @@ impl RepositoryView {
                     && approved.definition_generation == self.workflow_state.definition_generation => Some(approved),
                 _ => {
                     let Some(data_dir) = khaslana::storage::active_data_dir() else {
-                        self.last_error = Some("无法定位 MCP 配置目录".into());
+                        self.last_error = Some(khaslana::ui_i18n::encode(messages::MCP_DIRECTORY_UNAVAILABLE, &[]));
                         return;
                     };
                     let mut config = match load_mcp_config(&data_dir) {
@@ -661,7 +664,7 @@ impl RepositoryView {
                     };
                     let uses_browser = grant.uses_browser_runtime(&config);
                     if uses_browser && !browser_runtime::ready(&data_dir) {
-                        self.browser_runtime_notice = Some("浏览器 MCP 运行组件尚未就绪，点击下载并启用".into());
+                        self.browser_runtime_notice = Some(khaslana::ui_i18n::encode(messages::BROWSER_RUNTIME_NOT_READY, &[]));
                         self.browser_runtime_origin = Some(tab_id);
                         self.last_error = None;
                         return;
@@ -720,6 +723,7 @@ impl RepositoryView {
         self.workflow_state.log.clear();
         let service = self.service_for_tab(tab_id);
         let ai_settings = self.ai_settings.clone();
+        let languages = khaslana::language::TaskLanguages::new(self.ui_language, self.language_preferences.prompt);
         let ai_proxy = self.proxy_settings.proxy_url_for_target(&ai_settings.normalized_base_url());
         let external_data_dir = external.as_ref().and_then(|_| khaslana::storage::active_data_dir());
         let tx = self.tx.clone();
@@ -729,7 +733,7 @@ impl RepositoryView {
             this.loading = RepositoryLoading::default();
             this.busy = true;
             this.operation_blocker = OperationBlocker::Modal;
-            this.status = "正在运行工作流".to_string();
+            this.status = khaslana::ui_i18n::encode(messages::RUNNING_WORKFLOW, &[]);
             this.last_error = None;
         });
         self.tasks.spawn(if external.is_some() { TaskKind::External } else { TaskKind::Long }, move || {
@@ -740,9 +744,9 @@ impl RepositoryView {
                     let mut log: Vec<WorkflowLogEntry> = Vec::new();
                     let mut registry = khaslana::WorkflowActionRegistry::default();
                     if let Some(external) = external {
-                        register_external_actions_with_cleanup(&mut registry, external.config,
+                        register_external_actions_with_languages(&mut registry, external.config,
                             Some(external.grant), Some(ai_settings), ai_proxy,
-                            external_data_dir.as_deref(), cleanup_report.clone())?;
+                            external_data_dir.as_deref(), cleanup_report.clone(), languages)?;
                     }
                     let result = WorkflowExecutor::with_actions(&service, &registry).run_with_control(
                         &mut repo, &definition, options, &control,
@@ -755,7 +759,7 @@ impl RepositoryView {
                         },
                     )?;
                     let message =
-                        format!("工作流“{}”已完成（{} 步）", result.name, result.steps_run);
+                        khaslana::ui_i18n::format_in(languages.output, messages::WORKFLOW_COMPLETED, &[("name", &result.name), ("steps", &result.steps_run.to_string())]);
                     Ok((result.snapshot, log, message))
                 },
             ));
@@ -776,11 +780,11 @@ impl RepositoryView {
                 other => {
                     let (error, cancelled) = match other {
                         Ok(Err(GitError::WorkflowCancelled)) => {
-                            ("工作流已取消；当前步骤可能已生效，已完成的步骤不会撤销".to_string(), true)
+                            (khaslana::ui_i18n::text_in(languages.output, messages::WORKFLOW_CANCELLED).to_string(), true)
                         }
-                        Ok(Err(err)) => (err.to_string(), false),
+                        Ok(Err(err)) => (err.display_in(languages.output), false),
                         Err(payload) => {
-                            (format!("工作流异常退出：{}", panic_message(payload)), false)
+                            (khaslana::ui_i18n::format_in(languages.output, messages::WORKFLOW_PANICKED, &[("error", &panic_message(payload))]), false)
                         }
                         Ok(Ok(_)) => unreachable!(),
                     };
@@ -807,7 +811,7 @@ impl RepositoryView {
             return;
         };
         run.control.cancel();
-        self.status = "正在取消工作流，等待当前步骤结束".into();
+        self.status = khaslana::ui_i18n::encode(messages::CANCELLING_WORKFLOW_WAITING_FOR_THE_CURRENT_STEP_TO_FINISH, &[]);
     }
 
     pub(crate) fn start_browser_runtime_download(&mut self) {
@@ -824,7 +828,7 @@ impl RepositoryView {
         if resume_workflow && tab_id.is_none() { return; }
         self.browser_runtime_origin = tab_id;
         let Some(data_dir) = khaslana::storage::active_data_dir() else {
-            self.browser_runtime_notice = Some("无法定位应用数据目录".into());
+            self.browser_runtime_notice = Some(khaslana::ui_i18n::encode(messages::CANNOT_LOCATE_THE_APPLICATION_DATA_DIRECTORY, &[]));
             return;
         };
         self.browser_runtime_request_id = self.browser_runtime_request_id.wrapping_add(1);
@@ -832,7 +836,7 @@ impl RepositoryView {
         self.browser_runtime_downloading = true;
         self.browser_runtime_resume = tab_id
             .map(|tab_id| (tab_id, self.workflow_state.definition_generation));
-        self.browser_runtime_notice = Some("正在准备浏览器 MCP 运行组件".into());
+        self.browser_runtime_notice = Some(khaslana::ui_i18n::encode(messages::PREPARING_BROWSER_MCP_RUNTIME, &[]));
         let proxy = self.proxy_settings.clone();
         let tx = self.tx.clone();
         self.tasks.spawn(TaskKind::External, move || {
@@ -841,7 +845,7 @@ impl RepositoryView {
                     send_ui_event(&tx, UiEvent::WorkflowBrowserRuntimeProgress { request_id, message });
                 }))) {
                 Ok(result) => result.map_err(|err| err.to_string()),
-                Err(payload) => Err(format!("浏览器 MCP 安装异常：{}", panic_message(payload))),
+                Err(payload) => Err(khaslana::ui_i18n::format(messages::BROWSER_MCP_INSTALLATION_FAILED_UNEXPECTEDLY, &[("arg0", &(panic_message(payload)).to_string())])),
             };
             send_ui_event(&tx, UiEvent::WorkflowBrowserRuntimeFinished { request_id, result });
         });
@@ -856,7 +860,7 @@ impl RepositoryView {
             Ok(()) => {
                 self.browser_runtime_notice = None;
                 self.browser_runtime_origin = None;
-                self.notify_success("浏览器 MCP 运行组件已就绪", cx);
+                self.notify_success(khaslana::ui_i18n::text(messages::BROWSER_MCP_RUNTIME_IS_READY), cx);
                 if resume.is_some_and(|(tab_id, generation)|
                     self.active_tab_id() == Some(tab_id)
                         && self.workflow_state.definition_generation == generation) {
@@ -864,7 +868,7 @@ impl RepositoryView {
                 }
             }
             Err(error) => {
-                self.browser_runtime_notice = Some(format!("浏览器 MCP 下载失败：{error}"));
+                self.browser_runtime_notice = Some(khaslana::ui_i18n::encode(messages::BROWSER_MCP_DOWNLOAD_FAILED, &[("error", &(error).to_string())]));
             }
         }
         if self.settings_center == Some(crate::SettingsCategory::Ai) {
@@ -890,11 +894,11 @@ impl RepositoryView {
         background: bool,
         cx: &mut Context<Self>,
     ) {
-        if !self.ensure_no_merge_in_progress("运行工作流") {
+        if !self.ensure_no_merge_in_progress(khaslana::ui_i18n::text(messages::RUN_WORKFLOW)) {
             return;
         }
         if self.active_tab_id().is_none() || self.repo_path.is_none() {
-            self.notify_error("请先打开一个仓库", cx);
+            self.notify_error(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]), cx);
             return;
         }
         // 解析模板路径：优先模板列表（file_name 大小写不敏感匹配），回退模板
@@ -912,7 +916,7 @@ impl RepositoryView {
         let Some(path) = path else {
             // 模板已不存在：自愈移除失效绑定，不留死键位。
             self.remove_workflow_shortcut_binding(&file, cx);
-            self.notify_warning(format!("工作流模板不存在或已被移动：{file}"), cx);
+            self.notify_warning(khaslana::ui_i18n::format(messages::WORKFLOW_TEMPLATE_DOES_NOT_EXIST_OR_HAS_MOVED, &[("file", &(file).to_string())]), cx);
             return;
         };
         // 快照旧输入值，重载后按 key 合并回填（后台重复触发不丢已填变量）。
@@ -924,7 +928,7 @@ impl RepositoryView {
             let message = self
                 .last_error
                 .take()
-                .unwrap_or_else(|| "工作流文件加载失败".into());
+                .unwrap_or_else(|| khaslana::ui_i18n::text(messages::COULD_NOT_LOAD_WORKFLOW_FILE).into());
             self.notify_error(message, cx);
             return;
         }
@@ -933,7 +937,7 @@ impl RepositoryView {
         match workflow_shortcut_trigger_decision(missing_required, background) {
             WorkflowShortcutTrigger::JumpToFillInputs => {
                 self.set_main_mode(MainMode::Workflow);
-                self.notify_warning("请先填写运行变量后再运行", cx);
+                self.notify_warning(khaslana::ui_i18n::text(messages::FILL_IN_RUN_VARIABLES_BEFORE_RUNNING), cx);
             }
             WorkflowShortcutTrigger::JumpAndRun => {
                 self.set_main_mode(MainMode::Workflow);
@@ -974,10 +978,10 @@ impl RepositoryView {
         let current_binding_text = binding
             .as_ref()
             .map(|binding| crate::shortcuts_view::format_keystroke(&binding.keystroke))
-            .unwrap_or_else(|| "未绑定".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::NOT_BOUND).to_string());
         let background_checked = binding.as_ref().is_some_and(|b| b.background);
 
-        self.dialog_panel("绑定工作流快捷键", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::BIND_WORKFLOW_SHORTCUT), cx)
             .track_focus(&self.workflow_shortcut_binding_focus)
             .child(
                 div()
@@ -989,7 +993,7 @@ impl RepositoryView {
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child(format!("当前绑定：{current_binding_text}")),
+                    .child(khaslana::ui_i18n::format(messages::CURRENT_BINDING, &[("current_binding_text", &(current_binding_text).to_string())])),
             )
             // 「后台执行」勾选框：默认不勾选（触发时跳转到工作流页并运行）；
             // 勾选后留在当前页后台运行（进度走状态栏，完成/失败走 toast）。
@@ -1034,7 +1038,7 @@ impl RepositoryView {
                             })
                             .text_size(px(12.0))
                             .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                            .child("后台执行（触发时不切换到工作流页）"),
+                            .child(khaslana::ui_i18n::text(messages::RUN_IN_BACKGROUND_STAY_ON_THE_CURRENT_PAGE)),
                     )
             })
             .child(
@@ -1088,9 +1092,9 @@ impl RepositoryView {
                                 }
                             }))
                             .child(if is_recording {
-                                "取消录制（Esc）"
+                                khaslana::ui_i18n::text(messages::CANCEL_RECORDING_ESC)
                             } else {
-                                "开始录制"
+                                khaslana::ui_i18n::text(messages::START_RECORDING)
                             }),
                     )
                     .when(binding.is_some(), |this| {
@@ -1118,7 +1122,7 @@ impl RepositoryView {
                                         cx.notify();
                                     }
                                 }))
-                                .child("清除快捷键"),
+                                .child(khaslana::ui_i18n::text(messages::CLEAR_SHORTCUT)),
                         )
                     })
                     .child(
@@ -1156,7 +1160,7 @@ impl RepositoryView {
                                     cx.notify();
                                 }
                             }))
-                            .child("关闭"),
+                            .child(khaslana::ui_i18n::text(messages::CLOSE)),
                     ),
             )
     }
@@ -1188,23 +1192,23 @@ impl RepositoryView {
                     .child(permission.clone())
             }))
             .into_any_element();
-        self.dialog_panel("确认工作流外部操作", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::CONFIRM_EXTERNAL_WORKFLOW_ACTIONS), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("本次运行将执行以下本地脚本或外部工具。请检查模板及本地 MCP 配置。"),
+                    .child(khaslana::ui_i18n::text(messages::THIS_RUN_WILL_EXECUTE_THE_FOLLOWING_LOCAL_SCRIPTS_OR_EXTERNAL)),
             )
             .child(div().h(px(180.0)).min_h(px(0.0)).child(
                 scrollable_frame_when(SCROLL_ID, ScrollbarMode::Vertical, content, handle, true, cx),
             ))
             .child(
                 dialog_actions()
-                    .child(self.button("取消", true, |this, _, _| {
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), true, |this, _, _| {
                         this.workflow_state.pending_external = None;
                         this.close_dialog();
                     }, cx))
-                    .child(self.button("授权并运行一次", valid, move |this, _, _| {
+                    .child(self.button(khaslana::ui_i18n::text(messages::AUTHORIZE_AND_RUN_ONCE), valid, move |this, _, _| {
                         let pending = this.workflow_state.pending_external.take();
                         this.close_dialog();
                         if let Some(pending) = pending.filter(|pending|
@@ -1231,7 +1235,7 @@ impl RepositoryView {
             let exists = root.as_ref().is_some_and(|root| root.join(&file_name).exists());
             let downloading = self.remote_workflow_downloading.as_deref() == Some(&file_name);
             let enabled = !exists && self.remote_workflow_downloading.is_none();
-            let label = if exists { "已存在" } else if downloading { "下载中" } else { "下载" };
+            let label = if exists { khaslana::ui_i18n::text(messages::ALREADY_EXISTS) } else if downloading { khaslana::ui_i18n::text(messages::DOWNLOADING) } else { khaslana::ui_i18n::text(messages::DOWNLOAD) };
             let button_name = file_name.clone();
             let commit = template.commit.chars().take(8).collect::<String>();
             div()
@@ -1268,7 +1272,7 @@ impl RepositoryView {
                 .child(
                     BaseButton::new(format!("remote-workflow-download-{file_name}"))
                         .disabled(!enabled)
-                        .accessibility_label(format!("下载工作流模板 {file_name}"))
+                        .accessibility_label(khaslana::ui_i18n::format(messages::DOWNLOAD_WORKFLOW_TEMPLATE, &[("file_name", &(file_name).to_string())]))
                         .focus_visible(|this| this.border_1().border_color(rgb(ui_theme::PRIMARY)))
                         .flex_none()
                         .min_h(px(28.0))
@@ -1321,20 +1325,20 @@ impl RepositoryView {
                     .text_size(px(14.0))
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child("下载工作流模板"),
+                    .child(khaslana::ui_i18n::text(messages::DOWNLOAD_WORKFLOW_TEMPLATES)),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("从 CNB 目录选择模板下载；本地同名文件会保留。"),
+                    .child(khaslana::ui_i18n::text(messages::DOWNLOAD_TEMPLATES_FROM_THE_CNB_DIRECTORY_EXISTING_LOCAL_FILES_WILL)),
             )
             .when_some(self.remote_workflow_error.clone(), |this, error| {
                 this.child(
                     div()
                         .text_size(px(12.0))
                         .text_color(rgb(ui_theme::FEEDBACK_ERROR_TEXT))
-                        .child(error),
+                        .child(khaslana::ui_i18n::resolve(&error)),
                 )
             })
             .child(
@@ -1347,10 +1351,10 @@ impl RepositoryView {
                     .border_color(rgb(ui_theme::BORDER_MUTED))
                     .rounded_sm()
                     .when(self.remote_workflow_loading, |this| {
-                        this.child(workflow_empty_line("正在读取远端模板…"))
+                        this.child(workflow_empty_line(khaslana::ui_i18n::text(messages::LOADING_REMOTE_TEMPLATES)))
                     })
                     .when(!self.remote_workflow_loading && self.remote_workflow_catalog.is_empty(), |this| {
-                        this.child(workflow_empty_line("暂无可显示的远端模板"))
+                        this.child(workflow_empty_line(khaslana::ui_i18n::text(messages::NO_REMOTE_TEMPLATES_TO_DISPLAY)))
                     })
                     .when(!self.remote_workflow_catalog.is_empty(), |this| {
                         this.child(scrollable_frame_when(
@@ -1366,12 +1370,12 @@ impl RepositoryView {
             .child(
                 dialog_actions()
                     .child(self.button(
-                        "重新加载",
+                        khaslana::ui_i18n::text(messages::RELOAD),
                         !self.remote_workflow_loading && self.remote_workflow_downloading.is_none(),
                         |this, _, cx| this.load_remote_workflow_catalog(cx),
                         cx,
                     ))
-                    .child(self.button("关闭", true, |this, _, _| this.close_dialog(), cx)),
+                    .child(self.button(khaslana::ui_i18n::text(messages::CLOSE), true, |this, _, _| this.close_dialog(), cx)),
             )
     }
 
@@ -1401,13 +1405,13 @@ impl RepositoryView {
             .file_path
             .as_ref()
             .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "未选择工作流文件".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::NO_WORKFLOW_FILE_SELECTED).to_string());
         let source_label = self.workflow_state.source_branch.as_ref().map(|source| {
             let kind = match source.kind {
-                BranchKind::Local => "本地",
-                BranchKind::Remote => "远端",
+                BranchKind::Local => khaslana::ui_i18n::text(messages::LOCAL),
+                BranchKind::Remote => khaslana::ui_i18n::text(messages::REMOTE),
             };
-            format!("来源分支：{}（{kind}）", source.name)
+            khaslana::ui_i18n::format(messages::SOURCE_BRANCH, &[("arg0", &(source.name).to_string()), ("kind", &(kind).to_string())])
         });
         let workflow_name = self
             .workflow_state
@@ -1420,12 +1424,12 @@ impl RepositoryView {
                     .as_ref()
                     .map(|definition| definition.display_name())
             })
-            .unwrap_or_else(|| "尚未选择工作流".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::NO_WORKFLOW_SELECTED).to_string());
         let workflow_name = if self.workflow_state.definition.is_some()
             && self.workflow_state.file_path.is_some()
             && self.workflow_state.selected_template_path.is_none()
         {
-            format!("外部工作流 · {workflow_name}")
+            khaslana::ui_i18n::format(messages::EXTERNAL_WORKFLOW, &[("workflow_name", &(workflow_name).to_string())])
         } else {
             workflow_name
         };
@@ -1436,13 +1440,13 @@ impl RepositoryView {
             self.workflow_state.log.len(),
         );
         let status_label = if self.busy {
-            "运行中"
+            khaslana::ui_i18n::text(messages::RUNNING)
         } else if self.last_error.is_some() {
-            "需要修正"
+            khaslana::ui_i18n::text(messages::NEEDS_CORRECTION)
         } else if self.workflow_state.definition.is_some() {
-            "已就绪"
+            khaslana::ui_i18n::text(messages::READY)
         } else {
-            "未选择"
+            khaslana::ui_i18n::text(messages::NOT_SELECTED)
         };
         let status_color = if self.busy {
             ui_theme::PRIMARY
@@ -1463,10 +1467,10 @@ impl RepositoryView {
             .min_w(px(0.0))
             .min_h(px(0.0))
             .child(
-                page_header("运行工作流", None).child(
+                page_header(khaslana::ui_i18n::text(messages::RUN_WORKFLOW), None).child(
                     command_group()
                         .when_some(self.workflow_state.file_path.clone().filter(|_| !self.busy), |group, path| {
-                            group.child(self.button("编辑", true, move |this, _, cx| {
+                            group.child(self.button(khaslana::ui_i18n::text(messages::EDIT), true, move |this, _, cx| {
                                 this.open_workflow_editor_for_path(path.clone(), false, cx);
                             }, cx))
                         })
@@ -1482,7 +1486,7 @@ impl RepositoryView {
                                         .truncate()
                                         .text_color(rgb(ui_theme::CONTENT_PRIMARY))
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .child(workflow_name),
+                                        .child(khaslana::ui_i18n::resolve(&workflow_name)),
                                 )
                                 .child(
                                     div()
@@ -1519,14 +1523,14 @@ impl RepositoryView {
                                 .child(status_label),
                         )
                         .child(self.primary_button(
-                            if self.busy { "运行中..." } else { "运行" },
+                            if self.busy { khaslana::ui_i18n::text(messages::RUNNING_2) } else { khaslana::ui_i18n::text(messages::RUN) },
                             self.workflow_state.definition.is_some() && !self.busy,
                             |this, _, _| this.run_workflow(),
                             cx,
                         ))
                         .when(self.workflow_state.active_run.as_ref().is_some_and(|run| !run.control.is_cancelled()), |this| {
                             this.child(self.secondary_button(
-                                "取消运行".into(),
+                                khaslana::ui_i18n::text(messages::CANCEL_RUN).into(),
                                 true,
                                 |this, _, _| this.cancel_workflow(),
                                 cx,
@@ -1550,10 +1554,10 @@ impl RepositoryView {
                                 .min_w(px(0.0))
                                 .text_size(px(12.0))
                                 .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                                .child(notice),
+                                .child(khaslana::ui_i18n::resolve(&notice)),
                         )
                         .child(self.button(
-                            if self.browser_runtime_downloading { "下载中..." } else { "下载并启用" },
+                            if self.browser_runtime_downloading { khaslana::ui_i18n::text(messages::DOWNLOADING_2) } else { khaslana::ui_i18n::text(messages::DOWNLOAD_AND_ENABLE) },
                             !self.browser_runtime_downloading,
                             |this, _, _| this.start_browser_runtime_download(),
                             cx,
@@ -1605,7 +1609,7 @@ impl RepositoryView {
             .workflow_template_dir
             .as_ref()
             .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "无法定位模板目录".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::CANNOT_LOCATE_THE_TEMPLATE_DIRECTORY).to_string());
         let model = Arc::new(WorkflowTemplateListModel::from_templates(
             &self.workflow_templates,
         ));
@@ -1634,11 +1638,13 @@ impl RepositoryView {
             .min_w(px(crate::MIN_WORKFLOW_TEMPLATES_WIDTH))
             .min_h(px(0.0))
             .child(
-                panel_section_header("模板导航")
+                panel_section_header(khaslana::ui_i18n::text(messages::TEMPLATES))
                     .top_rounded()
                     .action(
-                        self.button(
-                            "新建",
+                        crate::ui::components::icon_command_button(
+                            "workflow-template-new".into(),
+                            crate::ui::icons::ToolbarIcon::Plus,
+                            khaslana::ui_i18n::text(messages::NEW),
                             !self.busy,
                             |this, _, cx| this.open_workflow_editor(cx),
                             cx,
@@ -1646,8 +1652,10 @@ impl RepositoryView {
                         .into_any_element(),
                     )
                     .action(
-                        self.button(
-                            "刷新",
+                        crate::ui::components::icon_command_button(
+                            "workflow-template-refresh".into(),
+                            crate::ui::icons::ToolbarIcon::Refresh,
+                            khaslana::ui_i18n::text(messages::REFRESH),
                             !self.busy,
                             |this, _, cx| {
                                 this.refresh_workflow_templates();
@@ -1658,8 +1666,10 @@ impl RepositoryView {
                         .into_any_element(),
                     )
                     .action(
-                        self.button(
-                            "下载模板",
+                        crate::ui::components::icon_command_button(
+                            "workflow-template-download".into(),
+                            crate::ui::icons::ToolbarIcon::Download,
+                            khaslana::ui_i18n::text(messages::DOWNLOAD_TEMPLATES),
                             !self.busy,
                             |this, _, cx| this.open_remote_workflow_templates(cx),
                             cx,
@@ -1667,8 +1677,10 @@ impl RepositoryView {
                         .into_any_element(),
                     )
                     .action(
-                        self.button(
-                            "目录",
+                        crate::ui::components::icon_command_button(
+                            "workflow-template-directory".into(),
+                            crate::ui::icons::ToolbarIcon::Open,
+                            khaslana::ui_i18n::text(messages::DIRECTORY),
                             !self.busy,
                             |this, _, _| this.open_workflow_template_dir(),
                             cx,
@@ -1717,7 +1729,7 @@ impl RepositoryView {
                                                 .unwrap_or_else(|| {
                                                     workflow_empty_line(
                                                         if model_for_rows.len() == 0 {
-                                                            "暂无模板，可从目录或外部文件加载"
+                                                            khaslana::ui_i18n::text(messages::NO_TEMPLATES_LOAD_ONE_FROM_THE_DIRECTORY_OR_AN_EXTERNAL)
                                                         } else {
                                                             ""
                                                         },
@@ -1908,7 +1920,7 @@ impl RepositoryView {
                                 .bg(rgb(ui_theme::WB_ROW_HOVER))
                                 .text_size(px(10.0))
                                 .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                                .child("后台"),
+                                .child(khaslana::ui_i18n::text(messages::BACKGROUND)),
                         )
                     }),
             )
@@ -1968,7 +1980,7 @@ impl RepositoryView {
         let mut fields = Vec::new();
         let tab_id = self
             .active_tab_id()
-            .ok_or_else(|| khaslana::GitError::Message("请先打开一个仓库".into()))?;
+            .ok_or_else(|| khaslana::GitError::Message(khaslana::ui_i18n::text(messages::OPEN_A_REPOSITORY_FIRST).into()))?;
         let service = self.service_for_tab(tab_id);
         let repo = Repository::open(repo_path)?;
         let base_options = WorkflowRunOptions {
@@ -2018,7 +2030,7 @@ impl RepositoryView {
         };
         let Some(tab_id) = self.active_tab_id() else {
             self.workflow_state.preview = None;
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         match self.preview_workflow(&repo_path, definition, self.workflow_run_options(), tab_id) {
@@ -2123,7 +2135,7 @@ impl RepositoryView {
                     .text_size(px(13.0))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child("运行配置"),
+                    .child(khaslana::ui_i18n::text(messages::RUN_CONFIGURATION)),
             )
             .child(scrollable_frame_when(
                 WORKFLOW_INPUT_LIST_SCROLL_ID,
@@ -2145,9 +2157,9 @@ impl RepositoryView {
         let rows = if steps.is_empty() {
             vec![
                 workflow_empty_line(if self.workflow_state.definition.is_some() {
-                    "暂无可展示的步骤"
+                    khaslana::ui_i18n::text(messages::NO_STEPS_TO_DISPLAY)
                 } else {
-                    "选择模板后生成步骤预览"
+                    khaslana::ui_i18n::text(messages::SELECT_A_TEMPLATE_TO_PREVIEW_ITS_STEPS)
                 })
                 .into_any_element(),
             ]
@@ -2164,7 +2176,7 @@ impl RepositoryView {
                                 .text_size(px(11.0))
                                 .text_color(rgb(ui_theme::CONTENT_SECONDARY))
                                 .truncate()
-                                .child(detail.clone())
+                                .child(khaslana::ui_i18n::resolve(detail))
                         })
                         .collect::<Vec<_>>();
                     div()
@@ -2229,7 +2241,7 @@ impl RepositoryView {
                                                 .text_size(px(12.0))
                                                 .text_color(rgb(ui_theme::CONTENT_PRIMARY))
                                                 .truncate()
-                                                .child(step.summary.clone()),
+                                                .child(khaslana::ui_i18n::resolve(&step.summary)),
                                         ),
                                 )
                                 .children(details),
@@ -2251,7 +2263,7 @@ impl RepositoryView {
                     .text_size(px(13.0))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child("步骤时间线"),
+                    .child(khaslana::ui_i18n::text(messages::STEP_TIMELINE)),
             )
             .child({
                 let handle = self.scroll_handle(WORKFLOW_PREVIEW_LIST_SCROLL_ID);
@@ -2288,7 +2300,7 @@ impl RepositoryView {
                             .pl(px(ui_theme::SPACE_3))
                             .text_size(px(11.0))
                             .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                            .child(detail.clone())
+                            .child(khaslana::ui_i18n::resolve(detail))
                     })
                     .collect::<Vec<_>>();
                 div()
@@ -2296,15 +2308,15 @@ impl RepositoryView {
                     .pb(px(ui_theme::SPACE_1))
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(entry.message.clone())
+                    .child(khaslana::ui_i18n::resolve(&entry.message))
                     .children(details)
                     .into_any_element()
             })
             .collect::<Vec<_>>();
         let empty_message = if self.busy {
-            self.status.clone()
+            khaslana::ui_i18n::resolve(&self.status)
         } else {
-            "运行后在此查看状态与日志".to_string()
+            khaslana::ui_i18n::text(messages::RUN_A_WORKFLOW_TO_VIEW_STATUS_AND_LOGS_HERE).to_string()
         };
 
         div()
@@ -2344,11 +2356,11 @@ impl RepositoryView {
                             }))
                             .truncate()
                             .child(if self.busy {
-                                self.status.clone()
+                                khaslana::ui_i18n::resolve(&self.status)
                             } else if self.workflow_state.log.is_empty() {
-                                "空闲".to_string()
+                                khaslana::ui_i18n::text(messages::IDLE).to_string()
                             } else {
-                                format!("{} 条记录", self.workflow_state.log.len())
+                                khaslana::ui_i18n::format(messages::ENTRIES, &[("arg0", &(self.workflow_state.log.len()).to_string())])
                             }),
                     ),
             )
@@ -2390,7 +2402,7 @@ impl RepositoryView {
 fn workflow_progress_entry(event: &WorkflowProgressEvent) -> WorkflowLogEntry {
     match event {
         WorkflowProgressEvent::Started { name, total } => WorkflowLogEntry {
-            message: format!("开始运行工作流“{name}”（{total} 步）"),
+            message: khaslana::ui_i18n::encode(messages::PROGRESS_STARTED, &[("total", &total.to_string()), ("name", name)]),
             details: Vec::new(),
         },
         WorkflowProgressEvent::StepStarted {
@@ -2399,7 +2411,7 @@ fn workflow_progress_entry(event: &WorkflowProgressEvent) -> WorkflowLogEntry {
             label,
             details,
         } => WorkflowLogEntry {
-            message: format!("步骤 {}/{}：{label}", index + 1, total),
+            message: khaslana::ui_i18n::encode_with_messages(messages::PROGRESS_STEP_STARTED, &[("index", &(index + 1).to_string()), ("total", &total.to_string())], &[("label", label)]),
             details: details.clone(),
         },
         WorkflowProgressEvent::StepFinished {
@@ -2408,15 +2420,15 @@ fn workflow_progress_entry(event: &WorkflowProgressEvent) -> WorkflowLogEntry {
             label,
             details,
         } => WorkflowLogEntry {
-            message: format!("步骤 {}/{} 完成：{label}", index + 1, total),
+            message: khaslana::ui_i18n::encode_with_messages(messages::PROGRESS_STEP_FINISHED, &[("index", &(index + 1).to_string()), ("total", &total.to_string())], &[("label", label)]),
             details: details.clone(),
         },
         WorkflowProgressEvent::StepDetail { index, total, label, detail } => WorkflowLogEntry {
-            message: format!("步骤 {}/{}：{label}", index + 1, total),
+            message: khaslana::ui_i18n::encode_with_messages(messages::PROGRESS_STEP_STARTED, &[("index", &(index + 1).to_string()), ("total", &total.to_string())], &[("label", label)]),
             details: vec![detail.clone()],
         },
         WorkflowProgressEvent::Finished { name, total } => WorkflowLogEntry {
-            message: format!("工作流“{name}”已完成（{total} 步）"),
+            message: khaslana::ui_i18n::encode(messages::PROGRESS_FINISHED, &[("total", &total.to_string()), ("name", name)]),
             details: Vec::new(),
         },
     }
@@ -2443,15 +2455,15 @@ fn ensure_workflow_templates_dir(dir: &Path) -> std::io::Result<()> {
 }
 
 fn load_workflow_templates() -> Result<Vec<WorkflowTemplateItem>, String> {
-    let dir = workflow_templates_dir().ok_or_else(|| "无法定位工作流模板目录".to_string())?;
+    let dir = workflow_templates_dir().ok_or_else(|| khaslana::ui_i18n::text(messages::CANNOT_LOCATE_THE_WORKFLOW_TEMPLATE_DIRECTORY).to_string())?;
     let first_use = !dir.exists();
-    ensure_workflow_templates_dir(&dir).map_err(|err| format!("工作流模板目录创建失败：{err}"))?;
+    ensure_workflow_templates_dir(&dir).map_err(|err| khaslana::ui_i18n::format(messages::COULD_NOT_CREATE_THE_WORKFLOW_TEMPLATE_DIRECTORY, &[("err", &(err).to_string())]))?;
     // 只在目录初次创建时迁移旧模板，避免用户删除全部模板后刷新又被拷回来。
     if first_use {
         migrate_legacy_workflow_templates(&dir);
     }
     import_managed_workflow_templates_once(&dir)
-        .map_err(|err| format!("旧版远端模板导入失败：{err}"))?;
+        .map_err(|err| khaslana::ui_i18n::format(messages::COULD_NOT_IMPORT_LEGACY_REMOTE_TEMPLATES, &[("err", &(err).to_string())]))?;
     load_workflow_templates_from_dir(&dir)
 }
 
@@ -2528,9 +2540,9 @@ fn copy_workflow_templates(src: &Path, dst: &Path) -> std::io::Result<()> {
 fn load_workflow_templates_from_dir(dir: &Path) -> Result<Vec<WorkflowTemplateItem>, String> {
     let mut templates = Vec::new();
     let entries = fs::read_dir(dir)
-        .map_err(|err| format!("工作流模板目录读取失败：{err}"))?;
+        .map_err(|err| khaslana::ui_i18n::format(messages::COULD_NOT_READ_THE_WORKFLOW_TEMPLATE_DIRECTORY, &[("err", &(err).to_string())]))?;
     for entry in entries {
-        let entry = entry.map_err(|err| format!("工作流模板目录读取失败：{err}"))?;
+        let entry = entry.map_err(|err| khaslana::ui_i18n::format(messages::COULD_NOT_READ_THE_WORKFLOW_TEMPLATE_DIRECTORY, &[("err", &(err).to_string())]))?;
         let path = entry.path();
         if !is_workflow_template_path(&path) {
             continue;
@@ -2584,7 +2596,7 @@ fn workflow_template_item(path: PathBuf, modified: Option<SystemTime>) -> Workfl
             display_name: fallback_name,
             file_name,
             modified_label: workflow_modified_label(modified),
-            error: Some(format!("读取失败：{err}")),
+            error: Some(khaslana::ui_i18n::encode(messages::READ_FAILED, &[("err", &(err).to_string())])),
         },
     }
 }
@@ -2608,9 +2620,9 @@ fn workflow_modified_label(modified: Option<SystemTime>) -> String {
     modified
         .map(|time| {
             let local: DateTime<Local> = time.into();
-            format!("修改于 {}", local.format("%Y-%m-%d %H:%M"))
+            khaslana::ui_i18n::format(messages::MODIFIED_AT, &[("arg0", &(local.format("%Y-%m-%d %H:%M")).to_string())])
         })
-        .unwrap_or_else(|| "修改时间未知".to_string())
+        .unwrap_or_else(|| khaslana::ui_i18n::text(messages::UNKNOWN_MODIFICATION_TIME).to_string())
 }
 
 #[cfg(test)]

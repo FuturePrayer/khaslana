@@ -1,5 +1,8 @@
 //! RepositoryView 的生命周期、会话、事件泵与应用级协调。
 
+#[path = "repository_core_resources.rs"]
+mod messages;
+
 use crate::*;
 
 /// 创建在关闭确认期间完成后，恢复弹窗的数据已销毁，不能再恢复只有遮罩的弹窗类型。
@@ -20,6 +23,10 @@ impl RepositoryView {
             Arc::new(Mutex::new(Self::load_remote_credential_bindings(&storage)));
         let proxy_settings = Self::load_proxy_settings(&storage);
         let external_merge_settings = Self::load_external_merge_settings(&storage);
+        let language_preferences = Self::load_languages(&storage);
+        let ui_language = language_preferences.ui.resolve();
+        gpui_kit::component::set_locale(ui_language.kit_locale());
+        khaslana::ui_i18n::set_language(ui_language);
         let theme_mode = Self::load_theme_mode(&storage);
         let theme_accent = Self::load_theme_accent(&storage);
         let layout_preferences = Self::load_layout_preferences(&storage);
@@ -64,13 +71,18 @@ impl RepositoryView {
             )),
             proxy_settings: proxy_settings.clone(),
             theme_mode,
+            language_preferences,
+            ui_language,
+            ui_language_select: None,
+            prompt_language_select: None,
+            language_select_locale: None,
             theme_accent,
             tabs: Vec::new(),
             active_tab: None,
             global_busy_tab: None,
             next_tab_id: 1,
             fallback_tab: {
-                let mut tab = RepoTabState::new(RepoTabId(0), None, TextFieldState::new(cx, "提交信息"));
+                let mut tab = RepoTabState::new(RepoTabId(0), None, TextFieldState::localized(cx, messages::COMMIT_MESSAGE));
                 if let Some(status) = storage_status {
                     tab.status = status;
                     tab.last_error = storage_error;
@@ -187,9 +199,9 @@ impl RepositoryView {
             context_navigator_overlay_open: false,
             repo_switcher_anchor: None,
             repo_switcher_recent: Vec::new(),
-            repo_switcher_search: TextFieldState::new(cx, "搜索仓库"),
-            commit_graph_search: TextFieldState::new(cx, "搜索提交/作者/SHA"),
-            commit_graph_branch_search: TextFieldState::new(cx, "搜索分支"),
+            repo_switcher_search: TextFieldState::localized(cx, messages::SEARCH_REPOSITORIES),
+            commit_graph_search: TextFieldState::localized(cx, messages::SEARCH_COMMITS_AUTHORS_SHA),
+            commit_graph_branch_search: TextFieldState::localized(cx, messages::SEARCH_BRANCHES),
             save_credential: false,
             credential_scope: CredentialScope::RemoteUrl,
             credential_form_mode: CredentialFormMode::Https,
@@ -197,37 +209,37 @@ impl RepositoryView {
             ssh_credential_discovery: SshCredentialDiscoveryState::default(),
             oauth_login_flow: OAuthLoginFlowState::default(),
             pending_gitee_refresh_record: None,
-            clone_url: TextFieldState::new(cx, "远程仓库 URL"),
-            clone_path: TextFieldState::new(cx, "克隆到父文件夹"),
+            clone_url: TextFieldState::localized(cx, messages::REMOTE_REPOSITORY_URL),
+            clone_path: TextFieldState::localized(cx, messages::PARENT_FOLDER_FOR_CLONING),
             clone_recursive_submodules: default_clone_recursive_submodules(),
-            branch_name: TextFieldState::new(cx, "新分支名称"),
+            branch_name: TextFieldState::localized(cx, messages::NEW_BRANCH_NAME),
             create_branch_checkout: true,
             create_branch_base: None,
-            branch_rename: TextFieldState::new(cx, "重命名为"),
-            stash_message: TextFieldState::new(cx, "贮藏说明（可选）"),
-            tag_name: TextFieldState::new(cx, "标签名称，如 v1.0.0"),
-            tag_message: TextFieldState::new(cx, "标签附注信息（可选）"),
+            branch_rename: TextFieldState::localized(cx, messages::RENAME_TO),
+            stash_message: TextFieldState::localized(cx, messages::STASH_MESSAGE_OPTIONAL),
+            tag_name: TextFieldState::localized(cx, messages::TAG_NAME_E_G_V1),
+            tag_message: TextFieldState::localized(cx, messages::TAG_ANNOTATION_OPTIONAL),
             tag_annotated: true,
             tag_push_remote: None,
             stash_include_untracked: false,
             stash_keep_index: false,
-            credential_username: TextFieldState::new(cx, "用户名"),
-            credential_secret: TextFieldState::new(cx, "密码或 PAT").secret(),
-            credential_key_path: TextFieldState::new(cx, "SSH 私钥路径"),
-            credential_passphrase: TextFieldState::new(cx, "SSH 密码短语").secret(),
+            credential_username: TextFieldState::localized(cx, messages::USERNAME),
+            credential_secret: TextFieldState::localized(cx, messages::PASSWORD_OR_PAT).secret(),
+            credential_key_path: TextFieldState::localized(cx, messages::SSH_PRIVATE_KEY_PATH),
+            credential_passphrase: TextFieldState::localized(cx, messages::SSH_PASSPHRASE).secret(),
 
-            credential_remote_url: TextFieldState::new(cx, "适用远端 URL"),
-            credential_test_url: TextFieldState::new(cx, "测试地址"),
+            credential_remote_url: TextFieldState::localized(cx, messages::REMOTE_URL),
+            credential_test_url: TextFieldState::localized(cx, messages::TEST_URL),
             credential_test_error: None,
-            credential_display_name: TextFieldState::new(cx, "凭据名称（可选）"),
-            conflict_editor: TextFieldState::new(cx, "冲突结果"),
-            remote_name: TextFieldState::new(cx, "远端名称"),
-            remote_url: TextFieldState::new(cx, "远端地址"),
+            credential_display_name: TextFieldState::localized(cx, messages::CREDENTIAL_NAME_OPTIONAL),
+            conflict_editor: TextFieldState::localized(cx, messages::CONFLICT_RESULT),
+            remote_name: TextFieldState::localized(cx, messages::REMOTE_NAME),
+            remote_url: TextFieldState::localized(cx, messages::REMOTE_URL_2),
             remote_credential_policy: RemoteCredentialPolicy::AutoMatch,
-            remote_branch_name: TextFieldState::new(cx, "远程分支"),
-            remote_branch_search: TextFieldState::new(cx, "搜索远端分支"),
-            sidebar_local_branch_search: TextFieldState::new(cx, "搜索本地分支"),
-            sidebar_remote_branch_search: TextFieldState::new(cx, "搜索远端分支"),
+            remote_branch_name: TextFieldState::localized(cx, messages::REMOTE_BRANCH),
+            remote_branch_search: TextFieldState::localized(cx, messages::SEARCH_REMOTE_BRANCHES),
+            sidebar_local_branch_search: TextFieldState::localized(cx, messages::SEARCH_LOCAL_BRANCHES),
+            sidebar_remote_branch_search: TextFieldState::localized(cx, messages::SEARCH_REMOTE_BRANCHES),
             sidebar_local_branch_search_open: false,
             sidebar_remote_branch_search_open: false,
             remote_branch_operation: RemoteBranchOperationState::default(),
@@ -240,15 +252,15 @@ impl RepositoryView {
             ai_api_type_select: None,
             ai_advanced_expanded: false,
             ai_extensions: ai_extensions_view::AiExtensionsUiState::new(cx),
-            ai_base_url: TextFieldState::new(cx, "Base URL，例如 https://api.openai.com/v1"),
+            ai_base_url: TextFieldState::localized(cx, messages::BASE_URL_E_G_HTTPS_API_OPENAI_COM_V1),
             ai_api_key: TextFieldState::new(cx, "API Key").secret(),
-            ai_model: TextFieldState::new(cx, "模型名称，例如 gpt-4o-mini"),
-            ai_temperature: TextFieldState::new(cx, "温度，例如 0.3").with_value(ai_settings.temperature.to_string()),
-            ai_max_tokens: TextFieldState::new(cx, "最大输出，例如 4000").with_value(ai_settings.max_tokens.to_string()),
-            ai_request_timeout: TextFieldState::new(cx, "请求超时秒数，例如 60").with_value(ai_settings.request_timeout_secs.to_string()),
-            ai_reasoning_effort: TextFieldState::new(cx, "可选，例如 low、medium、high").with_value(ai_settings.reasoning_effort.clone().unwrap_or_default()),
+            ai_model: TextFieldState::localized(cx, messages::MODEL_NAME_E_G_GPT_O_MINI),
+            ai_temperature: TextFieldState::localized(cx, messages::TEMPERATURE_E_G).with_value(ai_settings.temperature.to_string()),
+            ai_max_tokens: TextFieldState::localized(cx, messages::MAXIMUM_OUTPUT_TOKENS_E_G).with_value(ai_settings.max_tokens.to_string()),
+            ai_request_timeout: TextFieldState::localized(cx, messages::REQUEST_TIMEOUT_IN_SECONDS_E_G).with_value(ai_settings.request_timeout_secs.to_string()),
+            ai_reasoning_effort: TextFieldState::localized(cx, messages::OPTIONAL_E_G_LOW_MEDIUM_HIGH).with_value(ai_settings.reasoning_effort.clone().unwrap_or_default()),
             ai_settings,
-            external_merge_intellij_path: TextFieldState::new(cx, "IntelliJ IDEA 路径（可选）")
+            external_merge_intellij_path: TextFieldState::localized(cx, messages::INTELLIJ_IDEA_PATH_OPTIONAL)
                 .with_value(external_merge_settings.normalized_intellij_path()),
             external_merge_detection: None,
             ai_commit_loading: false,
@@ -278,15 +290,15 @@ impl RepositoryView {
             code_index_queue: Default::default(),
             code_index_stats: HashMap::new(),
             code_index_stats_requests: HashMap::new(),
-            code_index_filter: TextFieldState::new(cx, "按名称或路径过滤"),
-            ai_settings_category_search: TextFieldState::new(cx, "搜索设置分类"),
+            code_index_filter: TextFieldState::localized(cx, messages::FILTER_BY_NAME_OR_PATH),
+            ai_settings_category_search: TextFieldState::localized(cx, messages::SEARCH_SETTINGS_CATEGORIES),
             code_index_list_entries: Vec::new(),
             code_index_progress_done: 0,
             code_index_progress_total: 0,
             code_index_progress_message: String::new(),
             code_search_palette: None,
             code_search_request_seq: 0,
-            code_palette_search: TextFieldState::new(cx, "输入分支、功能或设置名称…"),
+            code_palette_search: TextFieldState::localized(cx, messages::ENTER_A_BRANCH_FEATURE_OR_SETTING_NAME),
             code_index_enabled_cache: {
                 let mut cache = std::collections::HashSet::new();
                 if let Ok(prefs) = storage.load_code_index_preferences() {
@@ -309,11 +321,11 @@ impl RepositoryView {
             update_download_progress: None,
             update_error: None,
             staging_dir_for_install: None,
-            proxy_http_url: TextFieldState::new(cx, "HTTP 代理 URL")
+            proxy_http_url: TextFieldState::localized(cx, messages::HTTP_PROXY_URL)
                 .with_value(proxy_custom.http_proxy),
-            proxy_https_url: TextFieldState::new(cx, "HTTPS 代理 URL")
+            proxy_https_url: TextFieldState::localized(cx, messages::HTTPS_PROXY_URL)
                 .with_value(proxy_custom.https_proxy),
-            proxy_socks5_url: TextFieldState::new(cx, "SOCKS5 代理 URL")
+            proxy_socks5_url: TextFieldState::localized(cx, messages::SOCKS5_PROXY_URL)
                 .with_value(proxy_custom.socks5_proxy),
             // Kit 输入宿主按需创建（见 `ui::fields`）。
             kit_fields: Vec::new(),
@@ -446,7 +458,7 @@ impl RepositoryView {
     pub(crate) fn confirm_exe_relocation(&mut self) {
         self.active_dialog = None;
         let Some(target) = khaslana::exe_relocation_target_dir() else {
-            self.last_error = Some("无法定位搬迁目标目录".to_string());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::CANNOT_LOCATE_THE_RELOCATION_DESTINATION, &[]));
             return;
         };
         if let Err(err) = khaslana::request_exe_relocation(&target) {
@@ -693,8 +705,8 @@ impl RepositoryView {
                 match khaslana::AppStorage::recreate_default_after_failure() {
                     Ok(storage) => (
                         Arc::new(storage),
-                        Some("本地配置数据库已重建".to_string()),
-                        Some(format!("原数据库打开失败，已创建空数据库：{first_err}")),
+                        Some(khaslana::ui_i18n::encode(messages::LOCAL_CONFIGURATION_DATABASE_RECREATED, &[])),
+                        Some(khaslana::ui_i18n::encode(messages::COULD_NOT_OPEN_THE_ORIGINAL_DATABASE_CREATED_AN_EMPTY_DATABASE, &[("first_err", &(first_err).to_string())])),
                     ),
                     Err(second_err) => {
                         tracing::warn!(
@@ -706,8 +718,8 @@ impl RepositoryView {
                             });
                         (
                             Arc::new(storage),
-                            Some("正在使用临时配置数据库".to_string()),
-                            Some(format!("本地配置数据库不可用：{second_err}")),
+                            Some(khaslana::ui_i18n::encode(messages::USING_A_TEMPORARY_CONFIGURATION_DATABASE, &[])),
+                            Some(khaslana::ui_i18n::encode(messages::LOCAL_CONFIGURATION_DATABASE_UNAVAILABLE, &[("second_err", &(second_err).to_string())])),
                         )
                     }
                 }
@@ -914,7 +926,7 @@ impl RepositoryView {
 
     pub(crate) fn set_current_diff_encoding(&mut self, encoding: DiffEncodingChoice) {
         let Some(repo_path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         let key = normalize_repo_path(&repo_path);
@@ -926,7 +938,7 @@ impl RepositoryView {
                 .insert(key, encoding);
         }
         self.save_diff_encoding_preferences();
-        self.status = format!("差异编码已切换为 {}", encoding.label());
+        self.status = khaslana::ui_i18n::encode(messages::DIFF_ENCODING_CHANGED_TO, &[("arg0", &(encoding.label()).to_string())]);
         self.reload_visible_diffs_after_encoding_change();
     }
 
@@ -1001,8 +1013,8 @@ impl RepositoryView {
 
         if restored.is_empty() {
             if failed > 0 {
-                self.fallback_tab.last_error = Some(format!("{failed} 个上次打开的仓库无法恢复"));
-                self.fallback_tab.status = "会话恢复失败".to_string();
+                self.fallback_tab.last_error = Some(khaslana::ui_i18n::encode(messages::COULD_NOT_RESTORE_PREVIOUSLY_OPENED_REPOSITORIES, &[("failed", &(failed).to_string())]));
+                self.fallback_tab.status = khaslana::ui_i18n::encode(messages::SESSION_RESTORE_FAILED, &[]);
             }
             self.restoring_session = false;
             self.save_session();
@@ -1024,7 +1036,7 @@ impl RepositoryView {
             self.active_tab = Some(active);
         }
         if failed > 0 {
-            self.fallback_tab.last_error = Some(format!("{failed} 个上次打开的仓库无法恢复"));
+            self.fallback_tab.last_error = Some(khaslana::ui_i18n::encode(messages::COULD_NOT_RESTORE_PREVIOUSLY_OPENED_REPOSITORIES, &[("failed", &(failed).to_string())]));
         }
 
         let tabs = self.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>();
@@ -1033,8 +1045,8 @@ impl RepositoryView {
                 self.queue_repository_load(
                     tab_id,
                     path,
-                    "正在恢复仓库",
-                    "仓库已恢复",
+                    crate::operation_ui_resources::REFRESH_STARTED,
+                    crate::operation_ui_resources::REFRESHED,
                     LoadPriority::Background,
                 );
             }
@@ -1127,9 +1139,9 @@ impl RepositoryView {
         if enabled {
             None
         } else if self.busy {
-            Some("当前操作运行中")
+            Some(khaslana::ui_i18n::text(messages::AN_OPERATION_IS_RUNNING))
         } else if self.repo_path.is_none() {
-            Some("请先打开仓库")
+            Some(khaslana::ui_i18n::text(messages::OPEN_A_REPOSITORY_FIRST_2))
         } else {
             Some(fallback)
         }
@@ -1295,7 +1307,7 @@ impl RepositoryView {
                 }).collect::<Vec<_>>()
             }));
             let results = loaded.unwrap_or_else(|_| paths.into_iter().map(|path|
-                (path, Err("读取冲突版本时发生异常，请重新选择文件重试".into()))).collect());
+                (path, Err(khaslana::ui_i18n::text(messages::AN_ERROR_OCCURRED_WHILE_READING_CONFLICT_VERSIONS_SELECT_THE_FILE).into()))).collect());
             send_ui_event(&tx, UiEvent::ConflictFilesLoaded { tab_id, session_id, generation, results });
         });
     }
@@ -1388,11 +1400,11 @@ impl RepositoryView {
 
     pub(crate) fn apply_selected_conflict_draft(&mut self, resolve: bool) {
         let Some(path) = self.conflict_workbench.selected_path.clone() else {
-            self.last_error = Some("请先选择一个冲突文件".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::SELECT_A_CONFLICTED_FILE_FIRST, &[]));
             return;
         };
         let Some(view) = self.conflict_workbench.files.get_mut(&path) else {
-            self.last_error = Some("冲突文件详情尚未加载".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::CONFLICT_FILE_DETAILS_HAVE_NOT_LOADED, &[]));
             return;
         };
         let unresolved_count = view.unresolved_block_count();
@@ -1420,7 +1432,7 @@ impl RepositoryView {
         else {
             self.conflict_workbench.clear_pending_resolve();
             self.active_dialog = None;
-            self.last_error = Some("冲突文件详情尚未加载".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::CONFLICT_FILE_DETAILS_HAVE_NOT_LOADED, &[]));
             return;
         };
         self.conflict_workbench.clear_pending_resolve();
@@ -1440,9 +1452,9 @@ impl RepositoryView {
         let session_id = self.conflict_workbench.session_id;
         let service = self.service_for_tab(tab_id);
         let label = if resolve {
-            "冲突结果已应用并标记解决"
+            khaslana::ui_i18n::encode(messages::CONFLICT_RESULT_APPLIED_AND_MARKED_RESOLVED, &[])
         } else {
-            "冲突草稿已应用到工作区"
+            khaslana::ui_i18n::encode(messages::CONFLICT_DRAFT_APPLIED_TO_THE_WORKING_TREE, &[])
         };
         self.spawn_operation_for_tab(Some(tab_id), label, move || {
             let mut repo = Repository::open(repo_path)?;
@@ -1786,7 +1798,7 @@ impl RepositoryView {
     }
 
     pub(crate) fn browse_open(&mut self) {
-        self.status = "正在选择仓库文件夹".to_string();
+        self.status = khaslana::ui_i18n::encode(messages::SELECTING_A_REPOSITORY_FOLDER, &[]);
         self.last_error = None;
         let tx = self.tx.clone();
         thread::spawn(move || {
@@ -1796,7 +1808,7 @@ impl RepositoryView {
     }
 
     pub(crate) fn browse_clone_target(&mut self) {
-        self.status = "正在选择克隆父文件夹".to_string();
+        self.status = khaslana::ui_i18n::encode(messages::SELECTING_A_PARENT_FOLDER_FOR_CLONING, &[]);
         self.last_error = None;
         let tx = self.tx.clone();
         thread::spawn(move || {
@@ -1817,7 +1829,7 @@ impl RepositoryView {
 
     pub(crate) fn open_create_branch_dialog(&mut self) {
         if self.repo_path.is_none() {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         }
         self.close_popups();
@@ -2428,7 +2440,7 @@ impl RepositoryView {
                 .ok_or_else(|| {
                     self.tray_error
                         .clone()
-                        .unwrap_or_else(|| "系统托盘不可用".to_string())
+                        .unwrap_or_else(|| khaslana::ui_i18n::text(messages::SYSTEM_TRAY_UNAVAILABLE).to_string())
                 })
                 .and_then(|tray| tray.hide_window(window));
             match result {
@@ -2439,15 +2451,15 @@ impl RepositoryView {
                 }
                 Err(error) => {
                     self.last_error = Some(error);
-                    self.notify_error("无法缩小到系统托盘", cx);
+                    self.notify_error(khaslana::ui_i18n::text(messages::CANNOT_MINIMIZE_TO_THE_SYSTEM_TRAY), cx);
                 }
             }
         }
         #[cfg(not(windows))]
         {
             let _ = window;
-            self.last_error = Some("当前平台暂不支持缩小到系统托盘".to_string());
-            self.notify_error("无法缩小到系统托盘", cx);
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::MINIMIZING_TO_THE_SYSTEM_TRAY_IS_NOT_SUPPORTED_ON_THIS, &[]));
+            self.notify_error(khaslana::ui_i18n::text(messages::CANNOT_MINIMIZE_TO_THE_SYSTEM_TRAY), cx);
         }
     }
 
@@ -2493,7 +2505,7 @@ impl RepositoryView {
         self.close_popups();
         self.settings_center_generation = self.settings_center_generation.wrapping_add(1);
         self.settings_center = Some(SettingsCategory::Credentials);
-        self.reload_credential_records("凭据列表已加载");
+        self.reload_credential_records(khaslana::ui_i18n::encode(messages::CREDENTIAL_LIST_LOADED, &[]));
     }
 
     /// 通知气泡「点击查看更新」的直达入口：打开设置中心并定位到更新设置页。
@@ -2533,7 +2545,7 @@ impl RepositoryView {
         self.settings_center = Some(category);
         match category {
             SettingsCategory::Credentials => {
-                self.reload_credential_records("凭据列表已加载");
+                self.reload_credential_records(khaslana::ui_i18n::encode(messages::CREDENTIAL_LIST_LOADED, &[]));
             }
             SettingsCategory::Proxy => {
                 self.reset_proxy_form_from_settings();
@@ -2575,7 +2587,7 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) {
         if let Some(err) = self.last_error.clone() {
-            self.notify_error(format!("保存失败：{err}"), cx);
+            self.notify_error(err, cx);
         } else {
             self.notify_success(success_msg, cx);
         }
@@ -2618,14 +2630,14 @@ impl RepositoryView {
         }
         self.proxy_settings = settings;
         self.save_proxy_settings();
-        self.status = "代理设置已保存".into();
+        self.status = khaslana::ui_i18n::encode(messages::PROXY_SETTINGS_SAVED, &[]);
         self.last_error = None;
     }
 
     pub(crate) fn open_external_merge_settings(&mut self) {
         self.open_settings_center();
         self.select_settings_category(SettingsCategory::ExternalMerge);
-        self.status = "合并工具设置已打开".into();
+        self.status = khaslana::ui_i18n::encode(messages::MERGE_TOOL_SETTINGS_OPENED, &[]);
         self.last_error = None;
     }
 
@@ -2668,12 +2680,12 @@ impl RepositoryView {
                 self.external_merge_detection = Some((settings.clone(), true));
                 self.external_merge_settings = settings;
                 self.save_external_merge_settings();
-                self.status = format!("已找到 IntelliJ IDEA：{}", path.display());
+                self.status = khaslana::ui_i18n::encode(messages::INTELLIJ_IDEA_FOUND, &[("arg0", &(path.display()).to_string())]);
                 self.last_error = None;
             }
             Err(err) => {
                 self.external_merge_detection = Some((settings, false));
-                self.status = "IntelliJ IDEA 检测失败".into();
+                self.status = khaslana::ui_i18n::encode(messages::INTELLIJ_IDEA_DETECTION_FAILED, &[]);
                 self.last_error = Some(err.to_string());
             }
         }
@@ -2690,7 +2702,7 @@ impl RepositoryView {
         // 启动/手动检查维持状态栏反馈与错误复位。
         if trigger != UpdateCheckTrigger::Periodic {
             self.update_error = None;
-            self.status = "检查更新中".into();
+            self.status = khaslana::ui_i18n::encode(messages::CHECKING_FOR_UPDATES, &[]);
         }
 
         let tx = self.tx.clone();
@@ -2713,7 +2725,7 @@ impl RepositoryView {
                     send_ui_event(
                         &tx,
                         UiEvent::UpdateCheckFailed {
-                            error: "当前已是最新版本".into(),
+                            error: khaslana::ui_i18n::encode(messages::YOU_ARE_UP_TO_DATE, &[]),
                             trigger,
                         },
                     );
@@ -2747,13 +2759,13 @@ impl RepositoryView {
         };
         let asset = manifest.platforms.get("windows-x86_64").cloned();
         let Some(asset) = asset else {
-            self.update_error = Some("缺少下载信息".into());
+            self.update_error = Some(khaslana::ui_i18n::encode(messages::DOWNLOAD_INFORMATION_IS_MISSING, &[]));
             return;
         };
         self.update_downloading = true;
         self.update_download_progress = None;
         self.update_error = None;
-        self.status = "下载更新中".into();
+        self.status = khaslana::ui_i18n::encode(messages::DOWNLOADING_UPDATE, &[]);
 
         let tx = self.tx.clone();
         let config_dir = khaslana::default_database_path()
@@ -2776,7 +2788,7 @@ impl RepositoryView {
                         send_ui_event(
                             &tx,
                             UiEvent::UpdateInstallFailed {
-                                error: "更新包 SHA-256 校验失败，文件可能被篡改".into(),
+                                error: khaslana::ui_i18n::encode(messages::UPDATE_PACKAGE_SHA_VERIFICATION_FAILED_THE_FILE_MAY_HAVE_BEEN, &[]),
                             },
                         );
                         return;
@@ -2797,7 +2809,7 @@ impl RepositoryView {
                             send_ui_event(
                                 &tx,
                                 UiEvent::UpdateInstallFailed {
-                                    error: format!("更新包解压失败：{err}"),
+                                    error: khaslana::ui_i18n::encode_with_messages(messages::COULD_NOT_EXTRACT_THE_UPDATE_PACKAGE, &[], &[("err", &err.to_string())]),
                                 },
                             );
                         }
@@ -2807,7 +2819,7 @@ impl RepositoryView {
                     send_ui_event(
                         &tx,
                         UiEvent::UpdateInstallFailed {
-                            error: format!("更新包下载失败：{err}"),
+                            error: khaslana::ui_i18n::encode_with_messages(messages::COULD_NOT_DOWNLOAD_THE_UPDATE_PACKAGE, &[], &[("err", &err.to_string())]),
                         },
                     );
                 }
@@ -2877,11 +2889,11 @@ impl RepositoryView {
             // updater 启动失败（杀软拦截、staging 目录被清理等）：留在当前
             // 版本并提示，不退出应用——静默退出会让用户误以为更新已安装。
             self.active_dialog = None;
-            self.update_error = Some(format!("更新器启动失败：{err}"));
-            self.status = "更新失败".into();
+            self.update_error = Some(khaslana::ui_i18n::encode_with_messages(messages::COULD_NOT_START_THE_UPDATER, &[], &[("err", &err.to_string())]));
+            self.status = khaslana::ui_i18n::encode(messages::UPDATE_FAILED, &[]);
             self.notify_toast(
                 AppToastKind::Error,
-                format!("更新器启动失败：{err}，已保留当前版本"),
+                khaslana::ui_i18n::format(messages::COULD_NOT_START_THE_UPDATER_THE_CURRENT_VERSION_HAS_BEEN, &[("err", &khaslana::ui_i18n::resolve(&err.to_string()))]),
                 cx,
             );
             return;
@@ -2899,7 +2911,7 @@ impl RepositoryView {
     pub(crate) fn clear_skipped_version(&mut self) {
         self.update_preferences.skipped_version = None;
         self.save_update_preferences();
-        self.status = "已清除跳过版本".into();
+        self.status = khaslana::ui_i18n::encode(messages::SKIPPED_VERSION_CLEARED, &[]);
     }
 
     pub(crate) fn save_update_preferences(&self) {
@@ -2962,12 +2974,12 @@ impl RepositoryView {
             }
         }
         if let Err(err) = self.storage.save_ai_provider_settings(&settings) {
-            self.ai_extensions.save_error = Some(format!("保存 AI 设置失败：{err}"));
-            self.last_error = Some(format!("保存 AI 设置失败：{err}"));
+            self.ai_extensions.save_error = Some(khaslana::ui_i18n::encode_with_messages(messages::COULD_NOT_SAVE_AI_SETTINGS, &[], &[("err", &err.to_string())]));
+            self.last_error = Some(khaslana::ui_i18n::encode_with_messages(messages::COULD_NOT_SAVE_AI_SETTINGS, &[], &[("err", &err.to_string())]));
             return false;
         }
         self.ai_settings = settings;
-        self.status = "AI 设置已保存".into();
+        self.status = khaslana::ui_i18n::encode(messages::AI_SETTINGS_SAVED, &[]);
         self.last_error = None;
         self.ai_extensions.save_error = None;
         true
@@ -2975,19 +2987,19 @@ impl RepositoryView {
 
     pub(crate) fn test_network_proxy_settings(&mut self) {
         if self.busy || self.global_busy_tab.is_some() {
-            self.last_error = Some("已有操作正在运行".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::AN_OPERATION_IS_ALREADY_RUNNING, &[]));
             return;
         }
         let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         let Some(repo_path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         let Some(remote) = self.current_remote() else {
-            self.last_error = Some("当前仓库没有远端，无法测试代理".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::THE_REPOSITORY_HAS_NO_REMOTES_CANNOT_TEST_THE_PROXY, &[]));
             return;
         };
         let settings = self.proxy_form_settings();
@@ -2998,7 +3010,7 @@ impl RepositoryView {
 
         self.proxy_settings = settings;
         self.save_proxy_settings();
-        self.begin_global_test_busy("正在测试代理连接");
+        self.begin_global_test_busy(&khaslana::ui_i18n::encode(messages::TESTING_PROXY_CONNECTION, &[]));
         let service = self.service_for_tab(tab_id);
         let tx = self.tx.clone();
         self.tasks.spawn(TaskKind::Long, move || {
@@ -3011,7 +3023,7 @@ impl RepositoryView {
                 Ok(()) => send_ui_event(
                     &tx,
                     UiEvent::ProxyTestFinished {
-                        message: "代理测试通过".into(),
+                        message: khaslana::ui_i18n::encode(messages::PROXY_TEST_PASSED, &[]),
                     },
                 ),
                 Err(err) => send_ui_event(

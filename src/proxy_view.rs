@@ -1,3 +1,6 @@
+#[path = "ui_resources/proxy_view_messages.rs"]
+mod messages;
+
 use gpui::{Context, IntoElement, Window, div, prelude::*, px};
 use khaslana::NetworkProxyMode;
 
@@ -27,23 +30,23 @@ impl RepositoryView {
         let custom_enabled = self.proxy_mode == NetworkProxyMode::Custom;
         let remote_label = self
             .current_remote()
-            .map(|remote| format!("测试将连接当前远端：{remote}"))
-            .unwrap_or_else(|| "测试代理需要先打开带远端的仓库".to_string());
+            .map(|remote| khaslana::ui_i18n::format(messages::THE_TEST_WILL_CONNECT_TO_THE_CURRENT_REMOTE_REMOTE, &[("remote", &(remote).to_string())]))
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::OPEN_A_REPOSITORY_WITH_A_REMOTE_BEFORE_TESTING_THE_PROXY).to_string());
 
         let mut groups = vec![SettingGroup::new()
             .item(crate::settings_center::settings_group_heading(
-                "代理模式",
+                khaslana::ui_i18n::text(messages::PROXY_MODE),
                 Some(proxy_mode_help(self.proxy_mode).into()),
             ))
             .item(crate::settings_center::settings_item_row(
-                "模式",
+                khaslana::ui_i18n::text(messages::MODE),
                 None,
                 move |_options, _window, cx| {
                     view.update(cx, |this, cx| {
                         crate::ui::components::settings_segmented_group()
-                            .child(this.proxy_mode_button("不使用代理", NetworkProxyMode::Disabled, cx))
-                            .child(this.proxy_mode_button("使用系统代理", NetworkProxyMode::System, cx))
-                            .child(this.proxy_mode_button("自定义代理", NetworkProxyMode::Custom, cx))
+                            .child(this.proxy_mode_button(khaslana::ui_i18n::text(messages::NO_PROXY), NetworkProxyMode::Disabled, cx))
+                            .child(this.proxy_mode_button(khaslana::ui_i18n::text(messages::USE_SYSTEM_PROXY), NetworkProxyMode::System, cx))
+                            .child(this.proxy_mode_button(khaslana::ui_i18n::text(messages::CUSTOM_PROXY), NetworkProxyMode::Custom, cx))
                     })
                 },
             ))];
@@ -52,13 +55,13 @@ impl RepositoryView {
             groups.push(
                 SettingGroup::new()
                     .item(crate::settings_center::settings_group_heading(
-                        "自定义地址",
-                        Some("代理认证第一版请写在 URL 中，例如 http://user:pass@127.0.0.1:7890。".into()),
+                        khaslana::ui_i18n::text(messages::CUSTOM_ADDRESSES),
+                        Some(khaslana::ui_i18n::text(messages::FOR_NOW_INCLUDE_PROXY_AUTHENTICATION_IN_THE_URL_FOR_EXAMPLE).into()),
                     ))
                     .item({
                         let view = cx.entity();
                         crate::settings_center::settings_item_row(
-                            "HTTP 代理",
+                            khaslana::ui_i18n::text(messages::HTTP_PROXY),
                             None,
                             move |_options, window, cx| {
                                 view.update(cx, |this, cx| {
@@ -70,7 +73,7 @@ impl RepositoryView {
                     .item({
                         let view = cx.entity();
                         crate::settings_center::settings_item_row(
-                            "HTTPS 代理",
+                            khaslana::ui_i18n::text(messages::HTTPS_PROXY),
                             None,
                             move |_options, window, cx| {
                                 view.update(cx, |this, cx| {
@@ -82,7 +85,7 @@ impl RepositoryView {
                     .item({
                         let view = cx.entity();
                         crate::settings_center::settings_item_row(
-                            "SOCKS5 代理",
+                            khaslana::ui_i18n::text(messages::SOCKS5_PROXY),
                             None,
                             move |_options, window, cx| {
                                 view.update(cx, |this, cx| {
@@ -97,13 +100,13 @@ impl RepositoryView {
         groups.push(
             SettingGroup::new()
                 .item(crate::settings_center::settings_group_heading(
-                    "连接测试",
-                    Some("在保存前可以先测试一次代理连通性。".into()),
+                    khaslana::ui_i18n::text(messages::CONNECTION_TEST),
+                    Some(khaslana::ui_i18n::text(messages::TEST_THE_PROXY_CONNECTION_BEFORE_SAVING).into()),
                 ))
                 .item({
                     let view = cx.entity();
                     crate::settings_center::settings_item_row(
-                        "当前远端",
+                        khaslana::ui_i18n::text(messages::CURRENT_REMOTE),
                         None,
                         move |_options, _window, cx| {
                             view.update(cx, |_this, _cx| {
@@ -122,22 +125,22 @@ impl RepositoryView {
                         view.update(cx, |this, cx| {
                             dialog_actions()
                                 .child(this.button(
-                                    "测试代理",
+                                    khaslana::ui_i18n::text(messages::TEST_PROXY),
                                     !this.busy,
                                     |this, _, _| this.test_network_proxy_settings(),
                                     cx,
                                 ))
                                 .child(this.primary_button(
-                                    "保存",
+                                    khaslana::ui_i18n::text(messages::SAVE),
                                     !this.busy,
                                     |this, _, cx| {
                                         this.save_network_proxy_settings();
-                                        this.notify_settings_save("代理设置已保存", cx);
+                                        this.notify_settings_save(khaslana::ui_i18n::text(messages::PROXY_SETTINGS_SAVED), cx);
                                     },
                                     cx,
                                 ))
                         })
-                    }).keywords(["测试代理", "保存"])
+                    }).keywords([khaslana::ui_i18n::text(messages::TEST_PROXY), khaslana::ui_i18n::text(messages::SAVE)])
                 }),
         );
 
@@ -168,17 +171,17 @@ impl RepositoryView {
 }
 
 fn proxy_mode_disabled_reason(enabled: bool) -> Option<&'static str> {
-    (!enabled).then_some("当前操作进行中，请稍候")
+    (!enabled).then_some(khaslana::ui_i18n::text(messages::AN_OPERATION_IS_IN_PROGRESS_PLEASE_WAIT))
 }
 
 fn proxy_mode_help(mode: NetworkProxyMode) -> &'static str {
     match mode {
-        NetworkProxyMode::Disabled => "Git 网络操作将显式直连，不使用 Git 配置或环境变量代理。",
+        NetworkProxyMode::Disabled => khaslana::ui_i18n::text(messages::GIT_NETWORK_OPERATIONS_CONNECT_DIRECTLY_IGNORING_GIT_CONFIGURATION_AND_ENVIRONMENT),
         NetworkProxyMode::System => {
-            "使用 libgit2 自动代理：优先读取 Git 代理配置，其次读取 http_proxy / https_proxy 环境变量；不读取系统 UI 代理或 PAC。"
+            khaslana::ui_i18n::text(messages::USE_LIBGIT2_AUTOMATIC_PROXY_SELECTION_GIT_PROXY_CONFIGURATION_FIRST_THEN)
         }
         NetworkProxyMode::Custom => {
-            "按远端协议选择自定义代理；HTTP/HTTPS 远端可回退 SOCKS5，SSH 远端仅尝试自定义 SOCKS5。"
+            khaslana::ui_i18n::text(messages::SELECT_A_CUSTOM_PROXY_BY_REMOTE_PROTOCOL_HTTP_HTTPS_REMOTES)
         }
     }
 }

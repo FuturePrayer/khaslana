@@ -1,6 +1,20 @@
 use super::*;
 
 #[test]
+fn validation_errors_keep_identity_and_support_explicit_languages() {
+    use crate::language::Language;
+    let mut settings = AiProviderSettings::default();
+    let error = settings.validate().unwrap_err();
+    assert!(error.message_key().is_some());
+    assert_eq!(error.display_in(Language::En), "Enter a Base URL");
+    assert_eq!(error.display_in(Language::ZhCn), "请填写 Base URL");
+    settings.temperature = 3.0;
+    let error = settings.validate().unwrap_err();
+    assert!(error.display_in(Language::En).contains("between 0 and 2"));
+    assert!(error.display_in(Language::ZhCn).contains("0–2"));
+}
+
+#[test]
 fn default_is_disabled_and_chat_completions() {
     let settings = AiProviderSettings::default();
     assert!(!settings.enabled);

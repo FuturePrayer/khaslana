@@ -1,3 +1,4 @@
+use crate::types::domain_ui_resources;
 // 代码搜索 Git 服务：在指定提交的文件树里按子串/正则逐行搜索，
 // 供 AI 评审 agent 的 search_code 工具使用（近似符号查找）。
 //
@@ -51,7 +52,7 @@ impl GitService {
     ) -> Result<Vec<CodeSearchMatch>> {
         let query = query.trim();
         if query.is_empty() {
-            return Err(GitError::Message("搜索内容不能为空".into()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::SEARCH_TEXT_CANNOT_BE_EMPTY, &[])));
         }
         let matcher = if is_regex {
             Some(SearchMatcher::compile_regex(query)?)
@@ -102,15 +103,13 @@ fn resolve_subtree<'r>(
 ) -> Result<git2::Tree<'r>> {
     let path = Path::new(prefix.trim_end_matches('/'));
     let entry = root.get_path(path).map_err(|_| {
-        GitError::Message(format!("目录不存在：{prefix}（请检查 path_prefix 拼写）"))
+        GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::DIRECTORY_DOES_NOT_EXIST_CHECK_THE_SPELLING_OF_PATH_PREFIX, &[("prefix", &format!("{}", prefix))]))
     })?;
     let object = entry
         .to_object(repo)
-        .map_err(|_| GitError::Message(format!("目录不存在：{prefix}")))?;
+        .map_err(|_| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::DIRECTORY_DOES_NOT_EXIST, &[("prefix", &format!("{}", prefix))])))?;
     object.into_tree().map_err(|_| {
-        GitError::Message(format!(
-            "{prefix} 是文件不是目录，请去掉文件名只保留目录前缀"
-        ))
+        GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::IS_A_FILE_NOT_A_DIRECTORY_REMOVE_THE_FILE_NAME_AND_KEEP_ONLY_THE_DIRECTORY_PREFIX, &[("prefix", &format!("{}", prefix))]))
     })
 }
 
@@ -130,7 +129,7 @@ impl SearchMatcher {
     fn compile_regex(pattern: &str) -> Result<Self> {
         regex::Regex::new(pattern)
             .map(|regex| Self::Regex { regex })
-            .map_err(|err| GitError::Message(format!("正则表达式无效：{err}")))
+            .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INVALID_REGULAR_EXPRESSION, &[("err", &format!("{}", err))])))
     }
 
     fn is_match(&self, line: &str) -> bool {

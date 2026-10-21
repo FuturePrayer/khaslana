@@ -1,3 +1,4 @@
+use crate::types::domain_ui_resources;
 #[cfg(windows)]
 use git2::Binding;
 use git2::build::CheckoutBuilder;
@@ -307,9 +308,7 @@ pub(super) fn save_stash_preserving_locked_directories(
             // stash 条目已创建成功，失败的是工作区清理：如实说明，用户重试前
             // 会知道已产生一条贮藏，避免盲目重试堆出重复贮藏。
             let short_oid = &stash_oid.to_string()[..7.min(stash_oid.to_string().len())];
-            return Err(git2::Error::from_str(&format!(
-                "贮藏已创建（{short_oid}），但清理工作区失败：{err}；可先处理占用后重试或手动丢弃工作区改动"
-            )));
+            return Err(git2::Error::from_str(&crate::ui_i18n::format(domain_ui_resources::STASH_CREATED_BUT_CLEANING_THE_WORKING_TREE_FAILED_RELEASE_LOCKED_FILES_AND_RETRY_OR, &[("short_oid", &format!("{}", short_oid)), ("err", &format!("{}", err))])));
         }
         Ok(stash_oid)
     }

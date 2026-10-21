@@ -1,4 +1,7 @@
 //! V2 文档控件。图标与弹出菜单复用 Kit；字段继续使用同一输入宿主。
+#[path = "visual_resources.rs"]
+mod deep_messages;
+
 use super::*;
 use super::document::{card, column, hint, text, edit_tool_selection};
 use gpui_kit::assets::IconName;
@@ -48,7 +51,7 @@ pub(super) fn step_icon(step: &WorkflowEditorStepData) -> (IconName, &'static st
             "skill.run" => (IconName::Sparkles, "Skill"),
             "js.run" => (IconName::Braces, "JavaScript"),
             "mcp.call" => (IconName::Plug, "MCP"),
-            _ => (IconName::Workflow, "动作"),
+            _ => (IconName::Workflow, khaslana::ui_i18n::text(deep_messages::ACTION)),
         }
     } else {
         (match step.kind {
@@ -96,7 +99,7 @@ impl RepositoryView {
         let current = self.workflow_editor.as_ref().and_then(|editor| editor.data.steps.get(index))
             .map(|step| step.invoke.value(slot).to_string()).unwrap_or_default();
         div().w(px(28.0)).h(px(36.0)).flex_none().child(
-            icon_button(format!("workflow-v2-options-{index}-{slot:?}"), if options.is_empty() { "没有可选项目，请先在设置中配置" } else { "选择已配置的项目" }, IconName::ChevronDown, !options.is_empty())
+            icon_button(format!("workflow-v2-options-{index}-{slot:?}"), if options.is_empty() { khaslana::ui_i18n::text(deep_messages::NO_OPTIONS_AVAILABLE_CONFIGURE_THEM_IN_SETTINGS_FIRST) } else { khaslana::ui_i18n::text(deep_messages::SELECT_A_CONFIGURED_ITEM) }, IconName::ChevronDown, !options.is_empty())
             .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |mut menu, window, _| {
                 menu = fit_menu(menu, &width, window).scrollable(true).max_h(px(240.0));
                 for value in &options {
@@ -121,7 +124,7 @@ impl RepositoryView {
         };
         let selector = matches!(slot, WorkflowStepSlot::Skill | WorkflowStepSlot::Server | WorkflowStepSlot::Tool);
         let roomy = f32::from(window.viewport_size().width) >= 1380.0;
-        let label = match slot { WorkflowStepSlot::Skill => "选择 Skill", WorkflowStepSlot::Task => "任务描述", WorkflowStepSlot::SaveAs => "输出变量", _ => slot.label() };
+        let label = match slot { WorkflowStepSlot::Skill => khaslana::ui_i18n::text(deep_messages::SELECT_SKILL), WorkflowStepSlot::Task => khaslana::ui_i18n::text(deep_messages::TASK_DESCRIPTION), WorkflowStepSlot::SaveAs => khaslana::ui_i18n::text(deep_messages::OUTPUT_VARIABLE), _ => slot.label() };
         let width = self.document_menu_width(format!("options-{index}-{slot:?}"));
         let mut field = div().flex().min_w_0().flex_1().gap_1().items_center()
             .child(div().flex_1().min_w_0().when(slot == WorkflowStepSlot::Task, |input| input.w_full())
@@ -131,7 +134,7 @@ impl RepositoryView {
             field = field.flex_none().w(px(if slot == WorkflowStepSlot::SaveAs { 400.0 } else { 308.0 }));
         }
         if selector { field = measure_menu_field(field, width); }
-        if slot == WorkflowStepSlot::Task { field = field.flex_col().items_start().w_full().child(hint("描述要完成的任务，支持使用输入变量")); }
+        if slot == WorkflowStepSlot::Task { field = field.flex_col().items_start().w_full().child(hint(khaslana::ui_i18n::text(deep_messages::DESCRIBE_THE_TASK_INPUT_VARIABLE_REFERENCES_ARE_SUPPORTED))); }
         let available = match slot {
             WorkflowStepSlot::Skill => self.ai_extensions.skills.iter().any(|(name, _)| name == value),
             WorkflowStepSlot::Server => value == "browser.edge" || self.ai_extensions.mcp.servers.contains_key(value),
@@ -140,12 +143,12 @@ impl RepositoryView {
         let mut row = div().flex().items_start().min_w_0().gap_3()
             .child(text(label.to_string()).w(px(108.0)).flex_none().pt(px(8.0))).child(field);
         if matches!(slot, WorkflowStepSlot::Skill | WorkflowStepSlot::Server) {
-            row = row.child(status(if available { if slot == WorkflowStepSlot::Skill { "已安装" } else { "已配置" } } else { "未找到" }, available));
+            row = row.child(status(if available { if slot == WorkflowStepSlot::Skill { khaslana::ui_i18n::text(deep_messages::INSTALLED) } else { khaslana::ui_i18n::text(deep_messages::CONFIGURED) } } else { khaslana::ui_i18n::text(deep_messages::NOT_FOUND) }, available));
         }
         let help = match slot {
-            WorkflowStepSlot::Skill => "使用本地安装的 Skill 执行任务",
-            WorkflowStepSlot::Server => "使用已配置的服务调用工具",
-            WorkflowStepSlot::SaveAs => "保存结果，供后续步骤引用 ${out.变量名}",
+            WorkflowStepSlot::Skill => khaslana::ui_i18n::text(deep_messages::RUN_A_TASK_USING_AN_INSTALLED_SKILL),
+            WorkflowStepSlot::Server => khaslana::ui_i18n::text(deep_messages::CALL_TOOLS_THROUGH_A_CONFIGURED_SERVER),
+            WorkflowStepSlot::SaveAs => khaslana::ui_i18n::text(deep_messages::SAVE_THE_RESULT_FOR_LATER_STEPS_TO_REFERENCE_AS),
             _ => "",
         };
         if !help.is_empty() && roomy { row = row.child(hint(help).flex_1().min_w_0().pt_2()); }
@@ -176,11 +179,11 @@ impl RepositoryView {
         let key = step.invoke.value(WorkflowStepSlot::StepId).to_string();
         let expanded = editor.document_tools_open.get(&key).copied().unwrap_or(!selected.is_empty());
         let enabled = !editor.ai_loading;
-        let label = if selected.is_empty() { "调用工具（可选）".to_string() }
-            else { format!("调用工具（已选 {} 个）", selected.len()) };
+        let label = if selected.is_empty() { khaslana::ui_i18n::text(deep_messages::CALLABLE_TOOLS_OPTIONAL).to_string() }
+            else { khaslana::ui_i18n::format(deep_messages::CALLABLE_TOOLS_SELECTED, &[("value0", &(selected.len()).to_string())]) };
         let toggle = Button::new(format!("workflow-v2-tools-toggle-{key}")).ghost().small().label(label)
             .icon(icon(if expanded { IconName::ChevronDown } else { IconName::ChevronRight }, ui_theme::WORKFLOW_META))
-            .disabled(!enabled).accessibility_label(if expanded { "收起调用工具" } else { "展开调用工具（可选）" })
+            .disabled(!enabled).accessibility_label(if expanded { khaslana::ui_i18n::text(deep_messages::COLLAPSE_CALLABLE_TOOLS) } else { khaslana::ui_i18n::text(deep_messages::EXPAND_CALLABLE_TOOLS_OPTIONAL) })
             .on_click(cx.listener(move |this, _, _, cx| {
                 if let Some(editor) = this.workflow_editor.as_mut() { editor.document_tools_open.insert(key.clone(), !expanded); }
                 cx.notify();
@@ -195,14 +198,14 @@ impl RepositoryView {
             let Some(server) = item["server"].as_str() else { continue; };
             let tool = tool.to_string(); let server = server.to_string();
             chips = chips.child(badge(format!("{server} / {tool}")).py(px(2.0)).gap_1()
-                .child(icon_button(format!("workflow-v2-tool-remove-{index}-{position}"), &format!("移除 {server} / {tool}"), IconName::X, enabled)
+                .child(icon_button(format!("workflow-v2-tool-remove-{index}-{position}"), &khaslana::ui_i18n::format(deep_messages::REMOVE, &[("server", &(server).to_string()), ("tool", &(tool).to_string())]), IconName::X, enabled)
                     .w(px(18.0)).h(px(18.0)).on_click(cx.listener(move |this, _, _, cx| { this.document_select_tool(index, &server, &tool, false); cx.notify(); }))));
         }
-        if selected.is_empty() { chips = chips.child(hint("未添加工具，可直接执行此步骤")); }
+        if selected.is_empty() { chips = chips.child(hint(khaslana::ui_i18n::text(deep_messages::NO_TOOLS_ADDED_THIS_STEP_CAN_RUN_DIRECTLY))); }
         let entity = cx.entity();
         let tool_width = self.document_menu_width(format!("tools-{index}"));
         let tool_measure = tool_width.clone();
-        let menu_button = icon_button(format!("workflow-v2-tool-picker-{index}"), if servers.is_empty() { "没有可选工具，请先在 AI 设置中配置" } else { "添加可调用的工具" }, IconName::Plus, enabled && !servers.is_empty())
+        let menu_button = icon_button(format!("workflow-v2-tool-picker-{index}"), if servers.is_empty() { khaslana::ui_i18n::text(deep_messages::NO_TOOLS_AVAILABLE_CONFIGURE_THEM_IN_AI_SETTINGS_FIRST) } else { khaslana::ui_i18n::text(deep_messages::ADD_A_CALLABLE_TOOL) }, IconName::Plus, enabled && !servers.is_empty())
             .w(px(36.0)).h(px(36.0))
             .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |mut menu, window, _| {
                 menu = fit_menu(menu, &tool_width, window).scrollable(true).max_h(px(260.0));
@@ -218,8 +221,8 @@ impl RepositoryView {
                 } menu
             });
         let content = column().gap_2()
-            .child(hint("仅在步骤需要外部能力时添加。Skill 由 AI 按任务调用；JavaScript 在脚本中通过 mcp.call(...) 调用。"))
-            .child(div().flex().items_start().gap_3().child(text("允许调用").w(px(108.0)).pt_2().flex_none())
+            .child(hint(khaslana::ui_i18n::text(deep_messages::ADD_TOOLS_ONLY_WHEN_THE_STEP_NEEDS_EXTERNAL_CAPABILITIES_AI_INVOKES_THEM)))
+            .child(div().flex().items_start().gap_3().child(text(khaslana::ui_i18n::text(deep_messages::ALLOWED_CALLS)).w(px(108.0)).pt_2().flex_none())
                 .child(measure_menu_field(div().relative().flex().flex_1().min_w_0().items_center().gap_1()
                     .bg(rgb(ui_theme::WB_INPUT_SURFACE)).rounded(px(ui_theme::RADIUS_SM))
                     // 边框独立绘制，箭头触发器的右边界与整个字段相同。
@@ -233,11 +236,11 @@ impl RepositoryView {
         let mut body = column();
         for slot in step.kind.slots() { body = body.child(self.document_field(WorkflowEditorFieldId::StepParam { step: index, slot: *slot }, slot.label(), window, cx)); }
         let flags = match step.kind {
-            WorkflowStepKind::CreateBranch => vec![(WorkflowStepFlag::CreateCheckout, "创建后切换到新分支", step.checkout)],
-            WorkflowStepKind::Push => vec![(WorkflowStepFlag::PushSetUpstream, "推送时建立上游跟踪", step.set_upstream)],
-            WorkflowStepKind::GuardRemoteBranch => vec![(WorkflowStepFlag::GuardFetch, "检查前先获取远端引用", step.guard_fetch)],
-            WorkflowStepKind::FilterBranches => vec![(WorkflowStepFlag::FilterSkipCurrent, "排除当前分支", step.filter_skip_current)],
-            WorkflowStepKind::DeleteBranches => vec![(WorkflowStepFlag::DeleteDryRun, "试运行（只列出待删除分支）", step.delete_dry_run), (WorkflowStepFlag::DeleteSkipCurrent, "跳过当前分支", step.delete_skip_current)],
+            WorkflowStepKind::CreateBranch => vec![(WorkflowStepFlag::CreateCheckout, khaslana::ui_i18n::text(deep_messages::SWITCH_TO_THE_NEW_BRANCH_AFTER_CREATION), step.checkout)],
+            WorkflowStepKind::Push => vec![(WorkflowStepFlag::PushSetUpstream, khaslana::ui_i18n::text(deep_messages::SET_UPSTREAM_TRACKING_WHEN_PUSHING), step.set_upstream)],
+            WorkflowStepKind::GuardRemoteBranch => vec![(WorkflowStepFlag::GuardFetch, khaslana::ui_i18n::text(deep_messages::FETCH_REMOTE_REFERENCES_BEFORE_CHECKING), step.guard_fetch)],
+            WorkflowStepKind::FilterBranches => vec![(WorkflowStepFlag::FilterSkipCurrent, khaslana::ui_i18n::text(deep_messages::EXCLUDE_CURRENT_BRANCH), step.filter_skip_current)],
+            WorkflowStepKind::DeleteBranches => vec![(WorkflowStepFlag::DeleteDryRun, khaslana::ui_i18n::text(deep_messages::DRY_RUN_LIST_BRANCHES_WITHOUT_DELETING), step.delete_dry_run), (WorkflowStepFlag::DeleteSkipCurrent, khaslana::ui_i18n::text(deep_messages::SKIP_CURRENT_BRANCH), step.delete_skip_current)],
             _ => Vec::new(),
         };
         for (flag, label, current) in flags {
@@ -255,12 +258,12 @@ impl RepositoryView {
                 let entity = cx.entity();
                 let width = self.document_menu_width(format!("guard-{index}-{exists}"));
                 let measured = width.clone();
-                body = body.child(div().flex().items_center().gap_3().child(text(if exists { "远端分支存在" } else { "远端分支不存在" }).w(px(108.0)))
+                body = body.child(div().flex().items_center().gap_3().child(text(if exists { khaslana::ui_i18n::text(deep_messages::REMOTE_BRANCH_EXISTS) } else { khaslana::ui_i18n::text(deep_messages::REMOTE_BRANCH_IS_MISSING) }).w(px(108.0)))
                     .child(measure_menu_field(div().flex_1().min_w_0().h(px(36.0)).child(
-                        menu_button(format!("workflow-v2-guard-{index}-{exists}"), if current == RemoteBranchGuardAction::Fail { "停止工作流" } else { "继续执行" }, true)
+                        menu_button(format!("workflow-v2-guard-{index}-{exists}"), if current == RemoteBranchGuardAction::Fail { khaslana::ui_i18n::text(deep_messages::STOP_WORKFLOW) } else { khaslana::ui_i18n::text(deep_messages::CONTINUE) }, true)
                         .dropdown_menu(move |mut menu, window, _| {
                             menu = fit_menu(menu, &width, window);
-                            for (value, label) in [(RemoteBranchGuardAction::Fail, "停止工作流"), (RemoteBranchGuardAction::Continue, "继续执行")] {
+                            for (value, label) in [(RemoteBranchGuardAction::Fail, khaslana::ui_i18n::text(deep_messages::STOP_WORKFLOW)), (RemoteBranchGuardAction::Continue, khaslana::ui_i18n::text(deep_messages::CONTINUE))] {
                                 menu = menu.item(PopupMenuItem::new(label).checked(value == current).on_click(window.listener_for(&entity, move |this, _, _, cx| {
                                     this.workflow_editor_set_guard_action(index, exists.then_some(value), (!exists).then_some(value)); cx.notify();
                                 })));
@@ -277,14 +280,14 @@ impl RepositoryView {
         card().border_0().gap_1().bg(rgb(ui_theme::WORKFLOW_SURFACE))
             .child(div().flex().items_center().gap_1().child(text(name.clone()).font_family("Consolas").text_size(px(13.0))
                 .font_weight(gpui::FontWeight::SEMIBOLD).flex_1().min_w_0())
-                .child(icon_button(format!("workflow-v2-variable-copy-{id}"), &format!("复制 {name}"), IconName::Copy, true)
+                .child(icon_button(format!("workflow-v2-variable-copy-{id}"), &khaslana::ui_i18n::format(deep_messages::COPY, &[("name", &(name).to_string())]), IconName::Copy, true)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(copied.clone()));
-                        this.status = format!("已复制变量引用 {copied}");
+                        this.status = khaslana::ui_i18n::encode(deep_messages::COPIED_VARIABLE_REFERENCE, &[("copied", &(copied).to_string())]);
                         this.notify_success(this.status.clone(), cx);
                     }))))
-            .child(badge(if default.is_some() { "字符串" } else { "变量" }))
+            .child(badge(if default.is_some() { khaslana::ui_i18n::text(deep_messages::STRING) } else { khaslana::ui_i18n::text(deep_messages::VARIABLE) }))
             .when(!description.is_empty(), |card| card.child(hint(description)))
-            .when_some(default, |card, value| card.child(hint(format!("默认值：{value}"))))
+            .when_some(default, |card, value| card.child(hint(khaslana::ui_i18n::format(deep_messages::DEFAULT_VALUE, &[("value", &(value).to_string())]))))
     }
 }

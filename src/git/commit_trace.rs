@@ -1,3 +1,4 @@
+use crate::types::domain_ui_resources;
 // 分支谱系追踪服务：供提交图谱页计算「分支动向高亮」的 OID 集合。
 //
 // `branch_commit_oids` 从分支 tip 出发收集可达提交（可选隐藏 HEAD 可达集，
@@ -32,7 +33,7 @@ impl GitService {
         let branch_ref = repo
             .find_branch(branch, BranchType::Local)
             .or_else(|_| repo.find_branch(branch, BranchType::Remote))
-            .map_err(|_| crate::types::GitError::Message(format!("分支不存在：{branch}")))?;
+            .map_err(|_| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::BRANCH_DOES_NOT_EXIST, &[("branch", &format!("{}", branch))])))?;
         let Some(tip) = branch_ref.get().target() else {
             return Ok((Vec::new(), false));
         };

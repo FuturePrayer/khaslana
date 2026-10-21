@@ -1,5 +1,8 @@
 //! 搜索目录只持有导航目标；确认后仍调用业务入口，不直接执行危险 Git 操作。
 
+#[path = "../ui_resources/code_palette_view_catalog_messages.rs"]
+mod messages;
+
 use crate::{MainMode, RepoTabId, SettingsCategory, ai_extensions_view::AiSettingsTab};
 use khaslana::{BranchKind, RepositorySnapshot};
 use std::path::PathBuf;
@@ -90,88 +93,88 @@ pub(super) fn function_entries(
 ) -> Vec<SearchEntry> {
     let id = tab_id.unwrap_or(RepoTabId(0));
     let repo_reason = if tab_id.is_none() {
-        Some("请先打开仓库")
+        Some(khaslana::ui_i18n::text(messages::OPEN_A_REPOSITORY_FIRST))
     } else {
         None
     };
-    let operation_reason = repo_reason.or(busy.then_some("当前操作进行中，请稍候"));
+    let operation_reason = repo_reason.or(busy.then_some(khaslana::ui_i18n::text(messages::AN_OPERATION_IS_IN_PROGRESS_PLEASE_WAIT)));
     let remote_reason = operation_reason
         .or_else(|| {
             snapshot
                 .filter(|snapshot| !snapshot.remotes.is_empty())
                 .is_none()
-                .then_some("当前仓库没有可用远端")
+                .then_some(khaslana::ui_i18n::text(messages::THIS_REPOSITORY_HAS_NO_AVAILABLE_REMOTE))
         })
         .or_else(|| {
             snapshot
                 .is_some_and(|snapshot| snapshot.merge_in_progress)
-                .then_some("请先完成或中止合并")
+                .then_some(khaslana::ui_i18n::text(messages::COMPLETE_OR_ABORT_THE_MERGE_FIRST))
         });
     let mut entries = vec![
         SearchEntry::new(
-            "打开仓库",
-            "选择本地 Git 仓库文件夹",
-            "功能",
-            "打开 项目 open repository repo",
+            khaslana::ui_i18n::text(messages::OPEN_REPOSITORY),
+            khaslana::ui_i18n::text(messages::CHOOSE_A_LOCAL_GIT_REPOSITORY_FOLDER),
+            khaslana::ui_i18n::text(messages::COMMANDS),
+            khaslana::ui_i18n::text(messages::OPEN_PROJECT_OPEN_REPOSITORY_REPO),
             SearchTarget::OpenRepository,
         )
-        .disabled(busy.then_some("当前操作进行中，请稍候")),
+        .disabled(busy.then_some(khaslana::ui_i18n::text(messages::AN_OPERATION_IS_IN_PROGRESS_PLEASE_WAIT))),
         SearchEntry::new(
-            "克隆仓库",
-            "填写远端地址和本地目录",
-            "功能",
-            "下载 项目 clone",
+            khaslana::ui_i18n::text(messages::CLONE_REPOSITORY),
+            khaslana::ui_i18n::text(messages::ENTER_A_REMOTE_ADDRESS_AND_LOCAL_DIRECTORY),
+            khaslana::ui_i18n::text(messages::COMMANDS),
+            khaslana::ui_i18n::text(messages::DOWNLOAD_PROJECT_CLONE),
             SearchTarget::CloneRepository,
         )
-        .disabled(busy.then_some("当前操作进行中，请稍候")),
+        .disabled(busy.then_some(khaslana::ui_i18n::text(messages::AN_OPERATION_IS_IN_PROGRESS_PLEASE_WAIT))),
     ];
     for (title, description, keywords, mode) in [
         (
-            "工作区",
-            "查看修改、暂存文件和提交",
-            "修改 提交 暂存 取消暂存 修补 amend commit stage unstage diff refresh 刷新",
+            khaslana::ui_i18n::text(messages::WORKING_TREE),
+            khaslana::ui_i18n::text(messages::VIEW_CHANGES_STAGE_FILES_AND_COMMIT),
+            khaslana::ui_i18n::text(messages::CHANGES_COMMIT_STAGE_UNSTAGE_AMEND_COMMIT_STAGE_UNSTAGE_DIFF_REFRESH),
             MainMode::Worktree,
         ),
         (
-            "提交记录",
-            "查看历史、差异及提交操作",
-            "历史 日志 撤销 重置 回退 拣选 cherry-pick reset revert log history",
+            khaslana::ui_i18n::text(messages::HISTORY),
+            khaslana::ui_i18n::text(messages::VIEW_HISTORY_DIFFERENCES_AND_COMMIT_OPERATIONS),
+            khaslana::ui_i18n::text(messages::HISTORY_LOG_UNDO_RESET_REVERT_CHERRY_PICK_RESET_REVERT_LOG),
             MainMode::History,
         ),
         (
-            "提交图谱",
-            "查看分支谱系和提交关系",
-            "图谱 分支 graph",
+            khaslana::ui_i18n::text(messages::COMMIT_GRAPH),
+            khaslana::ui_i18n::text(messages::VIEW_BRANCH_LINEAGE_AND_COMMIT_RELATIONSHIPS),
+            khaslana::ui_i18n::text(messages::GRAPH_BRANCHES_GRAPH),
             MainMode::CommitGraph,
         ),
         (
-            "工作流",
-            "选择模板、配置参数和查看执行日志",
-            "自动化 模板 workflow",
+            khaslana::ui_i18n::text(messages::WORKFLOWS),
+            khaslana::ui_i18n::text(messages::CHOOSE_TEMPLATES_CONFIGURE_PARAMETERS_AND_VIEW_EXECUTION_LOGS),
+            khaslana::ui_i18n::text(messages::AUTOMATION_TEMPLATES_WORKFLOW),
             MainMode::Workflow,
         ),
         (
-            "冲突处理",
-            "查看冲突并按块接受或使用 AI 合并",
-            "合并 解决冲突 merge conflict AI",
+            khaslana::ui_i18n::text(messages::CONFLICTS),
+            khaslana::ui_i18n::text(messages::VIEW_CONFLICTS_AND_ACCEPT_BLOCKS_OR_MERGE_WITH_AI),
+            khaslana::ui_i18n::text(messages::MERGE_RESOLVE_MERGE_CONFLICT_AI),
             MainMode::Conflict,
         ),
         (
-            "贮藏列表",
-            "查看已保存的贮藏和文件差异",
-            "储藏 stash",
+            khaslana::ui_i18n::text(messages::STASH_LIST),
+            khaslana::ui_i18n::text(messages::VIEW_SAVED_STASHES_AND_FILE_DIFFERENCES),
+            khaslana::ui_i18n::text(messages::STASH_STASH),
             MainMode::Stash,
         ),
         (
-            "浏览文件",
-            "浏览当前分支文件内容和比较差异",
-            "文件 查看 分支比较 compare browse",
+            khaslana::ui_i18n::text(messages::BROWSE_FILES),
+            khaslana::ui_i18n::text(messages::BROWSE_CURRENT_BRANCH_FILES_AND_COMPARE_DIFFERENCES),
+            khaslana::ui_i18n::text(messages::FILES_VIEW_BRANCH_COMPARISON_COMPARE_BROWSE),
             MainMode::Browse,
         ),
         (
-            "追溯",
-            "查看文件每一行的提交来源",
-            "blame 作者 代码追溯",
+            khaslana::ui_i18n::text(messages::ATTRIBUTION),
+            khaslana::ui_i18n::text(messages::VIEW_THE_ORIGINATING_COMMIT_FOR_EACH_FILE_LINE),
+            khaslana::ui_i18n::text(messages::BLAME_AUTHOR_ATTRIBUTION),
             MainMode::Blame,
         ),
     ] {
@@ -179,7 +182,7 @@ pub(super) fn function_entries(
             repo_reason.or_else(|| {
                 snapshot
                     .is_none_or(|snapshot| snapshot.conflicts.is_empty())
-                    .then_some("当前仓库没有冲突")
+                    .then_some(khaslana::ui_i18n::text(messages::THIS_REPOSITORY_HAS_NO_CONFLICTS))
             })
         } else {
             repo_reason
@@ -188,7 +191,7 @@ pub(super) fn function_entries(
             SearchEntry::new(
                 title,
                 description,
-                "功能",
+                khaslana::ui_i18n::text(messages::COMMANDS),
                 keywords,
                 SearchTarget::Mode(id, mode),
             )
@@ -198,105 +201,105 @@ pub(super) fn function_entries(
     // 需要先选择文件、分支或提交的操作，定位到它们所在页面，不代替用户选对象。
     for (title, description, keywords, mode) in [
         (
-            "提交修改",
-            "工作区 · 暂存修改后在差异下方填写提交信息",
-            "commit 提交 暂存 stage",
+            khaslana::ui_i18n::text(messages::COMMIT_CHANGES),
+            khaslana::ui_i18n::text(messages::WORKING_TREE_STAGE_CHANGES_AND_ENTER_A_COMMIT_MESSAGE_BELOW),
+            khaslana::ui_i18n::text(messages::COMMIT_COMMIT_STAGE_STAGE),
             MainMode::Worktree,
         ),
         (
-            "AI 生成提交信息",
-            "工作区 · 提交区的 AI 生成按钮",
-            "提交说明 commit message",
+            khaslana::ui_i18n::text(messages::AI_COMMIT_MESSAGE),
+            khaslana::ui_i18n::text(messages::WORKING_TREE_AI_GENERATION_BUTTON_IN_THE_COMMIT_AREA),
+            khaslana::ui_i18n::text(messages::COMMIT_MESSAGE_COMMIT_MESSAGE),
             MainMode::Worktree,
         ),
         (
-            "AI 代码评审",
-            "工作区 · 选择差异后打开 AI 评审",
-            "审查 review",
+            khaslana::ui_i18n::text(messages::AI_CODE_REVIEW),
+            khaslana::ui_i18n::text(messages::WORKING_TREE_SELECT_A_DIFF_AND_OPEN_AI_REVIEW),
+            khaslana::ui_i18n::text(messages::REVIEW_REVIEW),
             MainMode::Worktree,
         ),
         (
-            "刷新仓库",
-            "顶栏 · 刷新按钮",
-            "refresh 刷新",
+            khaslana::ui_i18n::text(messages::REFRESH_REPOSITORY),
+            khaslana::ui_i18n::text(messages::TITLE_BAR_REFRESH_BUTTON),
+            khaslana::ui_i18n::text(messages::REFRESH_REFRESH),
             MainMode::Worktree,
         ),
         (
-            "获取远端更新",
-            "顶栏 · 获取按钮",
-            "fetch 获取",
+            khaslana::ui_i18n::text(messages::FETCH_REMOTE_UPDATES),
+            khaslana::ui_i18n::text(messages::TITLE_BAR_FETCH_BUTTON),
+            khaslana::ui_i18n::text(messages::FETCH_FETCH),
             MainMode::Worktree,
         ),
         (
-            "切换分支",
-            "工作区 · 在分支列表中选择检出目标",
-            "checkout 检出",
+            khaslana::ui_i18n::text(messages::SWITCH_BRANCH),
+            khaslana::ui_i18n::text(messages::WORKING_TREE_SELECT_A_CHECKOUT_TARGET_IN_THE_BRANCH_LIST),
+            khaslana::ui_i18n::text(messages::CHECKOUT_CHECKOUT),
             MainMode::Worktree,
         ),
         (
-            "合并分支",
-            "工作区 · 分支右键菜单中的合并操作",
+            khaslana::ui_i18n::text(messages::MERGE_BRANCH),
+            khaslana::ui_i18n::text(messages::WORKING_TREE_MERGE_ACTION_IN_THE_BRANCH_CONTEXT_MENU),
             "merge",
             MainMode::Worktree,
         ),
         (
-            "变基",
-            "工作区 · 分支右键菜单中的变基操作",
+            khaslana::ui_i18n::text(messages::REBASE),
+            khaslana::ui_i18n::text(messages::WORKING_TREE_REBASE_ACTION_IN_THE_BRANCH_CONTEXT_MENU),
             "rebase",
             MainMode::Worktree,
         ),
         (
-            "重命名分支",
-            "工作区 · 分支右键菜单中的重命名操作",
+            khaslana::ui_i18n::text(messages::RENAME_BRANCH),
+            khaslana::ui_i18n::text(messages::WORKING_TREE_RENAME_ACTION_IN_THE_BRANCH_CONTEXT_MENU),
             "rename",
             MainMode::Worktree,
         ),
         (
-            "删除分支",
-            "工作区 · 分支右键菜单中的删除确认入口",
+            khaslana::ui_i18n::text(messages::DELETE_BRANCH),
+            khaslana::ui_i18n::text(messages::WORKING_TREE_DELETE_CONFIRMATION_IN_THE_BRANCH_CONTEXT_MENU),
             "delete branch",
             MainMode::Worktree,
         ),
         (
-            "分支比较",
-            "工作区 · 分支右键菜单中的比较操作",
+            khaslana::ui_i18n::text(messages::COMPARE_BRANCHES),
+            khaslana::ui_i18n::text(messages::WORKING_TREE_COMPARE_ACTION_IN_THE_BRANCH_CONTEXT_MENU),
             "compare",
             MainMode::Worktree,
         ),
         (
-            "设置上游分支",
-            "工作区 · 分支右键菜单中的上游设置",
-            "upstream 跟踪",
+            khaslana::ui_i18n::text(messages::SET_UPSTREAM_BRANCH),
+            khaslana::ui_i18n::text(messages::WORKING_TREE_UPSTREAM_SETTING_IN_THE_BRANCH_CONTEXT_MENU),
+            khaslana::ui_i18n::text(messages::UPSTREAM_TRACKING),
             MainMode::Worktree,
         ),
         (
-            "拣选提交",
-            "提交记录 · 选择提交后在右键菜单中拣选",
+            khaslana::ui_i18n::text(messages::CHERRY_PICK_COMMIT),
+            khaslana::ui_i18n::text(messages::HISTORY_SELECT_A_COMMIT_AND_CHERRY_PICK_FROM_ITS_CONTEXT),
             "cherry-pick",
             MainMode::History,
         ),
         (
-            "重置到提交",
-            "提交记录 · 选择提交后在右键菜单中重置",
+            khaslana::ui_i18n::text(messages::RESET_TO_COMMIT),
+            khaslana::ui_i18n::text(messages::HISTORY_SELECT_A_COMMIT_AND_RESET_FROM_ITS_CONTEXT_MENU),
             "reset",
             MainMode::History,
         ),
         (
-            "还原提交",
-            "提交记录 · 选择提交后在右键菜单中还原",
-            "revert 回退",
+            khaslana::ui_i18n::text(messages::REVERT_COMMIT),
+            khaslana::ui_i18n::text(messages::HISTORY_SELECT_A_COMMIT_AND_REVERT_FROM_ITS_CONTEXT_MENU),
+            khaslana::ui_i18n::text(messages::REVERT_REVERT),
             MainMode::History,
         ),
         (
-            "撤销提交",
-            "提交记录 · 选择提交后在右键菜单中撤销",
+            khaslana::ui_i18n::text(messages::UNDO_COMMIT),
+            khaslana::ui_i18n::text(messages::HISTORY_SELECT_A_COMMIT_AND_UNDO_FROM_ITS_CONTEXT_MENU),
             "uncommit",
             MainMode::History,
         ),
         (
-            "文件历史",
-            "工作区 · 文件右键菜单中的历史入口",
-            "历史 history",
+            khaslana::ui_i18n::text(messages::FILE_HISTORY),
+            khaslana::ui_i18n::text(messages::WORKING_TREE_HISTORY_ACTION_IN_THE_FILE_CONTEXT_MENU),
+            khaslana::ui_i18n::text(messages::HISTORY_HISTORY),
             MainMode::Worktree,
         ),
     ] {
@@ -304,7 +307,7 @@ pub(super) fn function_entries(
             SearchEntry::new(
                 title,
                 description,
-                "功能",
+                khaslana::ui_i18n::text(messages::COMMANDS),
                 keywords,
                 SearchTarget::Feature(id, title, mode),
             )
@@ -312,49 +315,49 @@ pub(super) fn function_entries(
         );
     }
     entries.push(SearchEntry::new(
-        "设置中心",
-        "打开应用设置和偏好",
-        "设置",
+        khaslana::ui_i18n::text(messages::SETTINGS_CENTER),
+        khaslana::ui_i18n::text(messages::OPEN_APPLICATION_SETTINGS_AND_PREFERENCES),
+        khaslana::ui_i18n::text(messages::SETTINGS),
         "settings preferences",
         SearchTarget::Settings(SettingsCategory::Credentials),
     ));
     for category in crate::settings_center::SETTINGS_CATEGORY_ORDER {
         let meta = crate::settings_center::settings_pane_meta(category);
         let keywords = match category {
-            SettingsCategory::Credentials => "设置 密钥 令牌 账号 SSH 密码 credentials token",
-            SettingsCategory::Proxy => "设置 代理 socks http https proxy",
-            SettingsCategory::Ai => "设置 模型 大模型 接口 服务 商 provider API AI",
-            SettingsCategory::ExternalMerge => "设置 外部合并 IntelliJ IDEA merge tool",
-            SettingsCategory::CodeIndex => "设置 代码索引 知识图谱 重建 code index",
-            SettingsCategory::Theme => "设置 主题 深色 浅色 配色 字体 theme appearance",
-            SettingsCategory::Update => "设置 版本 检查更新 数据目录 迁移 update",
-            SettingsCategory::Shortcuts => "设置 按键 键盘 快捷键 keyboard shortcut",
-            SettingsCategory::About => "设置 关于 版本 说明 about",
+            SettingsCategory::Credentials => khaslana::ui_i18n::text(messages::SETTINGS_KEYS_TOKENS_ACCOUNTS_SSH_PASSWORDS_CREDENTIALS_TOKEN),
+            SettingsCategory::Proxy => khaslana::ui_i18n::text(messages::SETTINGS_PROXY_SOCKS_HTTP_HTTPS_PROXY),
+            SettingsCategory::Ai => khaslana::ui_i18n::text(messages::SETTINGS_MODELS_PROVIDERS_APIS_SERVICES_PROVIDER_API_AI),
+            SettingsCategory::ExternalMerge => khaslana::ui_i18n::text(messages::SETTINGS_EXTERNAL_MERGE_INTELLIJ_IDEA_MERGE_TOOL),
+            SettingsCategory::CodeIndex => khaslana::ui_i18n::text(messages::SETTINGS_CODE_INDEX_KNOWLEDGE_GRAPH_REBUILD_CODE_INDEX),
+            SettingsCategory::Theme => khaslana::ui_i18n::text(messages::SETTINGS_THEME_DARK_LIGHT_COLORS_FONTS_THEME_APPEARANCE),
+            SettingsCategory::Update => khaslana::ui_i18n::text(messages::SETTINGS_VERSION_UPDATE_CHECKS_DATA_DIRECTORY_MIGRATION_UPDATE),
+            SettingsCategory::Shortcuts => khaslana::ui_i18n::text(messages::SETTINGS_KEYS_KEYBOARD_SHORTCUTS_KEYBOARD_SHORTCUT),
+            SettingsCategory::About => khaslana::ui_i18n::text(messages::SETTINGS_ABOUT_VERSION_INFORMATION_ABOUT),
         };
         entries.push(SearchEntry::new(
             meta.title,
             meta.description,
-            "设置",
+            khaslana::ui_i18n::text(messages::SETTINGS),
             keywords,
             SearchTarget::Settings(category),
         ));
     }
     for (title, description, keywords, tab) in [
         (
-            "Skill 管理",
-            "AI 设置 · 导入、查看和管理技能",
-            "技能 扩展 skills",
+            khaslana::ui_i18n::text(messages::MANAGE_SKILLS),
+            khaslana::ui_i18n::text(messages::AI_SETTINGS_IMPORT_VIEW_AND_MANAGE_SKILLS),
+            khaslana::ui_i18n::text(messages::SKILLS_EXTENSIONS_SKILLS),
             AiSettingsTab::Skill,
         ),
         (
-            "MCP 服务",
-            "AI 设置 · 配置服务器和工具权限",
-            "工具 扩展 mcp server",
+            khaslana::ui_i18n::text(messages::MCP_SERVICES),
+            khaslana::ui_i18n::text(messages::AI_SETTINGS_CONFIGURE_SERVERS_AND_TOOL_PERMISSIONS),
+            khaslana::ui_i18n::text(messages::TOOLS_EXTENSIONS_MCP_SERVER),
             AiSettingsTab::Mcp,
         ),
         (
-            "浏览器运行环境",
-            "AI 设置 · 配置工作流浏览器运行环境",
+            khaslana::ui_i18n::text(messages::BROWSER_RUNTIME),
+            khaslana::ui_i18n::text(messages::AI_SETTINGS_CONFIGURE_THE_WORKFLOW_BROWSER_RUNTIME),
             "browser runtime playwright",
             AiSettingsTab::Runtime,
         ),
@@ -363,84 +366,84 @@ pub(super) fn function_entries(
             SearchEntry::new(
                 title,
                 description,
-                "设置",
+                khaslana::ui_i18n::text(messages::SETTINGS),
                 keywords,
                 SearchTarget::AiSettings(tab),
             )
-            .disabled((!ai_enabled).then_some("请先在 AI 设置中启用 AI 功能")),
+            .disabled((!ai_enabled).then_some(khaslana::ui_i18n::text(messages::ENABLE_AI_IN_AI_SETTINGS_FIRST))),
         );
     }
     for (title, description, keywords, target, reason) in [
         (
-            "创建分支",
-            "打开新分支表单",
-            "新建 branch",
+            khaslana::ui_i18n::text(messages::CREATE_BRANCH),
+            khaslana::ui_i18n::text(messages::OPEN_THE_NEW_BRANCH_FORM),
+            khaslana::ui_i18n::text(messages::CREATE_BRANCH_2),
             SearchTarget::CreateBranch(id),
             operation_reason,
         ),
         (
-            "创建标签",
-            "为当前 HEAD 创建标签",
-            "新建 tag",
+            khaslana::ui_i18n::text(messages::CREATE_TAG),
+            khaslana::ui_i18n::text(messages::CREATE_A_TAG_FOR_THE_CURRENT_HEAD),
+            khaslana::ui_i18n::text(messages::CREATE_TAG_2),
             SearchTarget::CreateTag(id),
             operation_reason,
         ),
         (
-            "创建贮藏",
-            "打开贮藏表单，保存当前修改",
-            "储藏 stash",
+            khaslana::ui_i18n::text(messages::CREATE_STASH),
+            khaslana::ui_i18n::text(messages::OPEN_THE_STASH_FORM_TO_SAVE_CURRENT_CHANGES),
+            khaslana::ui_i18n::text(messages::STASH_STASH),
             SearchTarget::CreateStash(id),
             operation_reason.or_else(|| {
                 snapshot
                     .is_some_and(|snapshot| snapshot.merge_in_progress)
-                    .then_some("请先完成或中止合并")
+                    .then_some(khaslana::ui_i18n::text(messages::COMPLETE_OR_ABORT_THE_MERGE_FIRST))
             }),
         ),
         (
-            "子模块",
-            "管理、初始化和更新子模块",
+            khaslana::ui_i18n::text(messages::SUBMODULES),
+            khaslana::ui_i18n::text(messages::MANAGE_INITIALIZE_AND_UPDATE_SUBMODULES),
             "submodule",
             SearchTarget::Submodules(id),
             operation_reason,
         ),
         (
-            "远端管理",
-            "添加、编辑远端并配置凭据",
-            "remote 远程 地址 获取 fetch",
+            khaslana::ui_i18n::text(messages::MANAGE_REMOTES),
+            khaslana::ui_i18n::text(messages::ADD_AND_EDIT_REMOTES_AND_CONFIGURE_CREDENTIALS),
+            khaslana::ui_i18n::text(messages::REMOTE_REMOTE_ADDRESS_FETCH_FETCH),
             SearchTarget::Remotes(id),
             operation_reason,
         ),
         (
-            "拉取",
-            "选择远端和分支后拉取",
-            "pull 下载",
+            khaslana::ui_i18n::text(messages::PULL),
+            khaslana::ui_i18n::text(messages::SELECT_A_REMOTE_AND_BRANCH_TO_PULL),
+            khaslana::ui_i18n::text(messages::PULL_DOWNLOAD),
             SearchTarget::Pull(id),
             remote_reason,
         ),
         (
-            "推送",
-            "选择远端和分支后推送",
-            "push 上传",
+            khaslana::ui_i18n::text(messages::PUSH),
+            khaslana::ui_i18n::text(messages::SELECT_A_REMOTE_AND_BRANCH_TO_PUSH),
+            khaslana::ui_i18n::text(messages::PUSH_UPLOAD),
             SearchTarget::Push(id),
             remote_reason,
         ),
         (
-            "工作流编辑器",
-            "创建或编辑工作流模板",
-            "模板 新建 修改 编辑 workflow editor",
+            khaslana::ui_i18n::text(messages::WORKFLOW_EDITOR),
+            khaslana::ui_i18n::text(messages::CREATE_OR_EDIT_A_WORKFLOW_TEMPLATE),
+            khaslana::ui_i18n::text(messages::TEMPLATE_CREATE_MODIFY_EDIT_WORKFLOW_EDITOR),
             SearchTarget::WorkflowEditor(id),
             repo_reason,
         ),
         (
-            "AI 评审历史",
-            "查看已保存的代码评审报告",
-            "审查 review",
+            khaslana::ui_i18n::text(messages::AI_REVIEW_HISTORY),
+            khaslana::ui_i18n::text(messages::VIEW_SAVED_CODE_REVIEW_REPORTS),
+            khaslana::ui_i18n::text(messages::REVIEW_REVIEW),
             SearchTarget::ReviewHistory(id),
             repo_reason,
         ),
     ] {
         entries
-            .push(SearchEntry::new(title, description, "功能", keywords, target).disabled(reason));
+            .push(SearchEntry::new(title, description, khaslana::ui_i18n::text(messages::COMMANDS), keywords, target).disabled(reason));
     }
     entries
 }
@@ -453,30 +456,23 @@ pub(super) fn append_repository_entries(
 ) {
     for branch in &snapshot.branches {
         let group = if branch.kind == BranchKind::Local {
-            "本地分支"
+            khaslana::ui_i18n::text(messages::LOCAL_BRANCHES)
         } else {
-            "远端分支"
+            khaslana::ui_i18n::text(messages::REMOTE_BRANCHES)
         };
         entries.push(SearchEntry::new(
             &branch.name,
-            format!(
-                "{repo_name} · 定位并高亮分支{}",
-                if branch.is_head {
-                    " · 当前分支"
-                } else {
-                    ""
-                }
-            ),
+            khaslana::ui_i18n::format(if branch.is_head { messages::HIGHLIGHT_CURRENT_BRANCH } else { messages::HIGHLIGHT_BRANCH }, &[("repo_name", repo_name)]),
             group,
-            "branch 分支",
+            khaslana::ui_i18n::text(messages::BRANCH_BRANCH),
             SearchTarget::Branch(id, branch.name.clone(), branch.kind.clone()),
         ));
     }
     for tag in &snapshot.tags {
         entries.push(SearchEntry::new(
             &tag.name,
-            format!("{repo_name} · 浏览标签文件"),
-            "标签",
+            khaslana::ui_i18n::format(messages::REPO_NAME_BROWSE_TAGGED_FILES, &[("repo_name", &(repo_name).to_string())]),
+            khaslana::ui_i18n::text(messages::TAGS),
             "tag",
             SearchTarget::Tag(id, tag.name.clone()),
         ));
@@ -485,7 +481,7 @@ pub(super) fn append_repository_entries(
         entries.push(SearchEntry::new(
             &remote.name,
             format!("{repo_name} · {}", remote.url),
-            "远端",
+            khaslana::ui_i18n::text(messages::REMOTES),
             "remote",
             SearchTarget::Remote(id, remote.name.clone()),
         ));
@@ -493,9 +489,9 @@ pub(super) fn append_repository_entries(
     for stash in &snapshot.stashes {
         entries.push(SearchEntry::new(
             format!("stash@{{{}}} {}", stash.index, stash.message),
-            format!("{repo_name} · 查看贮藏差异"),
-            "贮藏",
-            "stash 储藏",
+            khaslana::ui_i18n::format(messages::REPO_NAME_VIEW_STASH_DIFFERENCES, &[("repo_name", &(repo_name).to_string())]),
+            khaslana::ui_i18n::text(messages::STASHES),
+            khaslana::ui_i18n::text(messages::STASH_STASH_2),
             SearchTarget::Stash(id, stash.oid.clone()),
         ));
     }

@@ -1,6 +1,9 @@
 //! 程序内搜索：从仓库切换列表与功能目录定位页面，不依赖代码索引。
 //! 输入复用字段适配，Kit Command 负责虚拟列表、指针选择和滚动。
 
+#[path = "ui_resources/code_palette_view_messages.rs"]
+mod messages;
+
 mod catalog;
 mod repositories;
 pub(crate) use repositories::PendingSearchBranch;
@@ -103,8 +106,8 @@ impl RepositoryView {
             entries.push(SearchEntry::new(
                 repo_name.clone(),
                 path.to_string_lossy().to_string(),
-                "仓库",
-                "项目 repository repo",
+                khaslana::ui_i18n::text(messages::REPOSITORIES),
+                khaslana::ui_i18n::text(messages::PROJECT_REPOSITORY_REPO),
                 SearchTarget::Repository(tab.id),
             ));
             // 活动仓库始终读当前真值；其他仓库只使用它们自己的已加载快照。
@@ -122,8 +125,8 @@ impl RepositoryView {
                 entries.push(SearchEntry::new(
                     template.display_name.clone(),
                     template.path.to_string_lossy().to_string(),
-                    "工作流",
-                    "模板 workflow template",
+                    khaslana::ui_i18n::text(messages::WORKFLOWS),
+                    khaslana::ui_i18n::text(messages::TEMPLATE_WORKFLOW_TEMPLATE),
                     SearchTarget::Workflow(tab_id, template.path.clone()),
                 ));
             }
@@ -148,7 +151,7 @@ impl RepositoryView {
             };
             // 搜索可以继续导航当前仓库，但不能绕过仓库切换器的操作中守卫。
             if self.busy && target_tab.is_some() && target_tab != self.active_tab_id() {
-                entry.disabled_reason = Some("当前操作进行中，暂不可切换仓库");
+                entry.disabled_reason = Some(khaslana::ui_i18n::text(messages::AN_OPERATION_IS_IN_PROGRESS_CANNOT_SWITCH_REPOSITORIES));
             }
             if self.busy
                 && matches!(
@@ -156,7 +159,7 @@ impl RepositoryView {
                     SearchTarget::SavedRepository(_) | SearchTarget::SavedBranch(..)
                 )
             {
-                entry.disabled_reason = Some("当前操作进行中，暂不可打开其他仓库");
+                entry.disabled_reason = Some(khaslana::ui_i18n::text(messages::AN_OPERATION_IS_IN_PROGRESS_CANNOT_OPEN_ANOTHER_REPOSITORY));
             }
         }
         filter_entries(entries, &self.code_palette_search.value)
@@ -265,7 +268,7 @@ impl RepositoryView {
                     SearchTarget::CloneRepository => self.open_clone_dialog(window, cx),
                     SearchTarget::CreateBranch(_) => self.open_create_branch_dialog(),
                     SearchTarget::CreateTag(_) => {
-                        self.open_tag_form_dialog(None, "当前 HEAD".into())
+                        self.open_tag_form_dialog(None, khaslana::ui_i18n::text(messages::CURRENT_HEAD).into())
                     }
                     SearchTarget::CreateStash(_) => self.open_stash_dialog(),
                     SearchTarget::Submodules(_) => self.open_submodule_manager(),
@@ -312,7 +315,7 @@ impl RepositoryView {
             .repositories
             .as_ref()
             .map(|repositories| repositories.progress_label(count))
-            .unwrap_or_else(|| format!("{count} 个结果"));
+            .unwrap_or_else(|| khaslana::ui_i18n::format(messages::COUNT_RESULTS, &[("count", &(count).to_string())]));
         let items: Vec<_> = entries
             .iter()
             .map(|entry| {
@@ -389,7 +392,7 @@ impl RepositoryView {
                     .px_4()
                     .text_size(px(13.0))
                     .text_color(rgb(theme::CONTENT_SECONDARY))
-                    .child("没有匹配结果，请尝试分支名称、功能名称或其他关键词。")
+                    .child(khaslana::ui_i18n::text(messages::NO_MATCHING_RESULTS_TRY_A_BRANCH_NAME_COMMAND_NAME_OR))
             })
             .on_confirm(move |index, window, cx| {
                 if let Some(entry) = confirm_entries.get(index.row).cloned() {
@@ -484,20 +487,20 @@ impl RepositoryView {
                                         div()
                                             .text_size(px(16.0))
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .child("全局搜索"),
+                                            .child(khaslana::ui_i18n::text(messages::GLOBAL_SEARCH)),
                                     )
                                     .child(
                                         div()
                                             .text_size(px(theme::TYPE_META))
                                             .text_color(rgb(theme::CONTENT_SECONDARY))
-                                            .child("搜索分支、功能、设置、仓库和工作流"),
+                                            .child(khaslana::ui_i18n::text(messages::SEARCH_BRANCHES_COMMANDS_SETTINGS_REPOSITORIES_AND_WORKFLOWS)),
                                     ),
                             )
                             .child(
                                 icon_button(
                                     "app-search-close".into(),
                                     ToolbarIcon::Close,
-                                    "关闭全局搜索",
+                                    khaslana::ui_i18n::text(messages::CLOSE_GLOBAL_SEARCH),
                                     true,
                                 )
                                 .on_click(cx.listener(
@@ -526,7 +529,7 @@ impl RepositoryView {
                                 div()
                                     .text_size(px(12.0))
                                     .text_color(rgb(theme::CONTENT_SECONDARY))
-                                    .child(if search_all { "搜索全部仓库" } else { "仅搜索当前仓库" }),
+                                    .child(if search_all { khaslana::ui_i18n::text(messages::SEARCH_ALL_REPOSITORIES) } else { khaslana::ui_i18n::text(messages::SEARCH_CURRENT_REPOSITORY_ONLY) }),
                             )
                             .child(self.toggle_switch(
                                 "app-search-all-repositories",
@@ -544,7 +547,7 @@ impl RepositoryView {
                                     this.sync_code_search_scope();
                                 },
                                 cx,
-                            ).label("搜索全部仓库")),
+                            ).label(khaslana::ui_i18n::text(messages::SEARCH_ALL_REPOSITORIES))),
                     )
                     .child(div().flex_1().min_h(px(0.0)).px_2().child(command))
                     .child(
@@ -560,7 +563,7 @@ impl RepositoryView {
                             .text_size(px(theme::TYPE_META))
                             .text_color(rgb(theme::CONTENT_SECONDARY))
                             .child(progress_label)
-                            .child("↑↓ 选择 · Enter 定位 · Esc 关闭"),
+                            .child(khaslana::ui_i18n::text(messages::SELECT_ENTER_GO_TO_ESC_CLOSE)),
                     ),
             )
             .into_any_element()

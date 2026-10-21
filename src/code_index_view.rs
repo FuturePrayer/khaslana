@@ -1,3 +1,6 @@
+#[path = "ui_resources/code_index_view_messages.rs"]
+mod messages;
+
 // 设置中心「代码索引」页：MCP 接入卡 + 多仓库列表（每仓库开关、状态徽标、
 // 进度条与增量/重建/删除入口）。列表条目在打开设置页时构建（已打开 tabs +
 // 最近仓库 + 索引偏好记录三路合并），随设置页内容区整体滚动；任务仍为全局
@@ -43,12 +46,12 @@ pub(crate) enum CodeIndexEntryStatus {
 impl CodeIndexEntryStatus {
     fn label(self) -> String {
         match self {
-            CodeIndexEntryStatus::Queued(n) => return format!("排队中 · 第 {n} 位"),
-            CodeIndexEntryStatus::Cancelling => "取消中",
-            CodeIndexEntryStatus::Running => "索引中",
-            CodeIndexEntryStatus::Indexed => "已索引",
-            CodeIndexEntryStatus::DisabledWithData => "已停用",
-            CodeIndexEntryStatus::NotIndexed => "未索引",
+            CodeIndexEntryStatus::Queued(n) => return khaslana::ui_i18n::format(messages::QUEUED_POSITION_N, &[("n", &(n).to_string())]),
+            CodeIndexEntryStatus::Cancelling => khaslana::ui_i18n::text(messages::CANCELLING),
+            CodeIndexEntryStatus::Running => khaslana::ui_i18n::text(messages::INDEXING),
+            CodeIndexEntryStatus::Indexed => khaslana::ui_i18n::text(messages::INDEXED),
+            CodeIndexEntryStatus::DisabledWithData => khaslana::ui_i18n::text(messages::DISABLED),
+            CodeIndexEntryStatus::NotIndexed => khaslana::ui_i18n::text(messages::NOT_INDEXED),
         }.to_string()
     }
 }
@@ -189,8 +192,8 @@ impl RepositoryView {
         // （Entity 非 Copy，不能跨 move 闭包复用）。
         let mcp_group = SettingGroup::new()
             .item(crate::settings_center::settings_group_heading(
-                "MCP 服务器",
-                Some("多仓库模式：一条配置服务所有已索引仓库".into()),
+                khaslana::ui_i18n::text(messages::MCP_SERVER),
+                Some(khaslana::ui_i18n::text(messages::MULTI_REPOSITORY_MODE_ONE_CONFIGURATION_SERVES_ALL_INDEXED_REPOSITORIES).into()),
             ))
             // 说明走 Element 条目：全宽文字容器内自然换行，不受设置项
             // 行内控件区 auto 宽度挤压。
@@ -200,7 +203,7 @@ impl RepositoryView {
                         .text_size(px(12.0))
                         .line_height(px(18.0))
                         .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                        .child("把代码索引以 MCP 工具暴露给外部 AI 工具（Claude Code / Cursor / ZCode 等）。命令：khaslana mcp（多仓库模式，工具按 repo 参数选择目标；也可写 khaslana mcp <仓库路径> 固定单仓库）；启动后首次使用仓库时自动建立或增量刷新索引。")
+                        .child(khaslana::ui_i18n::text(messages::EXPOSE_CODE_INDEXING_AS_MCP_TOOLS_TO_EXTERNAL_AI_CLIENTS))
                 })
             }));
         let view = cx.entity();
@@ -218,17 +221,17 @@ impl RepositoryView {
                         .min_w(px(0.0))
                         .gap_2()
                         .child(crate::settings_center::settings_item_body(
-                            "启动命令",
+                            khaslana::ui_i18n::text(messages::STARTUP_COMMAND),
                             None,
                             div().flex_shrink_0().child(this.button(
-                                "复制 MCP 配置",
+                                khaslana::ui_i18n::text(messages::COPY_MCP_CONFIGURATION),
                                 true,
                                 move |this, _, cx| {
                                     // on_click 是 Fn：闭包体内克隆写入，不能直接消费捕获的配置。
                                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(
                                         copy_config.clone(),
                                     ));
-                                    this.notify_success("已复制 MCP 配置", cx);
+                                    this.notify_success(khaslana::ui_i18n::text(messages::MCP_CONFIGURATION_COPIED), cx);
                                 },
                                 cx,
                             )),
@@ -251,18 +254,18 @@ impl RepositoryView {
                         )
                 })
             })
-            .keywords(["启动命令", "复制 MCP 配置"]),
+            .keywords([khaslana::ui_i18n::text(messages::STARTUP_COMMAND), khaslana::ui_i18n::text(messages::COPY_MCP_CONFIGURATION)]),
         );
 
         // 仓库组：过滤输入 + 仓库卡片 + 空列表提示 + 索引说明。
         let view = cx.entity();
         let mut repo_group = SettingGroup::new()
             .item(crate::settings_center::settings_group_heading(
-                "仓库",
-                Some(format!("共 {} 个仓库；可按名称或路径过滤。", entries.len()).into()),
+                khaslana::ui_i18n::text(messages::REPOSITORIES),
+                Some(khaslana::ui_i18n::format(messages::ENTRIES_REPOSITORIES_FILTER_BY_NAME_OR_PATH, &[("entries", &(entries.len()).to_string())]).into()),
             ))
             .item(crate::settings_center::settings_item_row(
-                "过滤仓库",
+                khaslana::ui_i18n::text(messages::FILTER_REPOSITORIES),
                 None,
                 move |_options, window, cx| {
                     view.update(cx, |this, cx| {
@@ -281,7 +284,7 @@ impl RepositoryView {
                 use crate::ui::components::{settings_command_button, SettingsButtonTone};
                 let enabled = !this.current_code_index_batch_keys().is_empty();
                 let mut row = div().flex().flex_wrap().items_center().gap_2().w_full().min_w(px(0.0));
-                for (value, label, id) in [(true, "全部开启", "code-index-enable-all"), (false, "全部关闭", "code-index-disable-all")] {
+                for (value, label, id) in [(true, khaslana::ui_i18n::text(messages::ENABLE_ALL), "code-index-enable-all"), (false, khaslana::ui_i18n::text(messages::DISABLE_ALL), "code-index-disable-all")] {
                     let view = view.clone();
                     row = row.child(settings_command_button(id, label,
                         if value { SettingsButtonTone::Primary } else { SettingsButtonTone::Secondary }, enabled, cx)
@@ -294,9 +297,9 @@ impl RepositoryView {
                         }));
                 }
                 row.child(div().text_size(px(12.0)).text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child(if enabled { "仅作用于当前筛选结果；关闭保留索引数据" } else { "没有匹配仓库，无法批量操作" }))
+                    .child(if enabled { khaslana::ui_i18n::text(messages::ONLY_AFFECTS_FILTERED_REPOSITORIES_DISABLING_KEEPS_INDEX_DATA) } else { khaslana::ui_i18n::text(messages::NO_MATCHING_REPOSITORIES_FOR_BULK_OPERATIONS) }))
             })
-        }).keywords(["全部开启", "全部关闭", "批量索引"]));
+        }).keywords([khaslana::ui_i18n::text(messages::ENABLE_ALL), khaslana::ui_i18n::text(messages::DISABLE_ALL), khaslana::ui_i18n::text(messages::BULK_INDEXING)]));
         for entry in &entries {
             // CodeIndexListEntry 未 derive Clone，而 render 闭包要求 'static：
             // 按字段克隆构造一份移入闭包。
@@ -319,8 +322,8 @@ impl RepositoryView {
         if entries.is_empty() {
             // 空列表两种口径与旧页一致：有活动仓库是过滤无结果，否则是未开仓库。
             let empty_hint = match repo_display {
-                Some(_) => "没有匹配的仓库。".to_string(),
-                None => "当前没有打开的仓库。先在仓库切换下拉中打开一个仓库，再回到此页启用索引。"
+                Some(_) => khaslana::ui_i18n::text(messages::NO_MATCHING_REPOSITORIES).to_string(),
+                None => khaslana::ui_i18n::text(messages::NO_REPOSITORIES_ARE_OPEN_OPEN_ONE_FROM_THE_REPOSITORY_SWITCHER)
                     .to_string(),
             };
             let view = cx.entity();
@@ -344,10 +347,7 @@ impl RepositoryView {
                     .text_size(px(12.0))
                     .line_height(px(18.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child(format!(
-                        "索引基于 tree-sitter 解析仓库工作区（遵循 .gitignore），提取文件、符号、调用与导入关系存入本机 SQLite 库；{}。支持符号提取的语言：Rust、Python、JavaScript、TypeScript/TSX、Go、Java、C、C++、C#、PHP、Kotlin；其余文本文件仅登记为文件节点。",
-                        "数据位于应用数据目录 code-index/ 下，按仓库哈希隔离",
-                    ))
+                    .child(khaslana::ui_i18n::text(messages::THE_INDEX_USES_TREE_SITTER_TO_PARSE_THE_WORKING_TREE))
             })
         }));
 
@@ -454,16 +454,16 @@ impl RepositoryView {
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .child(if self.code_index_progress_message.is_empty() {
-                            "正在索引…".to_string()
+                            khaslana::ui_i18n::text(messages::INDEXING_2).to_string()
                         } else {
-                            self.code_index_progress_message.clone()
+                            khaslana::ui_i18n::resolve(&self.code_index_progress_message)
                         }),
                 )
                 .into_any_element(),
             (_, Some(s)) => {
                 let text = match status {
                     CodeIndexEntryStatus::DisabledWithData => {
-                        format!("索引已停用，数据保留 · {}", code_index_stats_line(s))
+                        khaslana::ui_i18n::format(messages::INDEX_DISABLED_DATA_RETAINED_S, &[("s", &(code_index_stats_line(s)).to_string())])
                     }
                     _ => code_index_stats_line(s),
                 };
@@ -477,9 +477,9 @@ impl RepositoryView {
             }
             (_, None) => {
                 let text = if enabled {
-                    "尚未建立索引 · 即将自动建立全量索引".to_string()
+                    khaslana::ui_i18n::text(messages::NO_INDEX_YET_A_FULL_INDEX_WILL_BE_BUILT_AUTOMATICALLY).to_string()
                 } else {
-                    "未建立索引 · 开启开关后自动建立全量索引".to_string()
+                    khaslana::ui_i18n::text(messages::NOT_INDEXED_ENABLE_THE_SWITCH_TO_BUILD_A_FULL_INDEX).to_string()
                 };
                 div()
                     .text_size(px(11.0))
@@ -512,7 +512,7 @@ impl RepositoryView {
                     &entry.repo_key,
                     "cancel",
                     self.button(
-                        "取消",
+                        khaslana::ui_i18n::text(messages::CANCEL),
                         true,
                         |this, _, cx| {
                             this.cancel_code_index(cx);
@@ -523,12 +523,12 @@ impl RepositoryView {
                 code_index_interactive_host(
                     &entry.repo_key,
                     "increment-disabled",
-                    self.button("增量更新", false, |_this, _, _| {}, cx),
+                    self.button(khaslana::ui_i18n::text(messages::INCREMENTAL_UPDATE), false, |_this, _, _| {}, cx),
                 ),
                 code_index_interactive_host(
                     &entry.repo_key,
                     "rebuild-disabled",
-                    self.button("重建索引", false, |_this, _, _| {}, cx),
+                    self.button(khaslana::ui_i18n::text(messages::REBUILD_INDEX), false, |_this, _, _| {}, cx),
                 ),
             ],
             CodeIndexEntryStatus::Indexed => vec![
@@ -536,7 +536,7 @@ impl RepositoryView {
                     &entry.repo_key,
                     "increment",
                     self.button(
-                        "增量更新",
+                        khaslana::ui_i18n::text(messages::INCREMENTAL_UPDATE),
                         actions_free,
                         move |this, _, cx| {
                             this.start_code_index_task_for_repo(&repo_increment, false, cx);
@@ -548,7 +548,7 @@ impl RepositoryView {
                     &entry.repo_key,
                     "rebuild",
                     self.button(
-                        "重建索引",
+                        khaslana::ui_i18n::text(messages::REBUILD_INDEX),
                         actions_free,
                         move |this, _, cx| {
                             this.start_code_index_task_for_repo(&repo_rebuild, true, cx);
@@ -560,7 +560,7 @@ impl RepositoryView {
                     &entry.repo_key,
                     "delete",
                     self.danger_button(
-                        "删除索引数据",
+                        khaslana::ui_i18n::text(messages::DELETE_INDEX_DATA),
                         true,
                         move |this, _, _| {
                             this.request_delete_code_index(
@@ -577,7 +577,7 @@ impl RepositoryView {
                     &entry.repo_key,
                     "rebuild",
                     self.button(
-                        "重建索引",
+                        khaslana::ui_i18n::text(messages::REBUILD_INDEX),
                         actions_free,
                         move |this, _, cx| {
                             this.start_code_index_task_for_repo(&repo_rebuild_disabled, true, cx);
@@ -589,7 +589,7 @@ impl RepositoryView {
                     &entry.repo_key,
                     "delete",
                     self.danger_button(
-                        "删除索引数据",
+                        khaslana::ui_i18n::text(messages::DELETE_INDEX_DATA),
                         true,
                         move |this, _, _| {
                             this.request_delete_code_index(
@@ -602,15 +602,15 @@ impl RepositoryView {
                 ),
             ],
             CodeIndexEntryStatus::Cancelling => vec![
-                self.button("取消中…", false, |_, _, _| {}, cx).into_any_element(),
+                self.button(khaslana::ui_i18n::text(messages::CANCELLING_2), false, |_, _, _| {}, cx).into_any_element(),
             ],
             CodeIndexEntryStatus::Queued(_) => vec![
                 code_index_interactive_host(&entry.repo_key, "rebuild-queued",
-                    self.button("重建索引", stats.is_some(), move |this, _, cx| {
+                    self.button(khaslana::ui_i18n::text(messages::REBUILD_INDEX), stats.is_some(), move |this, _, cx| {
                         this.start_code_index_task_for_repo(&repo_rebuild, true, cx);
                     }, cx)),
                 code_index_interactive_host(&entry.repo_key, "delete-queued",
-                    self.danger_button("删除索引数据", stats.is_some(), move |this, _, _| {
+                    self.danger_button(khaslana::ui_i18n::text(messages::DELETE_INDEX_DATA), stats.is_some(), move |this, _, _| {
                         this.request_delete_code_index(display_delete.clone(), repo_delete.clone());
                     }, cx)),
             ],
@@ -628,7 +628,7 @@ impl RepositoryView {
                         .text_color(rgb(ui_theme::CONTENT_SECONDARY))
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .child("同一时间只能有一个索引任务"),
+                        .child(khaslana::ui_i18n::text(messages::ONLY_ONE_INDEXING_TASK_CAN_RUN_AT_A_TIME)),
                 );
             }
             card = card.child(row);
@@ -650,7 +650,7 @@ impl RepositoryView {
         match self.storage.set_code_index_enabled(repo_key, enabled) {
             Ok(()) => {}
             Err(err) => {
-                self.notify_error(format!("保存索引设置失败：{err}"), cx);
+                self.notify_error(khaslana::ui_i18n::format(messages::FAILED_TO_SAVE_INDEX_SETTINGS_ERR, &[("err", &(err).to_string())]), cx);
                 return;
             }
         }
@@ -675,7 +675,7 @@ impl RepositoryView {
             if self.code_index_task.as_ref().is_some_and(|t| t.repo_path == repo_key) {
                 self.cancel_code_index(cx);
             }
-            self.status = "代码索引已关闭（已有索引数据保留）".into();
+            self.status = khaslana::ui_i18n::encode(messages::CODE_INDEXING_DISABLED_EXISTING_INDEX_DATA_RETAINED, &[]);
         }
     }
 
@@ -686,7 +686,7 @@ impl RepositoryView {
 
     fn batch_code_index_enabled(&mut self, repo_keys: &[String], enabled: bool, cx: &mut Context<Self>) {
         if let Err(err) = self.storage.set_code_index_enabled_batch(repo_keys, enabled) {
-            self.notify_error(format!("保存索引设置失败：{err}"), cx);
+            self.notify_error(khaslana::ui_i18n::format(messages::FAILED_TO_SAVE_INDEX_SETTINGS_ERR, &[("err", &(err).to_string())]), cx);
             return;
         }
         for repo in repo_keys {
@@ -703,7 +703,7 @@ impl RepositoryView {
                 continue;
             }
             if !Path::new(&request.repo_key).is_dir() {
-                self.status = format!("跳过索引：仓库路径不可用 {}", request.repo_key);
+                self.status = khaslana::ui_i18n::encode(messages::INDEX_SKIPPED_REPOSITORY_PATH_UNAVAILABLE_REPO_KEY, &[("repo_key", &(request.repo_key).to_string())]);
                 continue;
             }
             self.spawn_code_index_task_for(&request.repo_key, request.force_full, request.user_initiated, cx);
@@ -748,7 +748,7 @@ impl RepositoryView {
             return;
         }
         let Some(db_path) = Self::index_db_path(repo_key) else {
-            self.status = "代码索引不可用：数据目录无法创建".into();
+            self.status = khaslana::ui_i18n::encode(messages::CODE_INDEX_UNAVAILABLE_CANNOT_CREATE_THE_DATA_DIRECTORY, &[]);
             return;
         };
 
@@ -761,7 +761,7 @@ impl RepositoryView {
             cancel: Arc::clone(&cancel),
             user_initiated,
         });
-        self.code_index_progress_message = "准备索引…".to_string();
+        self.code_index_progress_message = khaslana::ui_i18n::encode(messages::PREPARING_INDEX, &[]);
         self.code_index_progress_done = 0;
         self.code_index_progress_total = 0;
 
@@ -820,7 +820,7 @@ impl RepositoryView {
         if let Some(task) = self.code_index_task.as_ref() {
             self.code_index_queue.remove(&task.repo_path);
             task.cancel.store(true, Ordering::Relaxed);
-            self.status = "正在取消代码索引…".into();
+            self.status = khaslana::ui_i18n::encode(messages::CANCELLING_CODE_INDEXING, &[]);
             cx.notify();
         }
     }
@@ -832,7 +832,7 @@ impl RepositoryView {
         self.code_index_progress_message.clear();
         self.code_index_progress_done = 0;
         self.code_index_progress_total = 0;
-        self.status = "代码索引已取消".into();
+        self.status = khaslana::ui_i18n::encode(messages::CODE_INDEXING_CANCELLED, &[]);
         self.request_code_index_stats(&repo_path);
         self.advance_code_index_queue(cx);
         cx.notify();
@@ -841,7 +841,7 @@ impl RepositoryView {
     pub(crate) fn confirm_delete_code_index_now(&mut self, repo_key: &str, cx: &mut Context<Self>) {
         self.active_dialog = None;
         if self.code_index_task.as_ref().is_some_and(|t| t.repo_path == repo_key) {
-            self.notify_error("索引运行或取消中，暂不能删除数据", cx);
+            self.notify_error(khaslana::ui_i18n::text(messages::CANNOT_DELETE_DATA_WHILE_INDEXING_OR_CANCELLATION_IS_IN_PROGRESS), cx);
             return;
         }
         self.code_index_queue.remove(repo_key);
@@ -856,17 +856,17 @@ impl RepositoryView {
             Ok(()) => {
                 self.code_index_stats_requests.remove(repo_key);
                 self.code_index_stats.remove(repo_key);
-                self.notify_success("索引数据已删除", cx);
+                self.notify_success(khaslana::ui_i18n::text(messages::INDEX_DATA_DELETED), cx);
             }
             Err(err) => {
                 // 目录不存在视为已删除。
                 if dir.exists() {
-                    self.notify_error(format!("删除索引数据失败：{err}"), cx);
+                    self.notify_error(khaslana::ui_i18n::format(messages::FAILED_TO_DELETE_INDEX_DATA_ERR, &[("err", &(err).to_string())]), cx);
                     return;
                 }
                 self.code_index_stats_requests.remove(repo_key);
                 self.code_index_stats.remove(repo_key);
-                self.notify_success("索引数据已删除", cx);
+                self.notify_success(khaslana::ui_i18n::text(messages::INDEX_DATA_DELETED), cx);
             }
         }
         cx.notify();
@@ -886,7 +886,7 @@ impl RepositoryView {
                 .collect();
             pref_keys = prefs.repositories.into_keys().collect();
         } else {
-            self.last_error = Some("读取代码索引设置失败".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::FAILED_TO_READ_CODE_INDEX_SETTINGS, &[]));
         }
 
         let mut entries: Vec<CodeIndexListEntry> = Vec::new();
@@ -970,7 +970,7 @@ impl RepositoryView {
         self.code_index_progress_total = total;
         // 进度同时反映到当前活动仓库的状态栏。
         if self.active_repo_key().as_deref() == Some(repo_path.as_str()) {
-            self.status = format!("代码索引：{message}");
+            self.status = khaslana::ui_i18n::encode(messages::CODE_INDEX_MESSAGE, &[("message", &(message).to_string())]);
         }
     }
 
@@ -994,22 +994,16 @@ impl RepositoryView {
                 // 更新，状态栏在活动仓库上给出结果。
                 if user_initiated && self.active_repo_key().as_deref() == Some(repo_path.as_str()) {
                     self.notify_success(
-                        format!(
-                            "代码索引完成：{} 文件 · {} 符号 · {} 关系",
-                            stats.files, stats.symbols, stats.edges
-                        ),
+                        khaslana::ui_i18n::format(messages::CODE_INDEX_COMPLETE_FILES_FILES_SYMBOLS_SYMBOLS_EDGES_RELATIONS, &[("files", &(stats.files).to_string()), ("symbols", &(stats.symbols).to_string()), ("edges", &(stats.edges).to_string())]),
                         cx,
                     );
                 } else if self.active_repo_key().as_deref() == Some(repo_path.as_str()) {
-                    self.status = format!(
-                        "代码索引已更新：{} 文件 · {} 符号 · {} 关系",
-                        stats.files, stats.symbols, stats.edges
-                    );
+                    self.status = khaslana::ui_i18n::encode(messages::CODE_INDEX_UPDATED_FILES_FILES_SYMBOLS_SYMBOLS_EDGES_RELATIONS, &[("files", &(stats.files).to_string()), ("symbols", &(stats.symbols).to_string()), ("edges", &(stats.edges).to_string())]);
                 }
             }
             None => {
                 if self.active_repo_key().as_deref() == Some(repo_path.as_str()) {
-                    self.status = "代码索引：内容无变化".into();
+                    self.status = khaslana::ui_i18n::encode(messages::CODE_INDEX_NO_CONTENT_CHANGES, &[]);
                 }
             }
         }
@@ -1035,9 +1029,9 @@ impl RepositoryView {
             // 与完成提示同一规则：只有用户主动触发才弹错误窗；自动刷新失败
             // 落在状态栏（已写 tracing 日志），不打断当前操作。
             if user_initiated {
-                self.notify_error(format!("代码索引失败:{error}"), cx);
+                self.notify_error(khaslana::ui_i18n::format(messages::CODE_INDEXING_FAILED_ERROR, &[("error", &(error).to_string())]), cx);
             } else {
-                self.status = format!("代码索引失败:{error}");
+                self.status = khaslana::ui_i18n::encode(messages::CODE_INDEXING_FAILED_ERROR, &[("error", &(error).to_string())]);
             }
         }
         self.request_code_index_stats(&repo_path);
@@ -1111,7 +1105,7 @@ fn code_index_task_event(
     task: impl FnOnce() -> khaslana::types::Result<RunOutcome>,
 ) -> Option<UiEvent> {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task))
-        .map_err(|payload| format!("索引任务异常退出：{}", crate::tasks::panic_message(payload)))
+        .map_err(|payload| khaslana::ui_i18n::format(messages::INDEXING_TASK_EXITED_UNEXPECTEDLY_PAYLOAD, &[("payload", &(crate::tasks::panic_message(payload)).to_string())]))
         .and_then(|result| result.map_err(|error| error.to_string()));
     let repo_path = repo_path.to_string();
     match result {
@@ -1173,20 +1167,11 @@ fn code_index_progress_bar(done: usize, total: usize) -> gpui::AnyElement {
 
 /// 统计行文案（已索引 / 已停用共用，前缀由调用方拼接）。
 fn code_index_stats_line(stats: &khaslana::code_index::IndexStats) -> String {
-    format!(
-        "{} 文件 · {} 符号 · {} 关系（调用 {}）· {:.1} MB · {} · 分支 {}",
-        stats.files,
-        stats.symbols,
-        stats.edges,
-        stats.calls,
-        stats.db_bytes as f64 / (1024.0 * 1024.0),
-        format_indexed_at(stats.indexed_at),
-        if stats.branch.is_empty() {
+    khaslana::ui_i18n::format(messages::FILES_FILES_SYMBOLS_SYMBOLS_EDGES_RELATIONS_CALLS_CALLS_F64_MB, &[("files", &(stats.files).to_string()), ("symbols", &(stats.symbols).to_string()), ("edges", &(stats.edges).to_string()), ("calls", &(stats.calls).to_string()), ("f64", &format!("{:.1}", stats.db_bytes as f64 / (1024.0 * 1024.0))), ("indexed_at", &(format_indexed_at(stats.indexed_at)).to_string()), ("branch", &(if stats.branch.is_empty() {
             "-"
         } else {
             &stats.branch
-        },
-    )
+        }).to_string())])
 }
 
 fn format_indexed_at(millis: u64) -> String {
@@ -1210,24 +1195,24 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let repo = repo_key.to_string();
-        dialog_panel("删除索引数据")
+        dialog_panel(khaslana::ui_i18n::text(messages::DELETE_INDEX_DATA))
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("确认删除 {display_name} 的代码索引数据？")),
+                    .child(khaslana::ui_i18n::format(messages::DELETE_THE_CODE_INDEX_DATA_FOR_DISPLAY_NAME, &[("display_name", &(display_name).to_string())])),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::COLOR_ERROR_FOREGROUND))
-                    .child("删除后需要重新建立全量索引才能恢复搜索能力；不影响仓库本身。"),
+                    .child(khaslana::ui_i18n::text(messages::A_FULL_INDEX_MUST_BE_REBUILT_TO_RESTORE_SEARCH_THE)),
             )
             .child(
                 dialog_actions()
-                    .child(self.button("取消", true, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), true, |this, _, _| this.close_dialog(), cx))
                     .child(self.danger_button(
-                        "确认删除",
+                        khaslana::ui_i18n::text(messages::CONFIRM_DELETION),
                         true,
                         move |this, _, cx| {
                             this.confirm_delete_code_index_now(&repo, cx);

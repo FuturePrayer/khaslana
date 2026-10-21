@@ -19,6 +19,7 @@
 //! git 耦合边（FILE_CHANGES_WITH）、相似度边、USAGE 引用边（schema 已支持该
 //! type 字符串）、路由/基建节点。
 
+use crate::types::domain_ui_resources;
 mod calls;
 mod coverage;
 mod discover;
@@ -38,7 +39,7 @@ mod snapshot;
 mod store;
 
 pub use discover::{DiscoverOutcome, DiscoveredFile, discover_files};
-pub use coverage::{ErrorRange, FileCoverage, check_coverage};
+pub use coverage::{ErrorRange, FileCoverage, check_coverage, normalize_coverage_reason, coverage_reason_label, coverage_reason_label_in};
 pub use extract::{
     CallSite, Extractor, FileExtractResult, ImportRef, OwnerFunction, SymbolDef, TypeRef,
 };
@@ -81,10 +82,10 @@ pub enum IndexPhase {
 impl IndexPhase {
     pub fn display(self) -> &'static str {
         match self {
-            Self::Discover => "扫描文件",
-            Self::Parse => "解析符号",
-            Self::Resolve => "解析调用关系",
-            Self::Write => "写入索引库",
+            Self::Discover => crate::ui_i18n::text(domain_ui_resources::SCANNING_FILES),
+            Self::Parse => crate::ui_i18n::text(domain_ui_resources::PARSING_SYMBOLS),
+            Self::Resolve => crate::ui_i18n::text(domain_ui_resources::RESOLVING_CALLS),
+            Self::Write => crate::ui_i18n::text(domain_ui_resources::WRITING_INDEX_DATABASE),
         }
     }
 }

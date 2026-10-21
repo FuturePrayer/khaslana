@@ -1,4 +1,7 @@
 use std::collections::BTreeMap;
+#[path = "v2_resources.rs"]
+mod deep_messages;
+
 use std::sync::Arc;
 
 use git2::Repository;
@@ -77,10 +80,10 @@ impl WorkflowActionRegistry {
     pub fn register(&mut self, name: impl Into<String>, action: Arc<dyn WorkflowAction>) -> Result<()> {
         let name = name.into();
         if name.trim().is_empty() || name.starts_with("git.") {
-            return Err(GitError::Message(format!("工作流动作名称无效：{name}")));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::INVALID_WORKFLOW_ACTION_NAME, &[("name", &(name).to_string())])));
         }
         if self.actions.contains_key(&name) {
-            return Err(GitError::Message(format!("工作流动作重复注册：{name}")));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::WORKFLOW_ACTION_REGISTERED_MORE_THAN_ONCE, &[("name", &(name).to_string())])));
         }
         self.actions.insert(name, action);
         Ok(())
@@ -90,7 +93,7 @@ impl WorkflowActionRegistry {
         self.actions
             .get(name)
             .map(Arc::as_ref)
-            .ok_or_else(|| GitError::Message(format!("未注册工作流动作：{name}")))
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::WORKFLOW_ACTION_IS_NOT_REGISTERED, &[("name", &(name).to_string())])))
     }
 }
 
@@ -115,11 +118,11 @@ pub(super) fn builtin_step(uses: &str, arguments: &Value) -> Result<Option<Workf
         _ => return Ok(None),
     };
     let Value::Object(fields) = arguments else {
-        return Err(GitError::Message(format!("工作流动作 {uses} 的 with 必须是对象")));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::THE_WITH_ARGUMENT_OF_WORKFLOW_ACTION_MUST_BE_AN_OBJECT, &[("uses", &(uses).to_string())])));
     };
     let mut fields = fields.clone();
     fields.insert("op".into(), Value::String(op.into()));
     serde_json::from_value(Value::Object(fields))
         .map(Some)
-        .map_err(|err| GitError::Message(format!("工作流动作 {uses} 的参数无效：{err}")))
+        .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::INVALID_ARGUMENTS_FOR_WORKFLOW_ACTION, &[("uses", &(uses).to_string()), ("err", &(err).to_string())])))
 }

@@ -1,12 +1,17 @@
 //! RepositoryView 的仓库加载、远端、分支、标签与提交级操作。
 
 use crate::*;
+use khaslana::ui_i18n::{UiMessage, LocalizedMessage};
+use crate::operation_ui_resources as operation_messages;
+#[path = "operation_feedback_resources.rs"]
+mod feedback_messages;
+use khaslana::ui_i18n::{text, encode};
 
 impl RepositoryView {
     pub(crate) fn open_repo(&mut self, path: PathBuf) {
         if Repository::open(&path).is_err() {
-            self.status = "打开仓库失败".to_string();
-            self.last_error = Some("该目录不是 Git 仓库".to_string());
+            self.status = encode(feedback_messages::OPEN_FAILED, &[]).to_string();
+            self.last_error = Some(encode(feedback_messages::NOT_REPOSITORY, &[]).to_string());
             return;
         }
         // 记录最近打开时间，供仓库切换下拉排序。
@@ -15,8 +20,8 @@ impl RepositoryView {
         self.queue_repository_load(
             tab_id,
             path,
-            "正在打开仓库",
-            "仓库已打开",
+            feedback_messages::OPENING,
+            feedback_messages::OPENED,
             LoadPriority::User,
         );
     }
@@ -25,19 +30,19 @@ impl RepositoryView {
         let url = self.clone_url.value.trim().to_string();
         let path_text = self.clone_path.value.trim().to_string();
         if url.is_empty() || path_text.is_empty() {
-            self.last_error = Some("需要填写远程仓库 URL 和克隆到父文件夹".into());
+            self.last_error = Some(encode(feedback_messages::CLONE_REQUIRED, &[]).into());
             return;
         }
         if infer_clone_directory_name(&url).is_none() {
-            self.last_error = Some("无法从远程仓库 URL 推导仓库文件夹名".into());
+            self.last_error = Some(encode(feedback_messages::CLONE_NAME, &[]).into());
             return;
         };
         let Some(path) = infer_clone_target_path(&url, &path_text) else {
-            self.last_error = Some("需要填写远程仓库 URL 和克隆到父文件夹".into());
+            self.last_error = Some(encode(feedback_messages::CLONE_REQUIRED, &[]).into());
             return;
         };
         if path.exists() {
-            self.last_error = Some("目标仓库文件夹已存在".into());
+            self.last_error = Some(encode(feedback_messages::TARGET_EXISTS, &[]).into());
             return;
         }
         let key = normalize_repo_path(&path);
@@ -49,7 +54,7 @@ impl RepositoryView {
             let previous_mode = self.current_tab_main_mode();
             self.active_tab = Some(tab.id);
             self.inherit_main_mode(previous_mode);
-            self.last_error = Some("该仓库已经打开".into());
+            self.last_error = Some(encode(feedback_messages::ALREADY_OPEN, &[]).into());
             self.save_session();
             return;
         }
@@ -59,12 +64,12 @@ impl RepositoryView {
         let options = khaslana::CloneOptions {
             recursive_submodules: self.clone_recursive_submodules,
         };
-        self.spawn_operation_for_tab(Some(tab_id), "正在克隆仓库", move || {
+        self.spawn_operation_for_tab(Some(tab_id), encode(feedback_messages::CLONING, &[]), move || {
             service
                 .clone_repo_with_options(&url, &RepoPath::new(path), options)
                 .map(|snapshot| UiEvent::OperationFinished {
                     tab_id: Some(tab_id),
-                    message: "克隆完成".to_string(),
+                    message: encode(operation_messages::CLONED, &[]),
                     snapshot: Some(snapshot),
                     diff: None,
                 })
@@ -73,22 +78,22 @@ impl RepositoryView {
 
     pub(crate) fn refresh(&mut self) {
         let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(encode(feedback_messages::OPEN_REQUIRED, &[]).into());
             return;
         };
         let Some(path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(encode(feedback_messages::OPEN_REQUIRED, &[]).into());
             return;
         };
-        self.queue_repository_load(tab_id, path, "正在刷新仓库", "已刷新", LoadPriority::User);
+        self.queue_repository_load(tab_id, path, feedback_messages::REFRESHING, operation_messages::REFRESHED, LoadPriority::User);
     }
 
     pub(crate) fn queue_repository_load(
         &mut self,
         tab_id: RepoTabId,
         path: PathBuf,
-        started: &'static str,
-        finished: &'static str,
+        started: UiMessage,
+        finished: UiMessage,
         priority: LoadPriority,
     ) {
         let load_id = {
@@ -101,13 +106,13 @@ impl RepositoryView {
             tab.busy = true;
             tab.operation_blocker = OperationBlocker::None;
             tab.operation_blocker_started = None;
-            tab.operation_kind = OperationKind::from_message(started);
+            tab.operation_kind = OperationKind::from_message(&encode(started, &[]));
             tab.loading = RepositoryLoading::default();
             tab.branch_sync_status = None;
             tab.branch_sync_loading = false;
             tab.branch_sync_request_id = tab.branch_sync_request_id.wrapping_add(1).max(1);
             tab.submodule_dialog.invalidate();
-            tab.status = started.to_string();
+            tab.status = encode(started, &[]);
             tab.last_error = None;
             load_id
         };
@@ -135,7 +140,7 @@ impl RepositoryView {
                 .any(|request| request.tab_id == tab_id)
         {
             self.apply_status_event(Some(tab_id), |this| {
-                this.status = "等待加载仓库".to_string();
+                this.status = encode(feedback_messages::WAITING, &[]).to_string();
             });
         }
     }
@@ -169,7 +174,7 @@ impl RepositoryView {
             &tx,
             UiEvent::OperationStarted {
                 tab_id: Some(tab_id),
-                message: started.to_string(),
+                message: encode(started, &[]),
             },
         );
         self.tasks.spawn(TaskKind::Short, move || {
@@ -198,7 +203,7 @@ impl RepositoryView {
                 &tx,
                 UiEvent::RepositoryFastLoaded {
                     tab_id,
-                    message: "本地分支已加载，正在加载仓库详情".to_string(),
+                    message: encode(feedback_messages::BRANCHES_LOADED, &[]).to_string(),
                     snapshot: fast,
                     load_id,
                 },
@@ -240,7 +245,7 @@ impl RepositoryView {
                         &tx,
                         UiEvent::RepositoryMetadataLoaded {
                             tab_id,
-                            message: "仓库信息已加载".to_string(),
+                            message: encode(feedback_messages::METADATA_LOADED, &[]).to_string(),
                             snapshot,
                             load_id,
                         },
@@ -272,7 +277,7 @@ impl RepositoryView {
                         &tx,
                         UiEvent::RepositoryStatusFastLoaded {
                             tab_id,
-                            message: "快速变更已加载，正在补全未跟踪文件".to_string(),
+                            message: encode(feedback_messages::FAST_LOADED, &[]).to_string(),
                             changes,
                             load_id,
                         },
@@ -304,7 +309,7 @@ impl RepositoryView {
                         &tx,
                         UiEvent::RepositoryStatusFullLoaded {
                             tab_id,
-                            message: finished.to_string(),
+                            message: encode(finished, &[]),
                             changes,
                             load_id,
                         },
@@ -446,7 +451,7 @@ impl RepositoryView {
         });
     }
 
-    pub(crate) fn with_repo<F>(&mut self, label: &'static str, f: F)
+    pub(crate) fn with_repo<F>(&mut self, label: UiMessage, f: F)
     where
         F: FnOnce(GitService, &mut Repository) -> khaslana::Result<RepositorySnapshot>
             + Send
@@ -455,7 +460,7 @@ impl RepositoryView {
         self.with_repo_with_blocker(label, OperationBlocker::None, f);
     }
 
-    pub(crate) fn with_repo_blocking<F>(&mut self, label: &'static str, f: F)
+    pub(crate) fn with_repo_blocking<F>(&mut self, label: UiMessage, f: F)
     where
         F: FnOnce(GitService, &mut Repository) -> khaslana::Result<RepositorySnapshot>
             + Send
@@ -464,18 +469,18 @@ impl RepositoryView {
         self.with_repo_with_blocker(label, OperationBlocker::Modal, f);
     }
 
-    fn with_repo_with_blocker<F>(&mut self, label: &'static str, blocker: OperationBlocker, f: F)
+    fn with_repo_with_blocker<F>(&mut self, label: UiMessage, blocker: OperationBlocker, f: F)
     where
         F: FnOnce(GitService, &mut Repository) -> khaslana::Result<RepositorySnapshot>
             + Send
             + 'static,
     {
         let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(encode(feedback_messages::OPEN_REQUIRED, &[]).into());
             return;
         };
         let Some(path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(encode(feedback_messages::OPEN_REQUIRED, &[]).into());
             return;
         };
         let service = self.service_for_tab(tab_id);
@@ -489,7 +494,7 @@ impl RepositoryView {
                 match f(service, &mut repo) {
                     Ok(snapshot) => Ok(UiEvent::OperationFinished {
                         tab_id: Some(tab_id),
-                        message: label.to_string(),
+                        message: khaslana::ui_i18n::encode(label, &[]),
                         snapshot: Some(snapshot),
                         diff: None,
                     }),
@@ -501,7 +506,7 @@ impl RepositoryView {
                             return Ok(UiEvent::OperationFinished {
                                 tab_id: Some(tab_id),
                                 message: conflicts::conflict_status_message(
-                                    label,
+                                    label.key,
                                     snapshot.conflicts.len(),
                                 ),
                                 snapshot: Some(snapshot),
@@ -515,25 +520,25 @@ impl RepositoryView {
         );
     }
 
-    fn with_repo_keep_dialog<F>(&mut self, label: &'static str, f: F)
+    fn with_repo_keep_dialog<F>(&mut self, label: UiMessage, f: F)
     where
         F: FnOnce(GitService, &mut Repository) -> khaslana::Result<RepositorySnapshot>
             + Send
             + 'static,
     {
-        self.with_repo_keep_dialog_owned_with_blocker(label.to_string(), OperationBlocker::None, f)
+        self.with_repo_keep_dialog_owned_with_blocker(LocalizedMessage::new(label, &[]), OperationBlocker::None, f)
     }
 
-    pub(crate) fn with_repo_keep_dialog_blocking<F>(&mut self, label: &'static str, f: F)
+    pub(crate) fn with_repo_keep_dialog_blocking<F>(&mut self, label: UiMessage, f: F)
     where
         F: FnOnce(GitService, &mut Repository) -> khaslana::Result<RepositorySnapshot>
             + Send
             + 'static,
     {
-        self.with_repo_keep_dialog_owned_with_blocker(label.to_string(), OperationBlocker::Modal, f)
+        self.with_repo_keep_dialog_owned_with_blocker(LocalizedMessage::new(label, &[]), OperationBlocker::Modal, f)
     }
 
-    pub(crate) fn with_repo_keep_dialog_owned_blocking<F>(&mut self, label: String, f: F)
+    pub(crate) fn with_repo_keep_dialog_owned_blocking<F>(&mut self, label: LocalizedMessage, f: F)
     where
         F: FnOnce(GitService, &mut Repository) -> khaslana::Result<RepositorySnapshot>
             + Send
@@ -544,7 +549,7 @@ impl RepositoryView {
 
     fn with_repo_keep_dialog_owned_with_blocker<F>(
         &mut self,
-        label: String,
+        label: LocalizedMessage,
         blocker: OperationBlocker,
         f: F,
     ) where
@@ -553,19 +558,19 @@ impl RepositoryView {
             + 'static,
     {
         let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(encode(feedback_messages::OPEN_REQUIRED, &[]).into());
             return;
         };
         let Some(path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(encode(feedback_messages::OPEN_REQUIRED, &[]).into());
             return;
         };
         if self.busy {
-            self.last_error = Some("已有操作正在运行".into());
+            self.last_error = Some(encode(feedback_messages::BUSY, &[]).into());
             return;
         }
         let service = self.service_for_tab(tab_id);
-        let started = started_message_for_label_text(&label);
+        let started = started_message_for_label(label.message);
         self.apply_status_event(Some(tab_id), |this| {
             this.repository_load_id = this.repository_load_id.wrapping_add(1);
             this.loading = RepositoryLoading::default();
@@ -597,7 +602,7 @@ impl RepositoryView {
                     &tx,
                     UiEvent::OperationFinished {
                         tab_id: Some(tab_id),
-                        message: label,
+                        message: khaslana::ui_i18n::encode(label.message, &label.args.iter().map(|(key, value)| (key.as_str(), value.as_str())).collect::<Vec<_>>()),
                         snapshot: Some(snapshot),
                         diff: None,
                     },
@@ -653,10 +658,10 @@ impl RepositoryView {
 
     pub(crate) fn fetch(&mut self) {
         let Some(remote) = self.current_remote() else {
-            self.last_error = Some("当前仓库没有远端".into());
+            self.last_error = Some(encode(feedback_messages::NO_REMOTE, &[]).into());
             return;
         };
-        self.with_repo("拉取远程引用完成", move |service, repo| {
+        self.with_repo(operation_messages::FETCHED, move |service, repo| {
             service.fetch(repo, &RemoteName::new(remote))
         });
     }
@@ -664,7 +669,7 @@ impl RepositoryView {
     pub(crate) fn refresh_remote(&mut self, remote: String) {
         self.remote_context_menu = None;
         self.selected_remote = Some(remote.clone());
-        self.with_repo("远端已刷新", move |service, repo| {
+        self.with_repo(operation_messages::REMOTE_REFRESHED, move |service, repo| {
             service.refresh(repo, Some(&RemoteName::new(remote)))
         });
     }
@@ -673,12 +678,12 @@ impl RepositoryView {
         if matches!(
             kind,
             RemoteBranchOperationKind::Pull | RemoteBranchOperationKind::Push
-        ) && !self.ensure_no_merge_in_progress("拉取或推送")
+        ) && !self.ensure_no_merge_in_progress(text(feedback_messages::PULL_PUSH))
         {
             return;
         }
         let Some(snapshot) = self.snapshot.as_ref() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(encode(feedback_messages::OPEN_REQUIRED, &[]).into());
             return;
         };
         let defaults = match remote_branch_dialog_defaults(snapshot, self.current_remote()) {
@@ -700,15 +705,15 @@ impl RepositoryView {
 
     pub(crate) fn open_set_branch_upstream_dialog(&mut self, branch: String) {
         let Some(snapshot) = self.snapshot.as_ref() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(encode(feedback_messages::OPEN_REQUIRED, &[]).into());
             return;
         };
         let Some(local_branch) = local_branch_by_name(snapshot, &branch) else {
-            self.last_error = Some(format!("本地分支不存在：{branch}"));
+            self.last_error = Some(encode(feedback_messages::BRANCH_MISSING, &[("branch", &branch)]));
             return;
         };
         let Some(remote) = self.current_remote() else {
-            self.last_error = Some("当前仓库没有远端".into());
+            self.last_error = Some(encode(feedback_messages::NO_REMOTE, &[]).into());
             return;
         };
         let remote_branch = default_remote_branch_for(local_branch, &remote);
@@ -747,12 +752,12 @@ impl RepositoryView {
 
     pub(crate) fn refresh_remote_branch_operation(&mut self) {
         let Some(remote) = self.remote_branch_operation.selected_remote.clone() else {
-            self.last_error = Some("当前仓库没有远端".into());
+            self.last_error = Some(encode(feedback_messages::NO_REMOTE, &[]).into());
             return;
         };
         self.remote_branch_operation.branch_dropdown_open = false;
         self.remote_branch_operation.refreshing = true;
-        self.with_repo_keep_dialog("拉取远程引用完成", move |service, repo| {
+        self.with_repo_keep_dialog(operation_messages::FETCHED, move |service, repo| {
             service.fetch(repo, &RemoteName::new(remote))
         });
     }
@@ -761,12 +766,12 @@ impl RepositoryView {
         if matches!(
             kind,
             RemoteBranchOperationKind::Pull | RemoteBranchOperationKind::Push
-        ) && !self.ensure_no_merge_in_progress("拉取或推送")
+        ) && !self.ensure_no_merge_in_progress(text(feedback_messages::PULL_PUSH))
         {
             return;
         }
         let Some(snapshot) = self.snapshot.as_ref() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(encode(feedback_messages::OPEN_REQUIRED, &[]).into());
             return;
         };
         let Some(local_branch) = self
@@ -777,22 +782,22 @@ impl RepositoryView {
             .or_else(|| remote_branch_operation::current_local_branch(snapshot))
             .map(|branch| branch.name.clone())
         else {
-            self.last_error = Some("当前不是本地分支，无法拉取、推送或设置 upstream".into());
+            self.last_error = Some(encode(feedback_messages::NOT_LOCAL_BRANCH, &[]).into());
             return;
         };
         let Some(remote) = self.remote_branch_operation.selected_remote.clone() else {
-            self.last_error = Some("当前仓库没有远端".into());
+            self.last_error = Some(encode(feedback_messages::NO_REMOTE, &[]).into());
             return;
         };
         let remote_branch = self.remote_branch_name.value.trim().to_string();
         if remote_branch.is_empty() {
-            self.last_error = Some("需要填写远程分支".into());
+            self.last_error = Some(encode(feedback_messages::REMOTE_BRANCH_REQUIRED, &[]).into());
             return;
         }
         if kind.requires_existing_remote_branch()
             && !remote_branch_exists(snapshot, &remote, &remote_branch)
         {
-            self.last_error = Some("远端分支不存在，请点击刷新或选择已有分支".into());
+            self.last_error = Some(encode(feedback_messages::REMOTE_BRANCH_MISSING, &[]).into());
             return;
         }
 
@@ -804,7 +809,7 @@ impl RepositoryView {
             RemoteBranchOperationKind::Pull => {
                 if use_rebase {
                     // 用变基代替合并
-                    self.with_repo_blocking("变基拉取完成", move |service, repo| {
+                    self.with_repo_blocking(operation_messages::REBASE_PULLED, move |service, repo| {
                         service.pull_branch_rebase(
                             repo,
                             &RemoteName::new(remote),
@@ -812,7 +817,7 @@ impl RepositoryView {
                         )
                     });
                 } else {
-                    self.with_repo_blocking("拉取完成", move |service, repo| {
+                    self.with_repo_blocking(operation_messages::PULLED, move |service, repo| {
                         service.pull_branch(
                             repo,
                             &RemoteName::new(remote),
@@ -822,7 +827,7 @@ impl RepositoryView {
                 }
             }
             RemoteBranchOperationKind::Push => {
-                self.with_repo_blocking("推送完成", move |service, repo| {
+                self.with_repo_blocking(operation_messages::PUSHED, move |service, repo| {
                     service.push_branch_to(
                         repo,
                         &RemoteName::new(remote),
@@ -833,7 +838,7 @@ impl RepositoryView {
                 });
             }
             RemoteBranchOperationKind::SetUpstream => {
-                self.with_repo("upstream 已设置", move |service, repo| {
+                self.with_repo(operation_messages::UPSTREAM_SET, move |service, repo| {
                     service.set_branch_upstream(
                         repo,
                         &BranchName::new(local_branch),
@@ -846,7 +851,7 @@ impl RepositoryView {
     }
 
     pub(crate) fn checkout(&mut self, name: String) {
-        if !self.ensure_no_merge_in_progress("切换分支") {
+        if !self.ensure_no_merge_in_progress(text(feedback_messages::CHECKOUT)) {
             return;
         }
         self.close_browse_if_comparing();
@@ -856,13 +861,13 @@ impl RepositoryView {
     pub(crate) fn create_branch(&mut self) {
         let name = self.branch_name.value.trim().to_string();
         if name.is_empty() {
-            self.last_error = Some("需要填写分支名称".into());
+            self.last_error = Some(encode(feedback_messages::BRANCH_REQUIRED, &[]).into());
             return;
         }
         let checkout = self.create_branch_checkout;
         // None 表示当前 HEAD，Some 时经 find_branch_reference 解析为引用。
         let base = self.create_branch_base.clone();
-        self.with_repo("分支已创建", move |service, repo| {
+        self.with_repo(operation_messages::BRANCH_CREATED, move |service, repo| {
             let from = base.map(BranchName::new);
             service.create_branch_from(repo, &BranchName::new(name), from.as_ref(), checkout)
         });
@@ -871,31 +876,31 @@ impl RepositoryView {
     pub(crate) fn rename_branch(&mut self, old: String) {
         let new = self.branch_rename.value.trim().to_string();
         if new.is_empty() {
-            self.last_error = Some("需要填写新的分支名称".into());
+            self.last_error = Some(encode(feedback_messages::NEW_BRANCH_REQUIRED, &[]).into());
             return;
         }
-        self.with_repo("分支已重命名", move |service, repo| {
+        self.with_repo(operation_messages::BRANCH_RENAMED, move |service, repo| {
             service.rename_branch(repo, &BranchName::new(old), &BranchName::new(new))
         });
     }
 
     pub(crate) fn delete_branch(&mut self, name: String) {
-        self.with_repo("分支已删除", move |service, repo| {
+        self.with_repo(operation_messages::BRANCH_DELETED, move |service, repo| {
             service.delete_branch(repo, &BranchName::new(name))
         });
     }
 
     pub(crate) fn merge_branch(&mut self, name: String) {
-        if !self.ensure_no_merge_in_progress("再次合并") {
+        if !self.ensure_no_merge_in_progress(text(feedback_messages::MERGE_AGAIN)) {
             return;
         }
-        self.with_repo_blocking("合并操作已完成", move |service, repo| {
+        self.with_repo_blocking(operation_messages::MERGE_OPERATION_COMPLETED, move |service, repo| {
             service.merge_branch(repo, &BranchName::new(name))
         });
     }
 
     pub(crate) fn checkout_remote_branch(&mut self, name: String) {
-        if !self.ensure_no_merge_in_progress("切换远端分支") {
+        if !self.ensure_no_merge_in_progress(text(feedback_messages::CHECKOUT_REMOTE)) {
             return;
         }
         self.close_browse_if_comparing();
@@ -906,7 +911,7 @@ impl RepositoryView {
     }
 
     pub(crate) fn checkout_tag(&mut self, name: String) {
-        if !self.ensure_no_merge_in_progress("检出标签") {
+        if !self.ensure_no_merge_in_progress(text(feedback_messages::CHECKOUT_TAG)) {
             return;
         }
         self.close_browse_if_comparing();
@@ -925,21 +930,21 @@ impl RepositoryView {
     fn spawn_checkout_with_carry_prompt(&mut self, target: CheckoutTarget, run: CheckoutRun) {
         let label = checkout_label_for_target(&target);
         let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(encode(feedback_messages::OPEN_REQUIRED, &[]).into());
             return;
         };
         let Some(path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(encode(feedback_messages::OPEN_REQUIRED, &[]).into());
             return;
         };
         if self.busy {
-            self.last_error = Some("已有操作正在运行".into());
+            self.last_error = Some(encode(feedback_messages::BUSY, &[]).into());
             return;
         }
         let service = self.service_for_tab(tab_id);
         let carrying = matches!(run, CheckoutRun::Carry { .. });
         let started = if carrying {
-            "正在贮藏并切换"
+            khaslana::ui_i18n::encode(UiMessage::new("operation.carry_checkout.started", "正在贮藏并切换", "Stashing and checking out"), &[])
         } else {
             started_message_for_label(label)
         };
@@ -949,7 +954,7 @@ impl RepositoryView {
             this.busy = true;
             this.operation_blocker = OperationBlocker::Modal;
             this.operation_blocker_started = Some(Instant::now());
-            this.operation_kind = OperationKind::from_message(started);
+            this.operation_kind = OperationKind::from_message(&started);
             this.status = started.to_string();
             this.last_error = None;
         });
@@ -983,7 +988,7 @@ impl RepositoryView {
                                 &tx,
                                 UiEvent::OperationFinished {
                                     tab_id: Some(tab_id),
-                                    message: label.to_string(),
+                                    message: khaslana::ui_i18n::encode(label, &[]),
                                     snapshot: Some(outcome.snapshot),
                                     diff: None,
                                 },
@@ -1013,7 +1018,7 @@ impl RepositoryView {
                             &tx,
                             UiEvent::OperationFinished {
                                 tab_id: Some(tab_id),
-                                message: label.to_string(),
+                                message: khaslana::ui_i18n::encode(label, &[]),
                                 snapshot: Some(snapshot),
                                 diff: None,
                             },
@@ -1075,7 +1080,7 @@ impl RepositoryView {
         };
         let name = self.tag_name.value.trim().to_string();
         if name.is_empty() {
-            self.last_error = Some("请填写标签名称".into());
+            self.last_error = Some(encode(feedback_messages::TAG_REQUIRED, &[]).into());
             return;
         }
         let message = if self.tag_annotated {
@@ -1085,7 +1090,7 @@ impl RepositoryView {
         };
         self.tag_name.clear();
         self.tag_message.clear();
-        self.with_repo("标签已创建", move |service, repo| {
+        self.with_repo(operation_messages::TAG_CREATED, move |service, repo| {
             service.create_tag(
                 repo,
                 &TagName::new(name.clone()),
@@ -1111,10 +1116,10 @@ impl RepositoryView {
             .filter(|remote| !remote.trim().is_empty())
             .or_else(|| self.current_remote())
         else {
-            self.last_error = Some("当前仓库没有远端，无法推送标签".into());
+            self.last_error = Some(encode(feedback_messages::NO_REMOTE_TAG, &[]).into());
             return;
         };
-        self.with_repo_blocking("标签已推送", move |service, repo| {
+        self.with_repo_blocking(operation_messages::TAG_PUSHED, move |service, repo| {
             service.push_tag(
                 repo,
                 &RemoteName::new(remote.clone()),
@@ -1130,7 +1135,7 @@ impl RepositoryView {
     }
 
     pub(crate) fn delete_tag(&mut self, tag: String) {
-        self.with_repo("标签已删除", move |service, repo| {
+        self.with_repo(operation_messages::TAG_DELETED, move |service, repo| {
             service.delete_tag(repo, &TagName::new(tag.clone()))
         });
     }
@@ -1142,7 +1147,7 @@ impl RepositoryView {
     }
 
     pub(crate) fn delete_remote_tag(&mut self, remote: String, tag: String) {
-        self.with_repo_blocking("远端标签已删除", move |service, repo| {
+        self.with_repo_blocking(operation_messages::REMOTE_TAG_DELETED, move |service, repo| {
             service.delete_remote_tag(
                 repo,
                 &RemoteName::new(remote.clone()),
@@ -1152,19 +1157,19 @@ impl RepositoryView {
     }
 
     pub(crate) fn apply_stash(&mut self, index: usize) {
-        if !self.ensure_no_merge_in_progress("应用贮藏") {
+        if !self.ensure_no_merge_in_progress(text(feedback_messages::APPLY_STASH)) {
             return;
         }
-        self.with_repo_blocking("应用贮藏完成", move |service, repo| {
+        self.with_repo_blocking(operation_messages::STASH_APPLIED, move |service, repo| {
             service.apply_stash(repo, index)
         });
     }
 
     pub(crate) fn pop_stash(&mut self, index: usize) {
-        if !self.ensure_no_merge_in_progress("弹出贮藏") {
+        if !self.ensure_no_merge_in_progress(text(feedback_messages::POP_STASH)) {
             return;
         }
-        self.with_repo_blocking("弹出贮藏完成", move |service, repo| {
+        self.with_repo_blocking(operation_messages::STASH_POPPED, move |service, repo| {
             service.pop_stash(repo, index)
         });
     }
@@ -1205,7 +1210,7 @@ impl RepositoryView {
         target: DiscardTarget,
     ) {
         if paths.is_empty() {
-            self.last_error = Some("没有可回滚的文件".into());
+            self.last_error = Some(encode(feedback_messages::NO_DISCARD_FILES, &[]).into());
             self.change_context_menu = None;
             return;
         }
@@ -1249,37 +1254,37 @@ impl RepositoryView {
     }
 
     pub(crate) fn reset_to_commit(&mut self, oid: String, mode: ResetMode) {
-        if !self.ensure_no_merge_in_progress("重置提交") {
+        if !self.ensure_no_merge_in_progress(text(feedback_messages::RESET)) {
             return;
         }
-        self.with_repo_blocking("分支已重置", move |service, repo| {
+        self.with_repo_blocking(operation_messages::BRANCH_RESET, move |service, repo| {
             service.reset_to_commit(repo, &oid, mode)
         });
     }
 
     pub(crate) fn revert_commit(&mut self, oid: String) {
-        if !self.ensure_no_merge_in_progress("回滚提交") {
+        if !self.ensure_no_merge_in_progress(text(feedback_messages::REVERT)) {
             return;
         }
-        self.with_repo_blocking("回滚提交完成", move |service, repo| {
+        self.with_repo_blocking(operation_messages::COMMIT_REVERTED, move |service, repo| {
             service.revert_commit(repo, &oid)
         });
     }
 
     pub(crate) fn revert_merge_commit(&mut self, oid: String) {
-        if !self.ensure_no_merge_in_progress("撤销合并提交") {
+        if !self.ensure_no_merge_in_progress(text(feedback_messages::REVERT_MERGE)) {
             return;
         }
-        self.with_repo_blocking("撤销合并完成", move |service, repo| {
+        self.with_repo_blocking(operation_messages::MERGE_REVERTED, move |service, repo| {
             service.revert_merge_commit(repo, &oid)
         });
     }
 
     pub(crate) fn uncommit_to_staged(&mut self, oid: String) {
-        if !self.ensure_no_merge_in_progress("还原提交到暂存区") {
+        if !self.ensure_no_merge_in_progress(text(feedback_messages::UNDO_COMMIT)) {
             return;
         }
-        self.with_repo_blocking("提交已还原到暂存区", move |service, repo| {
+        self.with_repo_blocking(operation_messages::COMMIT_UNDONE, move |service, repo| {
             service.uncommit_to_staged(repo, &oid)
         });
     }
@@ -1290,27 +1295,27 @@ impl RepositoryView {
         scope: DiffScope,
         target: DiscardTarget,
     ) {
-        if !self.ensure_no_merge_in_progress("回滚工作区更改") {
+        if !self.ensure_no_merge_in_progress(text(feedback_messages::DISCARD)) {
             return;
         }
         let message = match scope {
             DiffScope::Staged => match target {
-                DiscardTarget::Single => "已回滚文件全部更改",
-                DiscardTarget::Selected => "已回滚选定文件全部更改",
-                DiscardTarget::All => "已回滚暂存区全部更改",
+                DiscardTarget::Single => encode(feedback_messages::DISCARDED_FILE, &[]),
+                DiscardTarget::Selected => encode(feedback_messages::DISCARDED_FILES, &[]),
+                DiscardTarget::All => encode(feedback_messages::DISCARDED_STAGED, &[]),
             },
             DiffScope::Unstaged => match target {
-                DiscardTarget::Single => "已回滚未暂存更改",
-                DiscardTarget::Selected => "已回滚选定未暂存更改",
-                DiscardTarget::All => "已回滚修改区全部更改",
+                DiscardTarget::Single => encode(feedback_messages::DISCARDED_UNSTAGED, &[]),
+                DiscardTarget::Selected => encode(feedback_messages::DISCARDED_SELECTED_UNSTAGED, &[]),
+                DiscardTarget::All => encode(feedback_messages::DISCARDED_ALL_UNSTAGED, &[]),
             },
         };
         let Some(tab_id) = self.active_tab_id() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(encode(feedback_messages::OPEN_REQUIRED, &[]).into());
             return;
         };
         let Some(repo_path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(encode(feedback_messages::OPEN_REQUIRED, &[]).into());
             return;
         };
         self.close_dialog();
@@ -1334,7 +1339,7 @@ impl RepositoryView {
         };
         self.spawn_operation_without_load_bump_with_blocker(
             Some(tab_id),
-            "正在回滚文件更改",
+            encode(feedback_messages::DISCARDING, &[]),
             OperationBlocker::Modal,
             move || {
                 let mut repo = Repository::open(repo_path)?;
@@ -1359,7 +1364,7 @@ impl RepositoryView {
     fn spawn_operation_without_load_bump_with_blocker<F>(
         &mut self,
         tab_id: Option<RepoTabId>,
-        started: &'static str,
+        started: String,
         blocker: OperationBlocker,
         f: F,
     ) where
@@ -1375,7 +1380,7 @@ impl RepositoryView {
             .unwrap_or(self.busy);
         if busy {
             self.apply_status_event(tab_id, |this| {
-                this.last_error = Some("已有操作正在运行".into());
+                this.last_error = Some(encode(feedback_messages::BUSY, &[]).into());
             });
             return;
         }
@@ -1389,7 +1394,7 @@ impl RepositoryView {
             } else {
                 None
             };
-            this.operation_kind = OperationKind::from_message(started);
+            this.operation_kind = OperationKind::from_message(&started);
             this.status = started.to_string();
             this.last_error = None;
         });
@@ -1398,7 +1403,7 @@ impl RepositoryView {
             &tx,
             UiEvent::OperationStarted {
                 tab_id,
-                message: started.to_string(),
+                message: started.clone(),
             },
         );
         self.tasks.spawn(TaskKind::Short, move || match f() {
@@ -1410,7 +1415,7 @@ impl RepositoryView {
                     &tx,
                     UiEvent::OperationFailed {
                         tab_id,
-                        error: err.to_string(),
+                        error: crate::diff_view::diff_task_error(err),
                     },
                 );
             }
@@ -1420,7 +1425,7 @@ impl RepositoryView {
     pub(crate) fn copy_commit_sha(&mut self, oid: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(oid));
         self.commit_context_menu = None;
-        self.status = "已复制提交 SHA".into();
+        self.status = encode(feedback_messages::SHA_COPIED, &[]).into();
         self.last_error = None;
         self.notify_success(self.status.clone(), cx);
     }
@@ -1429,7 +1434,7 @@ impl RepositoryView {
         let Some(repo_path) = self.repo_path.as_deref() else {
             self.change_context_menu = None;
             self.file_path_context_menu = None;
-            self.notify_warning("当前没有打开的仓库", cx);
+            self.notify_warning(encode(feedback_messages::NO_OPEN_REPO, &[]), cx);
             return;
         };
         let absolute_path = repository_file_absolute_path(repo_path, &path);
@@ -1438,7 +1443,7 @@ impl RepositoryView {
         ));
         self.change_context_menu = None;
         self.file_path_context_menu = None;
-        self.status = "已复制文件绝对路径".into();
+        self.status = encode(feedback_messages::PATH_COPIED, &[]).into();
         self.last_error = None;
         self.notify_success(self.status.clone(), cx);
     }
@@ -1447,30 +1452,30 @@ impl RepositoryView {
         let Some(repo_path) = self.repo_path.as_deref() else {
             self.change_context_menu = None;
             self.file_path_context_menu = None;
-            self.notify_warning("当前没有打开的仓库", cx);
+            self.notify_warning(encode(feedback_messages::NO_OPEN_REPO, &[]), cx);
             return;
         };
         let absolute_path = repository_file_absolute_path(repo_path, &path);
         let Some(parent) = absolute_path.parent() else {
             self.change_context_menu = None;
             self.file_path_context_menu = None;
-            self.notify_warning("无法确定文件所在目录", cx);
+            self.notify_warning(encode(feedback_messages::NO_PARENT, &[]), cx);
             return;
         };
         if !parent.is_dir() {
             self.change_context_menu = None;
             self.file_path_context_menu = None;
-            self.notify_warning(format!("文件所在目录不存在：{}", parent.display()), cx);
+            self.notify_warning(encode(feedback_messages::PARENT_MISSING, &[("path", &parent.display().to_string())]), cx);
             return;
         }
         match system::open_directory(parent) {
             Ok(()) => {
-                self.status = "已打开文件所在目录".into();
+                self.status = encode(feedback_messages::PARENT_OPENED, &[]).into();
                 self.last_error = None;
                 self.notify_success(self.status.clone(), cx);
             }
             Err(err) => {
-                let message = format!("打开文件所在目录失败：{err}");
+                let message = encode(feedback_messages::PARENT_FAILED, &[("error", &err.to_string())]);
                 self.last_error = Some(message.clone());
                 self.notify_error(message, cx);
             }
@@ -1482,18 +1487,18 @@ impl RepositoryView {
     /// 在系统资源管理器中打开当前仓库根目录（快捷键入口）。
     pub(crate) fn open_repo_in_explorer(&mut self, cx: &mut Context<Self>) {
         let Some(repo_path) = self.repo_path.as_deref().map(PathBuf::from) else {
-            self.notify_warning("当前没有打开的仓库", cx);
+            self.notify_warning(encode(feedback_messages::NO_OPEN_REPO, &[]), cx);
             return;
         };
         self.close_popups();
         match system::open_directory(&repo_path) {
             Ok(()) => {
-                self.status = "已在资源管理器中打开仓库".into();
+                self.status = encode(feedback_messages::EXPLORER_OPENED, &[]).into();
                 self.last_error = None;
                 self.notify_success(self.status.clone(), cx);
             }
             Err(err) => {
-                let message = format!("打开仓库目录失败：{err}");
+                let message = encode(feedback_messages::EXPLORER_FAILED, &[("error", &err.to_string())]);
                 self.last_error = Some(message.clone());
                 self.notify_error(message, cx);
             }
@@ -1503,7 +1508,7 @@ impl RepositoryView {
     /// 以默认浏览器打开当前远端的 URL（快捷键入口）。
     pub(crate) fn open_remote_in_browser(&mut self, cx: &mut Context<Self>) {
         let Some(remote_name) = self.current_remote() else {
-            self.notify_warning("当前仓库没有远端", cx);
+            self.notify_warning(encode(feedback_messages::NO_REMOTE, &[]), cx);
             return;
         };
         // 先把 url 提取为 owned String，避免后续 self 操作与不可变借用冲突。
@@ -1515,12 +1520,12 @@ impl RepositoryView {
                 .map(|r| r.url.clone())
         });
         let Some(url) = url.filter(|u| !u.is_empty()) else {
-            self.notify_warning("远端 URL 为空或未找到", cx);
+            self.notify_warning(encode(feedback_messages::REMOTE_URL_MISSING, &[]), cx);
             return;
         };
         self.close_popups();
         open_url(&url);
-        self.status = format!("已在浏览器中打开 {url}");
+        self.status = encode(feedback_messages::BROWSER_OPENED, &[("url", &url)]);
         self.last_error = None;
         self.notify_success(self.status.clone(), cx);
     }
@@ -1528,7 +1533,7 @@ impl RepositoryView {
     pub(crate) fn copy_branch_name(&mut self, branch: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(branch));
         self.branch_context_menu = None;
-        self.status = "已复制分支名称".into();
+        self.status = encode(feedback_messages::BRANCH_COPIED, &[]).into();
         self.last_error = None;
         self.notify_success(self.status.clone(), cx);
     }
@@ -1538,7 +1543,7 @@ impl RepositoryView {
             "git checkout --track {branch}"
         )));
         self.branch_context_menu = None;
-        self.status = "已复制 checkout 命令".into();
+        self.status = encode(feedback_messages::CHECKOUT_COPIED, &[]).into();
         self.last_error = None;
         self.notify_success(self.status.clone(), cx);
     }
@@ -1546,7 +1551,7 @@ impl RepositoryView {
     pub(crate) fn copy_remote_name(&mut self, remote: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(remote));
         self.remote_context_menu = None;
-        self.status = "已复制远端名称".into();
+        self.status = encode(feedback_messages::REMOTE_COPIED, &[]).into();
         self.last_error = None;
         self.notify_success(self.status.clone(), cx);
     }
@@ -1554,7 +1559,7 @@ impl RepositoryView {
     pub(crate) fn copy_tag_name(&mut self, tag: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(tag));
         self.tag_context_menu = None;
-        self.status = "已复制标签名称".into();
+        self.status = encode(feedback_messages::TAG_COPIED, &[]).into();
         self.last_error = None;
         self.notify_success(self.status.clone(), cx);
     }
@@ -1566,7 +1571,7 @@ impl RepositoryView {
             "stash@{{{index}}}"
         )));
         self.stash_context_menu = None;
-        self.status = "已复制贮藏引用名".into();
+        self.status = encode(feedback_messages::STASH_COPIED, &[]).into();
         self.last_error = None;
         self.notify_success(self.status.clone(), cx);
     }
@@ -1574,11 +1579,11 @@ impl RepositoryView {
 
 /// 切换目标对应的完成消息：`operation_requires_repository_refresh` 等
 /// 白名单按该消息决定是否完整重载仓库，必须沿用既有静态文案。
-fn checkout_label_for_target(target: &CheckoutTarget) -> &'static str {
+fn checkout_label_for_target(target: &CheckoutTarget) -> UiMessage {
     match target {
-        CheckoutTarget::Branch(_) => "切换分支完成",
-        CheckoutTarget::RemoteBranch(_) => "远端分支已拉取到本地",
-        CheckoutTarget::Tag(_) => "检出标签完成",
+        CheckoutTarget::Branch(_) => operation_messages::BRANCH_CHECKED_OUT,
+        CheckoutTarget::RemoteBranch(_) => operation_messages::REMOTE_BRANCH_PULLED,
+        CheckoutTarget::Tag(_) => operation_messages::TAG_CHECKED_OUT,
     }
 }
 

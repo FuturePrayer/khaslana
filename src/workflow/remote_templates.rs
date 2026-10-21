@@ -1,3 +1,6 @@
+#[path = "remote_templates_resources.rs"]
+mod messages;
+use crate::ui_i18n::LocalizedMessage;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -71,7 +74,7 @@ fn list_templates_from_url(
             continue;
         }
         if entries.len() >= MAX_TEMPLATES {
-            return Err(GitError::Message("远端工作流模板数量超过限制".into()));
+            return Err(GitError::Localized(LocalizedMessage::new(messages::TEMPLATE_COUNT_LIMIT, &[])));
         }
         let object = entry.to_object(&repo)?;
         if object.kind() != Some(ObjectType::Blob) {
@@ -79,14 +82,14 @@ fn list_templates_from_url(
         }
         let blob = object.peel_to_blob()?;
         if blob.size() > MAX_TEMPLATE_BYTES {
-            return Err(GitError::Message(format!("远端工作流模板过大：{name}")));
+            return Err(GitError::Localized(LocalizedMessage::new(messages::TEMPLATE_TOO_LARGE, &[("name", name)])));
         }
         total_bytes += blob.size();
         if total_bytes > MAX_TOTAL_BYTES {
-            return Err(GitError::Message("远端工作流模板总大小超过限制".into()));
+            return Err(GitError::Localized(LocalizedMessage::new(messages::TOTAL_SIZE_LIMIT, &[])));
         }
         let content = std::str::from_utf8(blob.content())
-            .map_err(|_| GitError::Message(format!("远端工作流模板不是 UTF-8：{name}")))?;
+            .map_err(|_| GitError::Localized(LocalizedMessage::new(messages::INVALID_NAMED_UTF8, &[("name", name)])))?;
         let definition = parse_workflow_json5(content)?;
         entries.push(RemoteTemplateEntry {
             file_name: name.to_string(),
@@ -96,7 +99,7 @@ fn list_templates_from_url(
         });
     }
     if entries.is_empty() {
-        return Err(GitError::Message("远端目录没有可用的工作流模板".into()));
+        return Err(GitError::Localized(LocalizedMessage::new(messages::EMPTY_CATALOG, &[])));
     }
     entries.sort_by(|a, b| a.file_name.to_lowercase().cmp(&b.file_name.to_lowercase()));
     Ok(entries)
@@ -108,16 +111,16 @@ pub fn download_cnb_template(
     template: &RemoteTemplateEntry,
 ) -> Result<PathBuf> {
     if !valid_template_name(&template.file_name) {
-        return Err(GitError::Message("远端工作流模板文件名无效".into()));
+        return Err(GitError::Localized(LocalizedMessage::new(messages::INVALID_FILE_NAME, &[])));
     }
     let content = std::str::from_utf8(&template.content)
-        .map_err(|_| GitError::Message("远端工作流模板不是 UTF-8".into()))?;
+        .map_err(|_| GitError::Localized(LocalizedMessage::new(messages::INVALID_UTF8, &[])))?;
     parse_workflow_json5(content)?;
     fs::create_dir_all(template_root)?;
     let target = template_root.join(&template.file_name);
     let mut file = OpenOptions::new().write(true).create_new(true).open(&target).map_err(|err| {
         if err.kind() == std::io::ErrorKind::AlreadyExists {
-            GitError::Message(format!("本地已存在同名模板：{}", template.file_name))
+            GitError::Localized(LocalizedMessage::new(messages::LOCAL_TEMPLATE_EXISTS, &[("name", &template.file_name)]))
         } else {
             err.into()
         }

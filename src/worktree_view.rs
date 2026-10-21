@@ -1,3 +1,6 @@
+#[path = "ui_resources/worktree_view_messages.rs"]
+mod messages;
+
 use gpui::{
     Context, IntoElement, ListSizingBehavior, MouseButton, MouseDownEvent, Window, div, prelude::*,
     px, uniform_list,
@@ -29,14 +32,14 @@ const COMMIT_BRANCH_LABEL_MAX_CHARS: usize = 16;
 /// 因此分支名必须随仓库切换而变化（同一页面上的提交按钮只有这一个）。
 fn commit_branch_button_label(head: Option<&str>) -> String {
     let Some(head) = head.map(str::trim).filter(|head| !head.is_empty()) else {
-        return "提交到当前分支".to_string();
+        return khaslana::ui_i18n::text(messages::COMMIT_TO_CURRENT_BRANCH).to_string();
     };
     let mut chars = head.chars();
     let truncated: String = chars.by_ref().take(COMMIT_BRANCH_LABEL_MAX_CHARS).collect();
     if chars.next().is_some() {
-        format!("提交到 {truncated}…")
+        khaslana::ui_i18n::format(messages::COMMIT_TO_TRUNCATED, &[("truncated", &(truncated).to_string())])
     } else {
-        format!("提交到 {truncated}")
+        khaslana::ui_i18n::format(messages::COMMIT_TO_TRUNCATED_2, &[("truncated", &(truncated).to_string())])
     }
 }
 
@@ -86,14 +89,14 @@ pub(crate) const fn change_sections_layout(
 /// 「干净工作区」与「没有可显示内容」是两种状态，分别设计文案）。
 pub(crate) fn unstaged_empty_text(loading: bool, peer_has_content: bool) -> &'static str {
     if loading {
-        return "修改区加载中...";
+        return khaslana::ui_i18n::text(messages::LOADING_UNSTAGED_CHANGES);
     }
     if peer_has_content {
         // 对侧有暂存内容：工作区没有新的改动，但流程没结束。
-        "未暂存变更已全部暂存"
+        khaslana::ui_i18n::text(messages::ALL_UNSTAGED_CHANGES_HAVE_BEEN_STAGED)
     } else {
         // 两边都空：工作区干净（专属文案，与「暂无…」区分）。
-        "工作区干净，没有待提交的改动"
+        khaslana::ui_i18n::text(messages::WORKING_TREE_CLEAN_NO_CHANGES_TO_COMMIT)
     }
 }
 
@@ -144,12 +147,12 @@ impl RepositoryView {
                 .min_w(px(0.0))
                 .min_h(px(0.0))
                 .child(
-                    EmptyState::new("还没有打开的仓库")
-                        .detail("从本地磁盘打开现有仓库，或克隆一个远端仓库开始工作")
+                    EmptyState::new(khaslana::ui_i18n::text(messages::NO_REPOSITORY_OPEN))
+                        .detail(khaslana::ui_i18n::text(messages::OPEN_A_LOCAL_REPOSITORY_OR_CLONE_A_REMOTE_REPOSITORY_TO))
                         .fill()
                         .action(
                             self.toolbar_button(
-                                "打开仓库…",
+                                khaslana::ui_i18n::text(messages::OPEN_REPOSITORY),
                                 ToolbarIcon::Open,
                                 true,
                                 |this, _window, _cx| {
@@ -161,7 +164,7 @@ impl RepositoryView {
                         )
                         .action(
                             self.toolbar_button(
-                                "克隆仓库…",
+                                khaslana::ui_i18n::text(messages::CLONE_REPOSITORY),
                                 ToolbarIcon::Clone,
                                 true,
                                 |this, window, cx| {
@@ -235,9 +238,7 @@ impl RepositoryView {
             .bg(rgb(ui_theme::FEEDBACK_WARNING_BG))
             .text_size(px(ui_theme::TYPE_BODY))
             .text_color(rgb(ui_theme::FEEDBACK_WARNING_TEXT))
-            .child(format!(
-                "存在 {conflict_count} 个冲突文件，请在冲突工作台中处理"
-            ))
+            .child(khaslana::ui_i18n::format(messages::CONFLICT_COUNT_CONFLICT_FILES_REMAIN_RESOLVE_THEM_IN_THE_CONFLICT, &[("conflict_count", &(conflict_count).to_string())]))
     }
 
     fn render_changes(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -279,16 +280,16 @@ impl RepositoryView {
                     // 未暂存列表直接吃满左列剩余高度。
                     .when(layout.show_staged, |this| {
                         this.child(self.render_virtual_change_section(
-                            "已暂存变更",
+                            khaslana::ui_i18n::text(messages::STAGED_CHANGES),
                             "staged-change-list",
-                            "暂存区加载中...",
+                            khaslana::ui_i18n::text(messages::LOADING_STAGED_CHANGES),
                             self.loading.staged(),
                             staged_count,
                             DiffScope::Staged,
                             unstaged_count > 0,
                             vec![
                                 self.change_icon_button(
-                                    "取消暂存全部",
+                                    khaslana::ui_i18n::text(messages::UNSTAGE_ALL),
                                     ToolbarIcon::Minus,
                                     has_staged && !self.busy,
                                     |this, _, _| this.unstage_all(),
@@ -303,16 +304,16 @@ impl RepositoryView {
                         ))
                     })
                     .child(self.render_virtual_change_section(
-                        "未暂存变更",
+                        khaslana::ui_i18n::text(messages::UNSTAGED_CHANGES),
                         "unstaged-change-list",
-                        "修改区加载中...",
+                        khaslana::ui_i18n::text(messages::LOADING_UNSTAGED_CHANGES),
                         self.loading.unstaged(),
                         unstaged_count,
                         DiffScope::Unstaged,
                         staged_count > 0,
                         vec![
                             self.change_icon_button(
-                                "暂存全部",
+                                khaslana::ui_i18n::text(messages::STAGE_ALL),
                                 ToolbarIcon::Plus,
                                 has_unstaged && !self.busy,
                                 |this, _, _| this.stage_all(),
@@ -320,7 +321,7 @@ impl RepositoryView {
                             )
                             .into_any_element(),
                             self.change_destructive_icon_button(
-                                "丢弃全部",
+                                khaslana::ui_i18n::text(messages::DISCARD_ALL),
                                 has_unstaged && !self.busy,
                                 |this, _, _| this.confirm_discard_all(),
                                 cx,
@@ -390,7 +391,7 @@ impl RepositoryView {
                 let empty_text = if loading {
                     loading_text
                 } else if is_staged {
-                    "暂无已暂存变更"
+                    khaslana::ui_i18n::text(messages::NO_STAGED_CHANGES)
                 } else {
                     unstaged_empty_text(loading, peer_has_content)
                 };
@@ -561,9 +562,9 @@ impl RepositoryView {
             ToolbarIcon::Plus
         };
         let row_action_label = if is_staged {
-            "取消暂存此文件"
+            khaslana::ui_i18n::text(messages::UNSTAGE_THIS_FILE)
         } else {
-            "暂存此文件"
+            khaslana::ui_i18n::text(messages::STAGE_THIS_FILE)
         };
         let row_action_enabled = !self.busy;
         let row_action_click: std::sync::Arc<dyn Fn(&mut Self, &mut Window, &mut Context<Self>)> =
@@ -571,14 +572,14 @@ impl RepositoryView {
                 std::sync::Arc::new({
                     let path = path.clone();
                     move |this: &mut Self, _window: &mut Window, _cx: &mut Context<Self>| {
-                        this.unstage_paths(vec![path.clone()], "取消暂存");
+                        this.unstage_paths(vec![path.clone()], crate::operation_ui_resources::UNSTAGED);
                     }
                 })
             } else {
                 std::sync::Arc::new({
                     let path = path.clone();
                     move |this: &mut Self, _window: &mut Window, _cx: &mut Context<Self>| {
-                        this.stage_paths(vec![path.clone()], "暂存");
+                        this.stage_paths(vec![path.clone()], crate::operation_ui_resources::STAGED);
                     }
                 })
             };
@@ -657,18 +658,13 @@ impl RepositoryView {
 
     fn render_diff(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // 全文视图模式下标题前缀"全文："，提示当前展示整份文件而非仅改动区域
-        let prefix = if self.full_file_view { "全文：" } else { "" };
         let title = self
             .diff
             .as_ref()
             .map(|diff| {
-                format!(
-                    "{prefix}差异：{} ({})",
-                    diff.path,
-                    diff_scope_label(&diff.scope)
-                )
+                khaslana::ui_i18n::format(if self.full_file_view { messages::FULL_FILE_TITLE } else { messages::DIFF_TITLE }, &[ ("path", &(diff.path).to_string()), ("scope", &(diff_scope_label(&diff.scope)).to_string())])
             })
-            .unwrap_or_else(|| "差异".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::DIFF).to_string());
 
         // 差异区是与变更列表并列的独立悬浮面板；提交条浮在它下方，
         // 三段各自带圆角与投影，中间以留白分隔。
@@ -687,7 +683,7 @@ impl RepositoryView {
                 self.diff.clone(),
                 self.diff_headers_expanded,
                 DiffHeaderTarget::Worktree,
-                "请选择一个变更文件查看差异".to_string(),
+                khaslana::ui_i18n::text(messages::SELECT_A_CHANGED_FILE_TO_VIEW_ITS_DIFFERENCES).to_string(),
                 cx,
             ))
             .child(self.render_encoding_dropdown(EncodingMenuTarget::Worktree, cx))
@@ -724,7 +720,7 @@ impl RepositoryView {
         );
         // 次级动作的文案：修补模式是「修补提交」，否则是「提交到 <当前分支>」。
         let secondary_label = if self.amend_mode {
-            "修补提交".to_string()
+            khaslana::ui_i18n::text(messages::AMEND_COMMIT).to_string()
         } else {
             commit_branch_button_label(
                 self.snapshot
@@ -734,9 +730,9 @@ impl RepositoryView {
         };
         // 主动作文案同样预计算：修补模式下变为「修补提交并推送」。
         let primary_label: &'static str = if self.amend_mode {
-            "修补提交并推送"
+            khaslana::ui_i18n::text(messages::AMEND_AND_PUSH)
         } else {
-            "提交并推送"
+            khaslana::ui_i18n::text(messages::COMMIT_AND_PUSH)
         };
 
         let commit_actions = div()
@@ -754,7 +750,7 @@ impl RepositoryView {
                     cx,
                 ))
                 .child(self.danger_button(
-                    "中止合并",
+                    khaslana::ui_i18n::text(messages::ABORT_MERGE),
                     !self.busy,
                     |this, _, _| this.open_abort_merge_confirm_dialog(),
                     cx,
@@ -805,7 +801,7 @@ impl RepositoryView {
             .shadow(crate::ui::components::control_shadow())
             // 标题行的底色随卡片本身：这里已经是一条抬起的实体，不再叠分组带。
             .child(
-                panel_section_header("提交信息")
+                panel_section_header(khaslana::ui_i18n::text(messages::COMMIT_MESSAGE))
                     .surface(PanelHeaderSurface::Parent)
                     .action(self.render_ai_commit_button(cx).into_any_element())
                     .build(),
@@ -825,7 +821,7 @@ impl RepositoryView {
                     .when(!merge_in_progress && self.repo_path.is_some(), |this| {
                         this.child(self.checkbox_row(
                             "commit-amend-toggle",
-                            "修补上次提交",
+                            khaslana::ui_i18n::text(messages::AMEND_LAST_COMMIT),
                             self.amend_mode,
                             |this, _cx| {
                                 this.amend_mode = !this.amend_mode;

@@ -1,3 +1,6 @@
+#[path = "../ui_resources/recovery_view_actions_messages.rs"]
+mod messages;
+
 use std::collections::HashSet;
 use std::sync::{
     Arc,
@@ -20,8 +23,8 @@ use crate::{DialogState, RepositoryView, SyntaxSlot, TaskKind, UiEvent, send_ui_
 
 fn run_read<T>(task: impl FnOnce() -> khaslana::Result<T>) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(task))
-        .map_err(|payload| format!("恢复任务异常：{}", crate::tasks::panic_message(payload)))?
-        .map_err(|error| error.to_string())
+        .map_err(|payload| khaslana::ui_i18n::encode(messages::RECOVERY_TASK_FAILED_UNEXPECTEDLY_PAYLOAD, &[("payload", &(crate::tasks::panic_message(payload)).to_string())]))?
+        .map_err(crate::diff_view::diff_task_error)
 }
 
 fn verify_identity(
@@ -31,7 +34,7 @@ fn verify_identity(
 ) -> khaslana::Result<()> {
     if service.recovery_repo_identity(repo)? != *identity {
         return Err(GitError::Message(
-            "仓库或工作树身份已变化，请刷新恢复记录".into(),
+            khaslana::ui_i18n::encode(messages::REPOSITORY_OR_WORKTREE_IDENTITY_CHANGED_REFRESH_RECOVERY_RECORDS, &[]),
         ));
     }
     Ok(())
@@ -106,7 +109,7 @@ impl RepositoryView {
                 let sources = service.reflog_sources(&repo)?;
                 let snapshot = service.read_reflog_snapshot(&repo, &scope, &cancel)?;
                 if snapshot.identity != sources.identity {
-                    return Err(GitError::Message("读取期间仓库身份变化，请重试".into()));
+                    return Err(GitError::Message(khaslana::ui_i18n::encode(messages::REPOSITORY_IDENTITY_CHANGED_WHILE_READING_TRY_AGAIN, &[])));
                 }
                 Ok((sources, Arc::new(snapshot)))
             });
@@ -129,7 +132,7 @@ impl RepositoryView {
         self.recovery.preview.loading_files = false;
         self.recovery.preview.loading_diff = false;
         self.recovery.search_changed = None;
-        self.recovery.error = Some("读取已取消，保留上次可用结果".into());
+        self.recovery.error = Some(khaslana::ui_i18n::encode(messages::READ_CANCELLED_PREVIOUS_AVAILABLE_RESULTS_RETAINED, &[]));
     }
 
     pub(crate) fn recovery_search_changed(&mut self) {
@@ -517,7 +520,7 @@ impl RepositoryView {
         self.recovery.dialog.as_ref()?;
         let name = self.recovery.branch_name.value.trim();
         let Some(tab_id) = self.active_tab_id() else {
-            return Some("仓库已关闭".into());
+            return Some(khaslana::ui_i18n::encode(messages::REPOSITORY_CLOSED, &[]));
         };
         if let Err(error) = self
             .service_for_tab(tab_id)
@@ -536,7 +539,7 @@ impl RepositoryView {
             })
         });
         if exists {
-            return Some("分支名称已存在，请使用其他名称".into());
+            return Some(khaslana::ui_i18n::encode(messages::THIS_BRANCH_NAME_ALREADY_EXISTS_CHOOSE_ANOTHER_NAME, &[]));
         }
         None
     }
@@ -582,17 +585,17 @@ impl RepositoryView {
             target_oid: dialog.oid,
             branch_name: self.recovery.branch_name.value.trim().to_string(),
         };
-        self.status = "正在创建恢复分支".into();
+        self.status = khaslana::ui_i18n::encode(messages::CREATING_RECOVERY_BRANCH, &[]);
         let service = self.service_for_tab(tab_id);
         let tx = self.tx.clone();
         self.tasks.spawn(TaskKind::Long, move || {
             let result = run_read(|| {
                 if cancel.load(Ordering::Relaxed) {
-                    return Err(GitError::Message("已取消创建，未执行引用写入".into()));
+                    return Err(GitError::Message(khaslana::ui_i18n::encode(messages::CREATION_CANCELLED_NO_REFERENCES_WERE_WRITTEN, &[])));
                 }
                 let repo = Repository::open(&repo_path)?;
                 if cancel.load(Ordering::Relaxed) {
-                    return Err(GitError::Message("已取消创建，未执行引用写入".into()));
+                    return Err(GitError::Message(khaslana::ui_i18n::encode(messages::CREATION_CANCELLED_NO_REFERENCES_WERE_WRITTEN, &[])));
                 }
                 service.create_recovery_branch(&repo, &request)
             });
@@ -639,7 +642,7 @@ impl RepositoryView {
                         }
                         Err(error) => {
                             this.recovery.error =
-                                Some(format!("读取恢复记录失败：{error}。保留上次可用结果。"))
+                                Some(khaslana::ui_i18n::encode(messages::FAILED_TO_READ_RECOVERY_RECORDS_ERROR_PREVIOUS_AVAILABLE_RESULTS_RETAINED, &[("error", &khaslana::ui_i18n::resolve(&error))]))
                         }
                     }
                 });
@@ -710,7 +713,7 @@ impl RepositoryView {
                         }
                         Err(error) => {
                             this.last_error =
-                                Some(format!("恢复分支已创建，分支列表刷新失败：{error}"));
+                                Some(khaslana::ui_i18n::encode(messages::RECOVERY_BRANCH_CREATED_BUT_REFRESHING_BRANCHES_FAILED_ERROR, &[("error", &khaslana::ui_i18n::resolve(&error))]));
                         }
                     }
                 });
@@ -812,10 +815,10 @@ impl RepositoryView {
                         }
                         Err(error) => {
                             if this.full_file_view
-                                && error.contains(khaslana::FULL_FILE_TOO_LARGE_MESSAGE)
+                                && crate::diff_view::is_full_file_too_large_error(&error)
                             {
                                 this.full_file_view = false;
-                                this.status = "文件过大，已回退到差异视图".into();
+                                this.status = crate::diff_view::full_file_fallback_status();
                                 this.reload_recovery_diff();
                             } else {
                                 this.recovery.preview.error = Some(error);
@@ -865,12 +868,7 @@ impl RepositoryView {
                                         }
                                     }
                                     Err(error) => {
-                                        warning = Some(format!(
-                                            "{}分支列表刷新失败：{error}",
-                                            warning
-                                                .map(|text| format!("{text}；"))
-                                                .unwrap_or_default()
-                                        ))
+                                        warning = Some(khaslana::ui_i18n::encode(messages::BRANCH_REFRESH_WARNING, &[("error", &khaslana::ui_i18n::resolve(&error))]));
                                     }
                                 }
                             } else {
@@ -882,14 +880,8 @@ impl RepositoryView {
                             this.recovery.last_created = Some(outcome.branch_name.clone());
                             this.history_refs_cache = None;
                             this.recovery.dialog = None;
-                            let message = format!(
-                                "恢复分支 {} 已创建，当前分支未切换{}",
-                                outcome.branch_name,
-                                warning
-                                    .as_ref()
-                                    .map(|text| format!("；{text}"))
-                                    .unwrap_or_default()
-                            );
+                            let message = khaslana::ui_i18n::encode(messages::RECOVERY_BRANCH_CREATED,
+                                &[("branch", &outcome.branch_name)]);
                             if current_metadata {
                                 this.status = message.clone();
                                 this.last_error = warning.clone();
@@ -905,10 +897,10 @@ impl RepositoryView {
                                 dialog.error = Some(error.clone());
                             }
                             if current_metadata {
-                                this.status = "恢复分支未创建".into();
+                                this.status = khaslana::ui_i18n::encode(messages::RECOVERY_BRANCH_NOT_CREATED, &[]);
                                 this.last_error = Some(error.clone());
                             }
-                            feedback = Some((format!("创建恢复分支失败：{error}"), false, true));
+                            feedback = Some((khaslana::ui_i18n::encode(messages::FAILED_TO_CREATE_RECOVERY_BRANCH_ERROR, &[("error", &khaslana::ui_i18n::resolve(&error))]), false, true));
                         }
                     }
                 });

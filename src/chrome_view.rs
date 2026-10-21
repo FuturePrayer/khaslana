@@ -5,6 +5,9 @@
 //! 宽度，再交给纯函数决定壳层的信息密度；窗口创建时另有 `WindowOptions::window_min_size`
 //! 保护原生控制区。
 
+#[path = "ui_resources/chrome_view_messages.rs"]
+mod messages;
+
 use gpui::{
     Context, CursorStyle, IntoElement, MouseButton, Window, WindowControlArea, div,
     prelude::*, px, svg,
@@ -326,14 +329,14 @@ pub(crate) const fn shell_layout_policy(width: f32) -> ShellLayoutPolicy {
 /// 模式的中文名（收起窄条的图标按钮用 tooltip 表达；展开态按钮直接显示文字）。
 fn navigator_mode_label(mode: MainMode) -> &'static str {
     match mode {
-        MainMode::Worktree => "工作区",
-        MainMode::Conflict => "冲突处理",
-        MainMode::History => "提交记录",
-        MainMode::Workflow => "工作流",
-        MainMode::Stash => "贮藏",
-        MainMode::Browse => "分支浏览",
-        MainMode::Blame => "追溯",
-        MainMode::CommitGraph => "提交图谱",
+        MainMode::Worktree => khaslana::ui_i18n::text(messages::WORKING_TREE),
+        MainMode::Conflict => khaslana::ui_i18n::text(messages::CONFLICTS),
+        MainMode::History => khaslana::ui_i18n::text(messages::HISTORY),
+        MainMode::Workflow => khaslana::ui_i18n::text(messages::WORKFLOWS),
+        MainMode::Stash => khaslana::ui_i18n::text(messages::STASHES),
+        MainMode::Browse => khaslana::ui_i18n::text(messages::BROWSE_BRANCH),
+        MainMode::Blame => khaslana::ui_i18n::text(messages::ATTRIBUTION),
+        MainMode::CommitGraph => khaslana::ui_i18n::text(messages::COMMIT_GRAPH),
     }
 }
 
@@ -356,17 +359,17 @@ fn chrome_action_disabled_reason(
     merge_in_progress: bool,
 ) -> Option<&'static str> {
     if busy {
-        return Some("当前操作进行中，请稍候");
+        return Some(khaslana::ui_i18n::text(messages::AN_OPERATION_IS_IN_PROGRESS_PLEASE_WAIT));
     }
     if !repo_open {
-        return Some("请先打开仓库");
+        return Some(khaslana::ui_i18n::text(messages::OPEN_A_REPOSITORY_FIRST));
     }
 
-    if matches!(label, "获取" | "拉取" | "推送") && !remote_open {
-        return Some("当前仓库没有可用远端");
+    if matches!(label, "fetch" | "pull" | "push" | "获取" | "拉取" | "推送") && !remote_open {
+        return Some(khaslana::ui_i18n::text(messages::THIS_REPOSITORY_HAS_NO_AVAILABLE_REMOTE));
     }
-    if matches!(label, "拉取" | "推送") && merge_in_progress {
-        return Some("合并进行中，完成或中止合并后再操作");
+    if matches!(label, "pull" | "push" | "拉取" | "推送") && merge_in_progress {
+        return Some(khaslana::ui_i18n::text(messages::A_MERGE_IS_IN_PROGRESS_COMPLETE_OR_ABORT_IT_FIRST));
     }
     None
 }
@@ -460,7 +463,7 @@ impl RepositoryView {
             .child(
                 chrome_command_group()
                     .child(self.chrome_command_button(
-                        "刷新",
+                        khaslana::ui_i18n::text(messages::REFRESH),
                         IconName::RefreshCw,
                         None,
                         repo_open && !self.busy,
@@ -469,7 +472,7 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.chrome_command_button(
-                        "获取",
+                        khaslana::ui_i18n::text(messages::FETCH),
                         IconName::CloudDownload,
                         None,
                         repo_open && remote_open && !self.busy,
@@ -478,7 +481,7 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.chrome_command_button(
-                        "拉取",
+                        khaslana::ui_i18n::text(messages::PULL),
                         IconName::ArrowDownToLine,
                         (behind_count > 0).then(|| format!("↓{behind_count}")),
                         repo_open && remote_open && !self.busy && !merge_in_progress,
@@ -489,7 +492,7 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.chrome_command_button(
-                        "推送",
+                        khaslana::ui_i18n::text(messages::PUSH),
                         IconName::ArrowUpFromLine,
                         (ahead_count > 0).then(|| format!("↑{ahead_count}")),
                         repo_open && remote_open && !self.busy && !merge_in_progress,
@@ -502,7 +505,7 @@ impl RepositoryView {
                     // 「贮藏」「子模块」与刷新/获取/拉取/推送同一策略：宽窗显示
                     // 图标 + 文字，窄档（< 1120）自动收成纯图标，顶栏宽度可控。
                     .child(self.chrome_command_button(
-                        "贮藏",
+                        khaslana::ui_i18n::text(messages::STASHES),
                         IconName::Archive,
                         None,
                         repo_open && !self.busy && !merge_in_progress,
@@ -511,7 +514,7 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.chrome_command_button(
-                        "子模块",
+                        khaslana::ui_i18n::text(messages::SUBMODULES),
                         IconName::Boxes,
                         None,
                         repo_open && !self.busy,
@@ -534,7 +537,7 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         BaseButton::new("chrome-search-entry")
-            .accessibility_label("全局搜索：分支、功能、设置和仓库")
+            .accessibility_label(khaslana::ui_i18n::text(messages::GLOBAL_SEARCH_BRANCHES_COMMANDS_SETTINGS_AND_REPOSITORIES))
             .focus_visible(|this| this.border_1().border_color(rgb(theme::PRIMARY)))
             .flex_1()
             .min_w(px(if compact { 96.0 } else { 212.0 }))
@@ -552,7 +555,7 @@ impl RepositoryView {
             .bg(rgb(theme::WB_INPUT_SURFACE))
             .cursor_pointer()
             .hover(|this| this.border_color(rgb(theme::PRIMARY)).bg(rgb(theme::STATE_HOVER)))
-            .tooltip(|_, cx| crate::ui::components::tooltip_text("全局搜索：分支、功能、设置和仓库（Ctrl+P）", cx))
+            .tooltip(|_, cx| crate::ui::components::tooltip_text(khaslana::ui_i18n::text(messages::GLOBAL_SEARCH_BRANCHES_COMMANDS_SETTINGS_AND_REPOSITORIES_CTRL_P), cx))
             .child(div().flex_none().child(toolbar_icon(ToolbarIcon::Search, theme::CONTENT_TERTIARY)))
             .child(
                 div()
@@ -561,7 +564,7 @@ impl RepositoryView {
                     .whitespace_nowrap()
                     .text_size(px(theme::TYPE_BODY))
                     .text_color(rgb(theme::CONTENT_TERTIARY))
-                    .child(if compact { "搜索" } else { "搜索分支或功能" }),
+                    .child(if compact { khaslana::ui_i18n::text(messages::SEARCH) } else { khaslana::ui_i18n::text(messages::SEARCH_BRANCHES_OR_COMMANDS) }),
             )
             .when(!compact, |this| {
                 this.child(
@@ -595,7 +598,7 @@ impl RepositoryView {
         let mut entries = vec![(
             "nav-worktree",
             ToolbarIcon::Worktree,
-            "工作区",
+            khaslana::ui_i18n::text(messages::WORKING_TREE),
             self.main_mode == MainMode::Worktree,
             MainMode::Worktree,
         )];
@@ -603,7 +606,7 @@ impl RepositoryView {
             entries.push((
                 "nav-conflict",
                 ToolbarIcon::Ai,
-                "冲突处理",
+                khaslana::ui_i18n::text(messages::CONFLICTS),
                 self.main_mode == MainMode::Conflict,
                 MainMode::Conflict,
             ));
@@ -611,14 +614,14 @@ impl RepositoryView {
         entries.push((
             "nav-history",
             ToolbarIcon::History,
-            "提交记录",
+            khaslana::ui_i18n::text(messages::HISTORY),
             self.main_mode == MainMode::History,
             MainMode::History,
         ));
         entries.push((
             "nav-workflow",
             ToolbarIcon::Workflow,
-            "工作流",
+            khaslana::ui_i18n::text(messages::WORKFLOWS),
             self.main_mode == MainMode::Workflow,
             MainMode::Workflow,
         ));
@@ -743,9 +746,9 @@ impl RepositoryView {
             "context-navigator-toggle".into(),
             toggle_icon,
             if visible {
-                "收起上下文导航"
+                khaslana::ui_i18n::text(messages::COLLAPSE_CONTEXT_NAVIGATION)
             } else {
-                "展开上下文导航"
+                khaslana::ui_i18n::text(messages::EXPAND_CONTEXT_NAVIGATION)
             },
             enabled,
             move |this, _window, _cx| {
@@ -850,7 +853,7 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         BaseButton::new(id)
-            .accessibility_label("设置")
+            .accessibility_label(khaslana::ui_i18n::text(messages::SETTINGS))
             .focus_visible(|this| this.border_1().border_color(rgb(theme::PRIMARY)))
             .flex_none()
             .size(px(theme::CONTROL_HEIGHT_TOOLBAR))
@@ -860,7 +863,7 @@ impl RepositoryView {
             .rounded(px(theme::RADIUS_SM))
             .cursor_pointer()
             .hover(|this| this.bg(rgb(theme::WB_ROW_HOVER)))
-            .tooltip(|_window, cx| crate::ui::components::tooltip_text("设置", cx))
+            .tooltip(|_window, cx| crate::ui::components::tooltip_text(khaslana::ui_i18n::text(messages::SETTINGS), cx))
             .on_click(cx.listener(|this, _event, window, cx| {
                 this.open_settings_center();
                 window.focus(&this.settings_center_focus, cx);
@@ -1008,8 +1011,15 @@ impl RepositoryView {
         let disabled_reason = if enabled {
             None
         } else {
+            // 业务守卫仍接收既有操作标识，显示语言不参与判断。
+            let operation = match icon_kind {
+                IconName::CloudDownload => "fetch",
+                IconName::ArrowDownToLine => "pull",
+                IconName::ArrowUpFromLine => "push",
+                _ => "local",
+            };
             chrome_action_disabled_reason(
-                label,
+                operation,
                 self.repo_path.is_some(),
                 !self.loading.remote() && self.current_remote().is_some(),
                 self.busy,

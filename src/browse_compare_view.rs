@@ -1,3 +1,6 @@
+#[path = "ui_resources/browse_compare_view_messages.rs"]
+mod messages;
+
 // 分支比较模式左侧差异文件列表 UI。
 //
 // 这里把 Git 服务层返回的差异文件扁平列表构造成目录嵌套文件树并渲染；
@@ -222,7 +225,7 @@ impl RepositoryView {
             .target
             .as_ref()
             .map(|target| target.display_name.clone())
-            .unwrap_or_else(|| "加载中...".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::LOADING).to_string());
         let short_oid = self
             .browse
             .target
@@ -271,13 +274,13 @@ impl RepositoryView {
                             return range
                                 .map(|_| {
                                     empty_state(
-                                        "差异文件",
+                                        khaslana::ui_i18n::text(messages::CHANGED_FILES),
                                         if !has_target {
-                                            "正在解析引用..."
+                                            khaslana::ui_i18n::text(messages::RESOLVING_REFERENCE)
                                         } else if this.browse.compare_loading {
-                                            "正在加载分支差异..."
+                                            khaslana::ui_i18n::text(messages::LOADING_BRANCH_DIFFERENCES)
                                         } else {
-                                            "该分支与当前分支没有差异"
+                                            khaslana::ui_i18n::text(messages::THIS_BRANCH_HAS_NO_DIFFERENCES_FROM_THE_CURRENT_BRANCH)
                                         },
                                     )
                                     .into_any_element()
@@ -316,7 +319,7 @@ impl RepositoryView {
             // 右侧分隔线由列分割条（BrowseFiles）统一绘制，面板不自画边框
             // （与分支浏览左树同一约定）。
             .bg(rgb(ui_theme::SURFACE_BASE))
-            .child(page_header("分支比较", Some("目标分支领先当前分支的变更")))
+            .child(page_header(khaslana::ui_i18n::text(messages::COMPARE_BRANCHES), Some(khaslana::ui_i18n::text(messages::CHANGES_IN_THE_TARGET_BRANCH_AHEAD_OF_THE_CURRENT_BRANCH))))
             .child(
                 div()
                     .flex_none()
@@ -338,7 +341,7 @@ impl RepositoryView {
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
                                     .truncate()
-                                    .child(format!("比较：{target_display}")),
+                                    .child(khaslana::ui_i18n::format(messages::COMPARING_TARGET_DISPLAY, &[("target_display", &(target_display).to_string())])),
                             )
                             .child(
                                 div()
@@ -350,14 +353,14 @@ impl RepositoryView {
                             ),
                     )
                     .child(command_group().child(self.button(
-                        "关闭",
+                        khaslana::ui_i18n::text(messages::CLOSE),
                         !self.busy,
                         |this, _, _| this.close_browse(),
                         cx,
                     ))),
             )
             .child(
-                panel_section_header(format!("差异文件 · {file_count}"))
+                panel_section_header(khaslana::ui_i18n::format(messages::CHANGED_FILES_FILE_COUNT, &[("file_count", &(file_count).to_string())]))
                     .padding_x(ui_theme::SPACE_4)
                     .build(),
             )

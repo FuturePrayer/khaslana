@@ -30,7 +30,8 @@ fn draw(cx: &mut gpui::VisualTestContext) {
 #[gpui::test]
 fn native_candidate_button_is_clickable_and_undo_restores_expansion(cx: &mut gpui::TestAppContext) {
     let (view,cx)=harness(cx);
-    let bounds=cx.debug_bounds("keep-0-保留当前").expect("块头必须参与布局和命中");
+    // 选择器使用动作身份，不使用随 UI 语言变化的按钮文案；后续仍实际点击并验证结果和撤销。
+    let bounds=cx.debug_bounds("keep-0-Ours").expect("块头必须参与布局和命中");
     cx.update(|window,cx| {
         window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {button:MouseButton::Left,position:bounds.center(),click_count:1,..Default::default()}),cx);
         window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {button:MouseButton::Left,position:bounds.center(),click_count:1,..Default::default()}),cx);

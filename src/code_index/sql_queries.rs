@@ -1,5 +1,6 @@
 //! 查询在只读事务中按需展开邻接关系，不受整图缓存容量限制。
 
+use crate::types::domain_ui_resources;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
@@ -16,27 +17,27 @@ struct Node {
 }
 
 fn read<T>(path: &Path, query: impl FnOnce(&CodeIndexStore) -> Result<T>) -> Result<T> {
-    let store = open_read_only_if_exists(path)?.ok_or_else(|| err("代码索引不存在或尚未建立，请先调用 refresh_index"))?;
-    let tx = store.conn.unchecked_transaction().map_err(|error| err(format!("开启索引查询失败：{error}")))?;
+    let store = open_read_only_if_exists(path)?.ok_or_else(|| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CODE_INDEX_DOES_NOT_EXIST_OR_HAS_NOT_BEEN_BUILT_CALL_REFRESH_INDEX_FIRST, &[])))?;
+    let tx = store.conn.unchecked_transaction().map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_START_THE_INDEX_QUERY, &[("error", &format!("{}", error))])))?;
     let value = query(&store)?;
-    tx.commit().map_err(|error| err(format!("结束索引查询失败：{error}")))?;
+    tx.commit().map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_FINISH_THE_INDEX_QUERY, &[("error", &format!("{}", error))])))?;
     Ok(value)
 }
 
 fn nodes(conn: &Connection, sql: &str, args: &[Value]) -> Result<Vec<Node>> {
-    let mut stmt = conn.prepare_cached(sql).map_err(|error| err(format!("准备节点查询失败：{error}")))?;
+    let mut stmt = conn.prepare_cached(sql).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_PREPARE_THE_NODE_QUERY, &[("error", &format!("{}", error))])))?;
     let rows = stmt.query_map(params_from_iter(args), |row| Ok(Node { id: row.get(0)?,
         candidate: SymbolCandidate { label: row.get(1)?, name: row.get(2)?, qualified_name: row.get(3)?,
             file_path: row.get(4)?, start_line: row.get(5)?, end_line: row.get(6)? }, properties: row.get(7)? }))
-        .map_err(|error| err(format!("查询节点失败：{error}")))?;
-    rows.collect::<rusqlite::Result<_>>().map_err(|error| err(format!("读取节点失败：{error}")))
+        .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_QUERY_NODES, &[("error", &format!("{}", error))])))?;
+    rows.collect::<rusqlite::Result<_>>().map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_NODES, &[("error", &format!("{}", error))])))
 }
 
 const COLUMNS: &str = "id,label,name,qualified_name,file_path,start_line,end_line,properties";
 
 fn require_current_relations(store: &CodeIndexStore) -> Result<()> {
     if !store.has_search_metadata() {
-        return Err(err("旧索引调用关系需重建，不能作为当前证据；请调用 refresh_index，并等待 index_status.needs_rebuild=false"));
+        return Err(crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::LEGACY_CALL_RELATIONSHIPS_MUST_BE_REBUILT_AND_CANNOT_SERVE_AS_CURRENT_EVIDENCE_CALL_R, &[])));
     }
     Ok(())
 }
@@ -129,7 +130,7 @@ pub(super) fn definition_detail(path: &Path, root: Option<&Path>, name: &str, re
         let candidate = node.candidate;
         let hash: Option<(u64, u64)> = store.conn.query_row("SELECT mtime_ns,size FROM file_hashes WHERE rel_path=?1", params![candidate.file_path],
             |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64))).optional()
-            .map_err(|error| err(format!("读取源文件元数据失败：{error}")))?;
+            .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_SOURCE_FILE_METADATA, &[("error", &format!("{}", error))])))?;
         let freshness = root.map(|root| super::coverage::source_freshness(hash.as_ref(), root, &candidate.file_path)).unwrap_or("snapshot_or_unknown");
         let source = if freshness == "metadata_matches" { root.and_then(|root| {
             let snippet = read_source_snippet(root, &candidate);
@@ -168,9 +169,9 @@ pub(super) fn index_overview(path: &Path) -> Result<IndexOverview> {
         let conn = &store.conn;
         let stats = store.read_stats()?.unwrap_or_default();
         let counts = |sql: &str| -> Result<Vec<(String, usize)>> {
-            let mut stmt = conn.prepare(sql).map_err(|error| err(format!("准备统计查询失败：{error}")))?;
-            stmt.query_map([], |row| Ok((row.get(0)?, row.get::<_, i64>(1)? as usize))).map_err(|error| err(format!("读取统计失败：{error}")))?
-                .collect::<rusqlite::Result<_>>().map_err(|error| err(format!("读取统计失败：{error}")))
+            let mut stmt = conn.prepare(sql).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_PREPARE_THE_STATISTICS_QUERY, &[("error", &format!("{}", error))])))?;
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get::<_, i64>(1)? as usize))).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_STATISTICS, &[("error", &format!("{}", error))])))?
+                .collect::<rusqlite::Result<_>>().map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_STATISTICS, &[("error", &format!("{}", error))])))
         };
         let label_counts = counts("SELECT label,count(*) FROM nodes GROUP BY label ORDER BY count(*) DESC,label")?;
         let edge_counts = counts("SELECT type,count(*) FROM edges GROUP BY type ORDER BY count(*) DESC,type")?;
@@ -179,12 +180,12 @@ pub(super) fn index_overview(path: &Path) -> Result<IndexOverview> {
         let mut dirs = HashMap::<String, usize>::new();
         let mut symbols = HashMap::<String, usize>::new();
         {
-            let mut stmt = conn.prepare("SELECT label,file_path FROM nodes WHERE file_path<>''").map_err(|error| err(format!("读取目录统计失败：{error}")))?;
-            let mut rows = stmt.query([]).map_err(|error| err(format!("读取目录统计失败：{error}")))?;
-            while let Some(row) = rows.next().map_err(|error| err(format!("读取目录统计失败：{error}")))? {
+            let mut stmt = conn.prepare("SELECT label,file_path FROM nodes WHERE file_path<>''").map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_DIRECTORY_STATISTICS, &[("error", &format!("{}", error))])))?;
+            let mut rows = stmt.query([]).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_DIRECTORY_STATISTICS, &[("error", &format!("{}", error))])))?;
+            while let Some(row) = rows.next().map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_DIRECTORY_STATISTICS, &[("error", &format!("{}", error))])))? {
                 let label: String = row.get(0).map_err(|error| err(error.to_string()))?;
                 let file: String = row.get(1).map_err(|error| err(error.to_string()))?;
-                let dir = file.split_once('/').map_or("(根目录)", |(dir, _)| dir).to_string();
+                let dir = file.split_once('/').map_or(crate::ui_i18n::text(domain_ui_resources::ROOT_DIRECTORY), |(dir, _)| dir).to_string();
                 if label == "File" {
                     let ext = Path::new(&file).extension().and_then(|ext| ext.to_str()).map(str::to_ascii_lowercase).unwrap_or_else(|| "other".into());
                     *languages.entry(ext).or_default() += 1;
@@ -198,9 +199,9 @@ pub(super) fn index_overview(path: &Path) -> Result<IndexOverview> {
         let mut top_dirs = sorted(dirs); top_dirs.truncate(10);
         let hotspots = {
             let mut stmt = conn.prepare("SELECT n.name,n.qualified_name,n.file_path,count(*) FROM edges e JOIN nodes n ON n.id=e.target_id WHERE e.type='CALLS' GROUP BY e.target_id ORDER BY count(*) DESC,n.qualified_name LIMIT 10")
-                .map_err(|error| err(format!("读取调用热点失败：{error}")))?;
+                .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_CALL_HOTSPOTS, &[("error", &format!("{}", error))])))?;
             stmt.query_map([], |row| Ok(Hotspot { name: row.get(0)?, qualified_name: row.get(1)?, file_path: row.get(2)?, fan_in: row.get::<_, i64>(3)? as usize }))
-                .map_err(|error| err(format!("读取调用热点失败：{error}")))?.collect::<rusqlite::Result<_>>().map_err(|error| err(format!("读取调用热点失败：{error}")))?
+                .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_CALL_HOTSPOTS, &[("error", &format!("{}", error))])))?.collect::<rusqlite::Result<_>>().map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_CALL_HOTSPOTS, &[("error", &format!("{}", error))])))?
         };
         Ok(IndexOverview { total_nodes: stats.nodes, total_edges: stats.edges, files: stats.files, symbols: stats.symbols, calls: stats.calls,
             label_counts, edge_counts, languages, top_dirs, hotspots })

@@ -1,3 +1,6 @@
+#[path = "ui_resources/stash_view_messages.rs"]
+mod messages;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -73,11 +76,11 @@ mod tests;
 
 impl RepositoryView {
     pub(crate) fn open_stash_dialog(&mut self) {
-        if !self.ensure_no_merge_in_progress("创建贮藏") {
+        if !self.ensure_no_merge_in_progress(khaslana::ui_i18n::text(messages::CREATE_STASH)) {
             return;
         }
         if self.repo_path.is_none() {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         }
         self.close_popups();
@@ -89,14 +92,14 @@ impl RepositoryView {
     }
 
     pub(crate) fn save_stash(&mut self) {
-        if !self.ensure_no_merge_in_progress("创建贮藏") {
+        if !self.ensure_no_merge_in_progress(khaslana::ui_i18n::text(messages::CREATE_STASH)) {
             return;
         }
         let message = self.stash_message.value.clone();
         let include_untracked = self.stash_include_untracked;
         let keep_index = self.stash_keep_index;
         self.close_dialog();
-        self.with_repo_blocking("已贮藏当前修改", move |service, repo| {
+        self.with_repo_blocking(crate::operation_ui_resources::STASH_CREATED, move |service, repo| {
             service.save_stash(repo, &message, include_untracked, keep_index)
         });
     }
@@ -108,7 +111,7 @@ impl RepositoryView {
             .and_then(|snapshot| snapshot.stashes.iter().find(|stash| stash.index == index))
             .cloned()
         else {
-            self.last_error = Some(format!("贮藏不存在：stash@{{{index}}}"));
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::STASH_DOES_NOT_EXIST_STASH_INDEX, &[("reference", &format!("stash@{{{index}}}"))]));
             self.stash_context_menu = None;
             return;
         };
@@ -122,7 +125,7 @@ impl RepositoryView {
             loading_files: true,
             ..StashPreviewState::default()
         };
-        self.status = "正在加载贮藏文件".to_string();
+        self.status = khaslana::ui_i18n::encode(messages::LOADING_STASH_FILES, &[]);
         self.load_stash_files(stash.oid);
     }
 
@@ -133,7 +136,7 @@ impl RepositoryView {
             .and_then(|snapshot| snapshot.stashes.iter().find(|stash| stash.index == index))
             .map(|stash| stash.message.clone())
         else {
-            self.last_error = Some(format!("贮藏不存在：stash@{{{index}}}"));
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::STASH_DOES_NOT_EXIST_STASH_INDEX, &[("reference", &format!("stash@{{{index}}}"))]));
             self.stash_context_menu = None;
             return;
         };
@@ -149,7 +152,7 @@ impl RepositoryView {
             .and_then(|snapshot| snapshot.stashes.iter().find(|stash| stash.index == index))
             .map(|stash| stash.message.clone())
         else {
-            self.last_error = Some(format!("贮藏不存在：stash@{{{index}}}"));
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::STASH_DOES_NOT_EXIST_STASH_INDEX, &[("reference", &format!("stash@{{{index}}}"))]));
             self.stash_context_menu = None;
             return;
         };
@@ -161,7 +164,7 @@ impl RepositoryView {
     pub(crate) fn drop_stash(&mut self, index: usize) {
         self.close_dialog();
         self.stash_context_menu = None;
-        self.with_repo("已删除贮藏", move |service, repo| {
+        self.with_repo(crate::operation_ui_resources::STASH_DELETED, move |service, repo| {
             service.drop_stash(repo, index)
         });
     }
@@ -179,7 +182,7 @@ impl RepositoryView {
             self.reset_uniform_scroll("stash-file-list");
             self.reset_uniform_scroll("stash-diff-scroll");
             if self.main_mode == MainMode::Stash {
-                self.status = "当前贮藏已不存在".to_string();
+                self.status = khaslana::ui_i18n::encode(messages::THIS_STASH_NO_LONGER_EXISTS, &[]);
             }
         }
     }
@@ -194,7 +197,7 @@ impl RepositoryView {
             return;
         };
         let Some(repo_path) = self.repo_path.clone() else {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         };
         let service = self.service_for_tab(tab_id);
@@ -249,7 +252,7 @@ impl RepositoryView {
         self.stash_preview.diff_headers_expanded = false;
         self.stash_preview.loading_diff = true;
         self.reset_uniform_scroll("stash-diff-scroll");
-        self.status = "正在加载贮藏差异".to_string();
+        self.status = khaslana::ui_i18n::encode(messages::LOADING_STASH_DIFFERENCES, &[]);
 
         let Some(tab_id) = self.active_tab_id() else {
             return;
@@ -271,7 +274,7 @@ impl RepositoryView {
             self.stash_preview.diff_syntax = None;
             self.stash_preview.diff = Some(diff);
             self.stash_preview.diff_headers_expanded = false;
-            self.status = "贮藏差异已加载".to_string();
+            self.status = khaslana::ui_i18n::encode(messages::STASH_DIFFERENCES_LOADED, &[]);
             // 缓存命中不走事件落位，语法高亮在此手动调度
             self.schedule_syntax_highlight(crate::SyntaxSlot::StashDiff);
             return;
@@ -311,7 +314,7 @@ impl RepositoryView {
                     &tx,
                     UiEvent::HistoryLoadFailed {
                         tab_id,
-                        error: err.to_string(),
+                        error: crate::diff_view::diff_task_error(err),
                         load_id,
                     },
                 ),
@@ -344,14 +347,14 @@ impl RepositoryView {
             .stash_preview
             .stash_index
             .map(|index| format!("stash@{{{index}}}"))
-            .unwrap_or_else(|| "未选择贮藏".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::NO_STASH_SELECTED).to_string());
         let message = self
             .stash_preview
             .stash_message
             .clone()
-            .unwrap_or_else(|| "请在左侧贮藏区右键选择“查看贮藏”".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::RIGHT_CLICK_A_STASH_ON_THE_LEFT_AND_CHOOSE_VIEW).to_string());
 
-        page_header("贮藏详情", Some("文件与差异预览")).child(
+        page_header(khaslana::ui_i18n::text(messages::STASH_DETAILS), Some(khaslana::ui_i18n::text(messages::FILES_AND_DIFF_PREVIEW))).child(
             command_group()
                 .child(
                     div()
@@ -397,11 +400,11 @@ impl RepositoryView {
                             .map(|index| {
                                 if this.stash_preview.files.is_empty() {
                                     return placeholder_row(if this.stash_preview.loading_files {
-                                        "贮藏文件加载中..."
+                                        khaslana::ui_i18n::text(messages::LOADING_STASH_FILES_2)
                                     } else if this.stash_preview.is_showing() {
-                                        "该贮藏没有文件变更"
+                                        khaslana::ui_i18n::text(messages::THIS_STASH_HAS_NO_FILE_CHANGES)
                                     } else {
-                                        "请选择一个贮藏"
+                                        khaslana::ui_i18n::text(messages::SELECT_A_STASH)
                                     })
                                     .into_any_element();
                                 }
@@ -423,7 +426,7 @@ impl RepositoryView {
             )
             .into_any_element();
 
-        let files_header = panel_section_header("贮藏文件")
+        let files_header = panel_section_header(khaslana::ui_i18n::text(messages::STASH_FILES))
             .badge(PanelBadge::new(
                 self.stash_preview.files.len(),
                 ui_theme::SURFACE_SUNKEN,
@@ -495,17 +498,16 @@ impl RepositoryView {
 
     fn render_stash_diff(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // 全文视图模式下标题前缀"全文："，提示当前展示整份文件
-        let prefix = if self.full_file_view { "全文：" } else { "" };
         let title = self
             .stash_preview
             .selected_file
             .as_ref()
-            .map(|path| format!("{prefix}贮藏差异：{path}"))
-            .unwrap_or_else(|| "贮藏差异".to_string());
+            .map(|path| khaslana::ui_i18n::format(if self.full_file_view { messages::FULL_FILE_TITLE } else { messages::DIFF_TITLE }, &[ ("path", &(path).to_string())]))
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::STASH_DIFF).to_string());
         let empty_message = if self.stash_preview.loading_diff {
-            "贮藏差异加载中..."
+            khaslana::ui_i18n::text(messages::LOADING_STASH_DIFFERENCES_2)
         } else {
-            "请选择一个贮藏文件查看差异"
+            khaslana::ui_i18n::text(messages::SELECT_A_STASH_FILE_TO_VIEW_ITS_DIFFERENCES)
         };
 
         div()
@@ -532,33 +534,33 @@ impl RepositoryView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("贮藏当前修改", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::STASH_CURRENT_CHANGES), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("创建贮藏后，当前工作区会回到干净状态，后续可从左侧贮藏区应用或弹出。"),
+                    .child(khaslana::ui_i18n::text(messages::CREATING_A_STASH_CLEANS_THE_WORKING_TREE_APPLY_OR_POP)),
             )
             .child(self.input(FieldId::StashMessage, false, window, cx))
             .child(self.toggle_row(
                 "stash-include-untracked",
-                "包含未跟踪文件",
+                khaslana::ui_i18n::text(messages::INCLUDE_UNTRACKED_FILES),
                 self.stash_include_untracked,
                 |this, _, _| this.stash_include_untracked = !this.stash_include_untracked,
                 cx,
             ))
             .child(self.toggle_row(
                 "stash-keep-index",
-                "保留已暂存内容",
+                khaslana::ui_i18n::text(messages::KEEP_STAGED_CHANGES),
                 self.stash_keep_index,
                 |this, _, _| this.stash_keep_index = !this.stash_keep_index,
                 cx,
             ))
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.primary_button(
-                        "创建贮藏",
+                        khaslana::ui_i18n::text(messages::CREATE_STASH),
                         self.repo_path.is_some() && !self.busy,
                         |this, _, _| this.save_stash(),
                         cx,
@@ -572,12 +574,12 @@ impl RepositoryView {
         message: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("删除贮藏", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::DELETE_STASH), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("确认删除 stash@{{{index}}}？")),
+                    .child(khaslana::ui_i18n::format(messages::DELETE_STASH_INDEX, &[("reference", &format!("stash@{{{index}}}"))])),
             )
             .child(
                 div()
@@ -589,13 +591,13 @@ impl RepositoryView {
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::FEEDBACK_ERROR_TEXT))
-                    .child("删除后无法从贮藏列表恢复。"),
+                    .child(khaslana::ui_i18n::text(messages::DELETED_STASHES_CANNOT_BE_RESTORED_FROM_THE_STASH_LIST)),
             )
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.danger_button(
-                        "确认删除",
+                        khaslana::ui_i18n::text(messages::CONFIRM_DELETION),
                         !self.busy,
                         move |this, _, _| this.drop_stash(index),
                         cx,
@@ -609,12 +611,12 @@ impl RepositoryView {
         message: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.dialog_panel("弹出贮藏", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::POP_STASH), cx)
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child(format!("确认弹出 stash@{{{index}}}？")),
+                    .child(khaslana::ui_i18n::format(messages::POP_STASH_INDEX, &[("reference", &format!("stash@{{{index}}}"))])),
             )
             .child(
                 div()
@@ -626,13 +628,13 @@ impl RepositoryView {
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("弹出会把贮藏的改动应用到工作区，成功后从贮藏列表移除该条目。"),
+                    .child(khaslana::ui_i18n::text(messages::THIS_APPLIES_THE_STASH_TO_THE_WORKING_TREE_AND_REMOVES)),
             )
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.button(
-                        "确认弹出",
+                        khaslana::ui_i18n::text(messages::CONFIRM_POP),
                         !self.busy,
                         move |this, _, _| this.pop_stash(index),
                         cx,
@@ -651,7 +653,7 @@ impl RepositoryView {
                 self,
                 "stash-menu",
                 "view-stash",
-                "查看贮藏",
+                khaslana::ui_i18n::text(messages::VIEW_STASH),
                 !self.busy,
                 move |this| this.view_stash(index),
                 cx,
@@ -660,7 +662,7 @@ impl RepositoryView {
                 self,
                 "stash-menu",
                 "apply-stash",
-                "应用贮藏",
+                khaslana::ui_i18n::text(messages::APPLY_STASH),
                 can_apply,
                 move |this| this.apply_stash(index),
                 cx,
@@ -669,7 +671,7 @@ impl RepositoryView {
                 self,
                 "stash-menu",
                 "pop-stash",
-                "弹出贮藏",
+                khaslana::ui_i18n::text(messages::POP_STASH),
                 can_apply,
                 move |this| this.open_pop_stash_confirm_dialog(index),
                 cx,
@@ -678,7 +680,7 @@ impl RepositoryView {
                 self,
                 "stash-menu",
                 "copy-stash-ref",
-                "复制贮藏引用名",
+                khaslana::ui_i18n::text(messages::COPY_STASH_REFERENCE),
                 !self.busy,
                 move |this, cx| this.copy_stash_ref(index, cx),
                 cx,
@@ -688,7 +690,7 @@ impl RepositoryView {
                 self,
                 "stash-menu",
                 "delete-stash",
-                "删除贮藏...",
+                khaslana::ui_i18n::text(messages::DELETE_STASH_2),
                 !self.busy,
                 move |this| this.open_drop_stash_confirm_dialog(index),
                 cx,

@@ -1,5 +1,8 @@
 //! 恢复工作台只组织日志证据、目标提交和只读预览；Git 操作统一交给 actions。
 
+#[path = "../ui_resources/recovery_view_view_messages.rs"]
+mod messages;
+
 use gpui::{
     AnyElement, Context, Div, IntoElement, KeyDownEvent, ListSizingBehavior, ScrollStrategy,
     Window, div, prelude::*, px, uniform_list,
@@ -76,39 +79,39 @@ pub(super) fn recovery_canvas_width(viewport_width: f32, navigator_width: f32) -
 
 fn short_oid(oid: &str) -> String {
     if !oid.is_empty() && oid.bytes().all(|byte| byte == b'0') {
-        return "无提交".into();
+        return khaslana::ui_i18n::text(messages::NO_COMMIT).into();
     }
     oid.chars().take(8).collect()
 }
 
 fn object_status(state: Option<&RecoveryObjectState>) -> &'static str {
     match state {
-        Some(RecoveryObjectState::Available) => "可用",
-        Some(RecoveryObjectState::Zero) => "无提交",
-        Some(RecoveryObjectState::Missing) => "本地不可用",
-        Some(RecoveryObjectState::NonCommit) => "非提交对象",
-        Some(RecoveryObjectState::Unreadable(_)) => "读取失败",
-        None => "待检查",
+        Some(RecoveryObjectState::Available) => khaslana::ui_i18n::text(messages::AVAILABLE),
+        Some(RecoveryObjectState::Zero) => khaslana::ui_i18n::text(messages::NO_COMMIT),
+        Some(RecoveryObjectState::Missing) => khaslana::ui_i18n::text(messages::UNAVAILABLE_LOCALLY),
+        Some(RecoveryObjectState::NonCommit) => khaslana::ui_i18n::text(messages::NOT_A_COMMIT_OBJECT),
+        Some(RecoveryObjectState::Unreadable(_)) => khaslana::ui_i18n::text(messages::READ_FAILED),
+        None => khaslana::ui_i18n::text(messages::NOT_CHECKED),
     }
 }
 
 fn object_explanation(state: Option<&RecoveryObjectState>) -> String {
     match state {
         Some(RecoveryObjectState::Available) => {
-            "提交对象可用，可以查看提交或从此提交创建本地分支。".into()
+            khaslana::ui_i18n::text(messages::THE_COMMIT_OBJECT_IS_AVAILABLE_VIEW_IT_OR_CREATE_A).into()
         }
         Some(RecoveryObjectState::Zero) => {
-            "此侧没有提交。零 OID 表示引用尚未创建或已经删除，无法作为分支目标。".into()
+            khaslana::ui_i18n::text(messages::THERE_IS_NO_COMMIT_ON_THIS_SIDE_A_ZERO_OID).into()
         }
         Some(RecoveryObjectState::Missing) => {
-            "当前本地提交对象不可用，可能已被清理或尚未存在于本地。可以复制完整 OID 继续查找。"
+            khaslana::ui_i18n::text(messages::THE_COMMIT_OBJECT_IS_UNAVAILABLE_LOCALLY_IT_MAY_HAVE_BEEN)
                 .into()
         }
         Some(RecoveryObjectState::NonCommit) => {
-            "该 OID 指向的对象不是提交，不能从此对象创建恢复分支。".into()
+            khaslana::ui_i18n::text(messages::THIS_OID_DOES_NOT_POINT_TO_A_COMMIT_AND_CANNOT).into()
         }
-        Some(RecoveryObjectState::Unreadable(error)) => format!("提交对象读取失败：{error}"),
-        None => "尚未确认本地提交对象是否可用，确认完成后才能查看提交或创建分支。".into(),
+        Some(RecoveryObjectState::Unreadable(error)) => khaslana::ui_i18n::format(messages::FAILED_TO_READ_COMMIT_OBJECT_ERROR, &[("error", &khaslana::ui_i18n::resolve(error))]),
+        None => khaslana::ui_i18n::text(messages::LOCAL_COMMIT_AVAILABILITY_HAS_NOT_BEEN_CHECKED_WAIT_FOR_VERIFICATION).into(),
     }
 }
 
@@ -148,7 +151,7 @@ impl RepositoryView {
             .child(
                 workbench_command_button(
                     "history-section-commits",
-                    "提交历史",
+                    khaslana::ui_i18n::text(messages::COMMIT_HISTORY),
                     !self.recovery.show_recovery,
                     true,
                     cx,
@@ -158,12 +161,12 @@ impl RepositoryView {
             .child(
                 workbench_command_button(
                     "history-section-recovery",
-                    "恢复记录",
+                    khaslana::ui_i18n::text(messages::RECOVERY_RECORDS),
                     self.recovery.show_recovery,
                     true,
                     cx,
                 )
-                .tooltip("查看当前工作区的本地引用日志")
+                .tooltip(khaslana::ui_i18n::text(messages::VIEW_THE_CURRENT_WORKTREE_S_LOCAL_REFERENCE_LOGS))
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.set_history_recovery(true, cx);
                     window.focus(&this.recovery.list_focus, cx);
@@ -209,12 +212,12 @@ impl RepositoryView {
                         .min_w(px(0.0))
                         .min_h(px(0.0))
                         .child(
-                            EmptyState::new("还没有打开的仓库")
-                                .detail("打开一个本地仓库后，可查看当前工作区的恢复记录")
+                            EmptyState::new(khaslana::ui_i18n::text(messages::NO_REPOSITORY_OPEN))
+                                .detail(khaslana::ui_i18n::text(messages::OPEN_A_LOCAL_REPOSITORY_TO_VIEW_RECOVERY_RECORDS_FOR_THE))
                                 .fill()
                                 .action(
                                     self.button(
-                                        "打开仓库…",
+                                        khaslana::ui_i18n::text(messages::OPEN_REPOSITORY),
                                         true,
                                         |this, _, _| this.browse_open(),
                                         cx,
@@ -233,7 +236,7 @@ impl RepositoryView {
                 .flex_none()
                 .min_w(px(0.0))
                 .when(!layout.compact, |this| {
-                    this.child(page_header("恢复记录", Some("从本地引用日志定位提交")))
+                    this.child(page_header(khaslana::ui_i18n::text(messages::RECOVERY_RECORDS), Some(khaslana::ui_i18n::text(messages::LOCATE_COMMITS_USING_LOCAL_REFERENCE_LOGS))))
                 })
                 .child(self.render_recovery_toolbar(window, cx)),
         );
@@ -248,7 +251,7 @@ impl RepositoryView {
                     .child(
                         workbench_command_button(
                             "recovery-narrow-records",
-                            "记录",
+                            khaslana::ui_i18n::text(messages::RECORDS),
                             !self.recovery.narrow_details,
                             true,
                             cx,
@@ -262,15 +265,15 @@ impl RepositoryView {
                     .child(
                         workbench_command_button(
                             "recovery-narrow-details",
-                            "详情",
+                            khaslana::ui_i18n::text(messages::DETAILS),
                             self.recovery.narrow_details,
                             self.recovery.selected_entry().is_some(),
                             cx,
                         )
                         .tooltip(if self.recovery.selected_entry().is_some() {
-                            "查看选中记录的操作前后提交"
+                            khaslana::ui_i18n::text(messages::VIEW_COMMITS_BEFORE_AND_AFTER_THE_SELECTED_OPERATION)
                         } else {
-                            "请先选择一条恢复记录"
+                            khaslana::ui_i18n::text(messages::SELECT_A_RECOVERY_RECORD_FIRST)
                         })
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.recovery.narrow_details = true;
@@ -311,7 +314,7 @@ impl RepositoryView {
                 .text_size(px(11.0))
                 .line_height(px(17.0))
                 .text_color(rgb(theme::CONTENT_SECONDARY))
-                .child("恢复记录不是永久备份；对象可能被清理，未提交修改通常不在记录中。"),
+                .child(khaslana::ui_i18n::text(messages::RECOVERY_RECORDS_ARE_NOT_PERMANENT_BACKUPS_OBJECTS_MAY_BE_PRUNED)),
         )
         .into_any_element()
     }
@@ -381,11 +384,11 @@ impl RepositoryView {
             .as_ref()
             .and_then(|sources| sources.current_branch.as_deref());
         let branch_label = match &self.recovery.scope {
-            ReflogScope::LocalBranch(branch) => format!("分支：{branch}"),
-            _ => "指定本地分支".into(),
+            ReflogScope::LocalBranch(branch) => khaslana::ui_i18n::format(messages::BRANCH_BRANCH, &[("branch", &(branch).to_string())]),
+            _ => khaslana::ui_i18n::text(messages::SPECIFIC_LOCAL_BRANCH).into(),
         };
         let branch_tooltip = if branch_names.is_empty() {
-            "当前工作区没有可选的本地分支".into()
+            khaslana::ui_i18n::text(messages::NO_LOCAL_BRANCHES_ARE_AVAILABLE_IN_THE_CURRENT_WORKTREE).into()
         } else {
             branch_label.clone()
         };
@@ -430,27 +433,27 @@ impl RepositoryView {
                 div()
                     .text_size(px(11.0))
                     .text_color(rgb(theme::CONTENT_SECONDARY))
-                    .child("来源"),
+                    .child(khaslana::ui_i18n::text(messages::SOURCE)),
             );
         for (id, label, scope) in [
             ("recovery-source-head", "HEAD", ReflogScope::Head),
             (
                 "recovery-source-current",
-                "当前分支",
+                khaslana::ui_i18n::text(messages::CURRENT_BRANCH),
                 ReflogScope::CurrentBranch,
             ),
-            ("recovery-source-all", "全部", ReflogScope::All),
+            ("recovery-source-all", khaslana::ui_i18n::text(messages::ALL), ReflogScope::All),
         ] {
             let available =
                 enabled && (scope != ReflogScope::CurrentBranch || current_branch.is_some());
             let tooltip = if scope == ReflogScope::CurrentBranch {
                 current_branch
-                    .map(|branch| format!("当前分支：{branch}"))
-                    .unwrap_or_else(|| "当前处于分离 HEAD，没有当前分支日志".into())
+                    .map(|branch| khaslana::ui_i18n::format(messages::CURRENT_BRANCH_BRANCH, &[("branch", &(branch).to_string())]))
+                    .unwrap_or_else(|| khaslana::ui_i18n::text(messages::HEAD_IS_DETACHED_THERE_IS_NO_CURRENT_BRANCH_LOG).into())
             } else if scope == ReflogScope::All {
-                "HEAD 与所有本地分支日志".into()
+                khaslana::ui_i18n::text(messages::HEAD_AND_ALL_LOCAL_BRANCH_LOGS).into()
             } else {
-                "当前工作区的 HEAD 日志".into()
+                khaslana::ui_i18n::text(messages::CURRENT_WORKTREE_HEAD_LOG).into()
             };
             scopes = scopes.child(
                 workbench_command_button(id, label, self.recovery.scope == scope, available, cx)
@@ -466,17 +469,17 @@ impl RepositoryView {
         let tab_id = self.active_tab_id();
         let repo_path = self.repo_path.clone();
         let days_label = selected_days
-            .map(|days| format!("近 {days} 天"))
-            .unwrap_or_else(|| "全部时间".into());
+            .map(|days| khaslana::ui_i18n::format(messages::LAST_DAYS_DAYS, &[("days", &(days).to_string())]))
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::ALL_TIME).into());
         let days_menu = workbench_command_button("recovery-days", days_label, false, enabled, cx)
             .dropdown_caret(true)
-            .tooltip("按恢复操作发生的时间筛选")
+            .tooltip(khaslana::ui_i18n::text(messages::FILTER_BY_WHEN_THE_RECOVERY_OPERATION_OCCURRED))
             .dropdown_menu(move |mut menu, window, _| {
                 for (label, days) in [
-                    ("近 7 天", Some(7)),
-                    ("近 30 天", Some(30)),
-                    ("近 90 天", Some(90)),
-                    ("全部时间", None),
+                    (khaslana::ui_i18n::text(messages::LAST_DAYS), Some(7)),
+                    (khaslana::ui_i18n::text(messages::LAST_DAYS_2), Some(30)),
+                    (khaslana::ui_i18n::text(messages::LAST_DAYS_3), Some(90)),
+                    (khaslana::ui_i18n::text(messages::ALL_TIME), None),
                 ] {
                     let repo_path = repo_path.clone();
                     menu = menu.item(
@@ -526,12 +529,12 @@ impl RepositoryView {
                     .child(
                         workbench_command_button(
                             "recovery-search",
-                            "搜索",
+                            khaslana::ui_i18n::text(messages::SEARCH),
                             false,
                             enabled && !self.recovery.querying,
                             cx,
                         )
-                        .tooltip("在已读取的本地日志中搜索")
+                        .tooltip(khaslana::ui_i18n::text(messages::SEARCH_LOADED_LOCAL_LOGS))
                         .on_click(
                             cx.listener(|this, _, _, cx| this.refresh_recovery_query(cx, false)),
                         ),
@@ -540,18 +543,18 @@ impl RepositoryView {
                         workbench_command_button(
                             "recovery-refresh",
                             if self.recovery.loading {
-                                "读取中…"
+                                khaslana::ui_i18n::text(messages::READING)
                             } else {
-                                "刷新"
+                                khaslana::ui_i18n::text(messages::REFRESH)
                             },
                             false,
                             enabled,
                             cx,
                         )
                         .tooltip(if self.recovery.loading {
-                            "正在读取本地恢复记录"
+                            khaslana::ui_i18n::text(messages::READING_LOCAL_RECOVERY_RECORDS)
                         } else {
-                            "重新读取本地恢复记录"
+                            khaslana::ui_i18n::text(messages::RELOAD_LOCAL_RECOVERY_RECORDS)
                         })
                         .on_click(cx.listener(|this, _, _, cx| this.load_recovery(cx))),
                     )
@@ -559,7 +562,7 @@ impl RepositoryView {
                         this.child(
                             workbench_command_button(
                                 "recovery-cancel-read",
-                                "取消读取",
+                                khaslana::ui_i18n::text(messages::CANCEL_READ),
                                 false,
                                 true,
                                 cx,
@@ -572,7 +575,7 @@ impl RepositoryView {
                     }),
             );
         if let Some(name) = self.recovery.last_created.clone() {
-            let tooltip = format!("查看本地恢复分支 {name}");
+            let tooltip = khaslana::ui_i18n::format(messages::VIEW_LOCAL_RECOVERY_BRANCH_NAME, &[("name", &(name).to_string())]);
             toolbar = toolbar.child(
                 div()
                     .flex()
@@ -583,12 +586,12 @@ impl RepositoryView {
                         div()
                             .text_size(px(11.0))
                             .text_color(rgb(theme::FEEDBACK_SUCCESS_TEXT))
-                            .child(format!("已创建本地分支：{name}")),
+                            .child(khaslana::ui_i18n::format(messages::LOCAL_BRANCH_CREATED_NAME, &[("name", &(name).to_string())])),
                     )
                     .child(
                         workbench_command_button(
                             "recovery-browse-created",
-                            "查看恢复分支",
+                            khaslana::ui_i18n::text(messages::VIEW_RECOVERY_BRANCH),
                             false,
                             !self.busy,
                             cx,
@@ -602,13 +605,13 @@ impl RepositoryView {
             );
         }
         if let Some(error) = &self.recovery.error {
-            let tooltip = error.clone();
+            let tooltip = khaslana::ui_i18n::resolve(&error);
             toolbar = toolbar.child(
                 div()
                     .id("recovery-read-error")
                     .min_w(px(0.0))
                     .tooltip(move |_, cx| tooltip_text(tooltip.clone(), cx))
-                    .child(inline_error_bubble(error.clone())),
+                    .child(inline_error_bubble(khaslana::ui_i18n::resolve(error))),
             );
         }
         if let Some(snapshot) = &self.recovery.snapshot
@@ -617,7 +620,7 @@ impl RepositoryView {
             let text = if snapshot.diagnostics.len() == 1 {
                 diagnostic.clone()
             } else {
-                format!("{diagnostic}（另有 {} 项）", snapshot.diagnostics.len() - 1)
+                khaslana::ui_i18n::format(messages::DIAGNOSTIC_DIAGNOSTICS_MORE, &[("diagnostic", &(diagnostic).to_string()), ("diagnostics", &(snapshot.diagnostics.len() - 1).to_string())])
             };
             let tooltip = snapshot.diagnostics.join("\n");
             toolbar = toolbar.child(
@@ -642,15 +645,15 @@ impl RepositoryView {
         let enabled = !self.busy && !self.recovery.loading && !self.recovery.has_operation();
         let scope = self.recovery.scope.clone();
         let label = match &scope {
-            ReflogScope::Head => "来源：HEAD".into(),
-            ReflogScope::CurrentBranch => "来源：当前分支".into(),
-            ReflogScope::All => "来源：全部".into(),
-            ReflogScope::LocalBranch(name) => format!("来源：{name}"),
+            ReflogScope::Head => khaslana::ui_i18n::text(messages::SOURCE_HEAD).into(),
+            ReflogScope::CurrentBranch => khaslana::ui_i18n::text(messages::SOURCE_CURRENT_BRANCH).into(),
+            ReflogScope::All => khaslana::ui_i18n::text(messages::SOURCE_ALL).into(),
+            ReflogScope::LocalBranch(name) => khaslana::ui_i18n::format(messages::SOURCE_NAME, &[("name", &(name).to_string())]),
         };
         let mut choices = vec![
             ("HEAD".to_string(), ReflogScope::Head, true),
             (
-                "当前分支".into(),
+                khaslana::ui_i18n::text(messages::CURRENT_BRANCH).into(),
                 ReflogScope::CurrentBranch,
                 self.recovery
                     .sources
@@ -658,7 +661,7 @@ impl RepositoryView {
                     .and_then(|sources| sources.current_branch.as_ref())
                     .is_some(),
             ),
-            ("全部本地来源".into(), ReflogScope::All, true),
+            (khaslana::ui_i18n::text(messages::ALL_LOCAL_SOURCES).into(), ReflogScope::All, true),
         ];
         if let Some(sources) = &self.recovery.sources {
             choices.extend(
@@ -674,7 +677,7 @@ impl RepositoryView {
         let source = workbench_command_button("recovery-compact-source", label, false, enabled, cx)
             .max_w(px(180.0))
             .dropdown_caret(true)
-            .tooltip("选择 HEAD、当前分支或其他本地来源")
+            .tooltip(khaslana::ui_i18n::text(messages::CHOOSE_HEAD_THE_CURRENT_BRANCH_OR_ANOTHER_LOCAL_SOURCE))
             .dropdown_menu(move |mut menu, window, _| {
                 menu = menu.scrollable(true).max_h(px(280.0)).max_w(px(360.0));
                 for (label, target, available) in &choices {
@@ -698,18 +701,18 @@ impl RepositoryView {
         let repo_path = self.repo_path.clone();
         let selected_days = self.recovery.days;
         let days_label = selected_days
-            .map(|days| format!("近 {days} 天"))
-            .unwrap_or_else(|| "全部时间".into());
+            .map(|days| khaslana::ui_i18n::format(messages::LAST_DAYS_DAYS, &[("days", &(days).to_string())]))
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::ALL_TIME).into());
         let days =
             workbench_command_button("recovery-compact-days", days_label, false, enabled, cx)
                 .dropdown_caret(true)
-                .tooltip("筛选恢复操作的时间")
+                .tooltip(khaslana::ui_i18n::text(messages::FILTER_RECOVERY_OPERATION_TIME))
                 .dropdown_menu(move |mut menu, window, _| {
                     for (label, days) in [
-                        ("近 7 天", Some(7)),
-                        ("近 30 天", Some(30)),
-                        ("近 90 天", Some(90)),
-                        ("全部时间", None),
+                        (khaslana::ui_i18n::text(messages::LAST_DAYS), Some(7)),
+                        (khaslana::ui_i18n::text(messages::LAST_DAYS_2), Some(30)),
+                        (khaslana::ui_i18n::text(messages::LAST_DAYS_3), Some(90)),
+                        (khaslana::ui_i18n::text(messages::ALL_TIME), None),
                     ] {
                         let repo_path = repo_path.clone();
                         menu = menu.item(
@@ -729,14 +732,14 @@ impl RepositoryView {
         let repo_path = self.repo_path.clone();
         let created = self.recovery.last_created.clone();
         let loading = self.recovery.loading;
-        let actions = workbench_command_button("recovery-compact-actions", "操作", false, true, cx)
+        let actions = workbench_command_button("recovery-compact-actions", khaslana::ui_i18n::text(messages::ACTIONS), false, true, cx)
             .dropdown_caret(true)
-            .tooltip("搜索、刷新和查看已创建分支")
+            .tooltip(khaslana::ui_i18n::text(messages::SEARCH_REFRESH_AND_VIEW_CREATED_BRANCHES))
             .dropdown_menu(move |mut menu, window, _| {
                 for (label, action, available) in [
-                    ("搜索", 0, enabled),
-                    ("刷新", 1, enabled),
-                    ("取消读取", 2, loading),
+                    (khaslana::ui_i18n::text(messages::SEARCH), 0, enabled),
+                    (khaslana::ui_i18n::text(messages::REFRESH), 1, enabled),
+                    (khaslana::ui_i18n::text(messages::CANCEL_READ), 2, loading),
                 ] {
                     let repo_path = repo_path.clone();
                     menu = menu.item(PopupMenuItem::new(label).disabled(!available).on_click(
@@ -755,7 +758,7 @@ impl RepositoryView {
                 }
                 if let Some(name) = created.clone() {
                     let repo_path = repo_path.clone();
-                    menu = menu.item(PopupMenuItem::new(format!("查看恢复分支 {name}")).on_click(
+                    menu = menu.item(PopupMenuItem::new(khaslana::ui_i18n::format(messages::VIEW_RECOVERY_BRANCH_NAME, &[("name", &(name).to_string())])).on_click(
                         window.listener_for(&entity, move |this, _, _, cx| {
                             if this.active_tab_id() == tab_id
                                 && this.repo_path == repo_path
@@ -795,7 +798,7 @@ impl RepositoryView {
                     .child(actions),
             );
         if let Some(error) = &self.recovery.error {
-            let tooltip = error.clone();
+            let tooltip = khaslana::ui_i18n::resolve(&error);
             toolbar = toolbar.child(
                 div()
                     .id("recovery-compact-error")
@@ -803,7 +806,7 @@ impl RepositoryView {
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .tooltip(move |_, cx| tooltip_text(tooltip.clone(), cx))
-                    .child(inline_error_bubble(error.clone())),
+                    .child(inline_error_bubble(khaslana::ui_i18n::resolve(error))),
             );
         } else if let Some(snapshot) = &self.recovery.snapshot
             && let Some(diagnostic) = snapshot.diagnostics.first()
@@ -859,15 +862,15 @@ impl RepositoryView {
             .min_w(px(0.0))
             .min_h(px(0.0))
             .child(
-                panel_section_header("恢复记录")
+                panel_section_header(khaslana::ui_i18n::text(messages::RECOVERY_RECORDS))
                     .action(
                         div()
                             .text_size(px(11.0))
                             .text_color(rgb(theme::CONTENT_SECONDARY))
                             .child(if self.recovery.querying {
-                                "筛选中…".into()
+                                khaslana::ui_i18n::text(messages::FILTERING).into()
                             } else {
-                                format!("{} 条", self.recovery.total)
+                                khaslana::ui_i18n::format(messages::TOTAL_RECORDS, &[("total", &(self.recovery.total).to_string())])
                             })
                             .into_any_element(),
                     )
@@ -896,20 +899,16 @@ impl RepositoryView {
                         div()
                             .text_size(px(11.0))
                             .text_color(rgb(theme::CONTENT_SECONDARY))
-                            .child(format!(
-                                "已显示 {} / {} 条",
-                                self.recovery.entries.len(),
-                                self.recovery.total
-                            )),
+                            .child(khaslana::ui_i18n::format(messages::SHOWING_ENTRIES_TOTAL_RECORDS, &[("entries", &(self.recovery.entries.len()).to_string()), ("total", &(self.recovery.total).to_string())])),
                     )
                     .when(self.recovery.next_offset.is_some(), |this| {
                         this.child(
                             workbench_command_button(
                                 "recovery-load-more",
                                 if self.recovery.querying {
-                                    "加载中…"
+                                    khaslana::ui_i18n::text(messages::LOADING)
                                 } else {
-                                    "加载更多"
+                                    khaslana::ui_i18n::text(messages::LOAD_MORE)
                                 },
                                 false,
                                 !self.recovery.loading
@@ -917,7 +916,7 @@ impl RepositoryView {
                                     && self.recovery.search_changed.is_none(),
                                 cx,
                             )
-                            .tooltip("每次加载最多 100 条记录")
+                            .tooltip(khaslana::ui_i18n::text(messages::LOAD_UP_TO_RECORDS_AT_A_TIME))
                             .on_click(
                                 cx.listener(|this, _, _, cx| this.refresh_recovery_query(cx, true)),
                             ),
@@ -930,13 +929,13 @@ impl RepositoryView {
     fn recovery_record_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let Some(entry) = self.recovery.entries.get(index) else {
             let text = if self.recovery.loading {
-                "正在读取本地恢复记录…"
+                khaslana::ui_i18n::text(messages::READING_LOCAL_RECOVERY_RECORDS_2)
             } else if self.recovery.querying {
-                "正在筛选恢复记录…"
+                khaslana::ui_i18n::text(messages::FILTERING_RECOVERY_RECORDS)
             } else if self.recovery.error.is_some() {
-                "读取未完成，请刷新重试"
+                khaslana::ui_i18n::text(messages::READ_INCOMPLETE_REFRESH_TO_TRY_AGAIN)
             } else {
-                "当前来源与筛选条件下没有恢复记录"
+                khaslana::ui_i18n::text(messages::NO_RECOVERY_RECORDS_MATCH_THE_CURRENT_SOURCE_AND_FILTERS)
             };
             return panel_empty_row(text, RECOVERY_ROW_HEIGHT, PlaceholderAlign::Start)
                 .into_any_element();
@@ -944,20 +943,11 @@ impl RepositoryView {
         let selected = self.recovery.selected.as_deref() == Some(entry.id.as_str());
         let old_state = self.recovery.availability.get(&entry.old_oid);
         let new_state = self.recovery.availability.get(&entry.new_oid);
-        let tooltip = format!(
-            "{}\n{} · {}\n操作前：{} · {}\n操作后：{} · {}{}",
-            entry.message,
-            commit_time_label(entry.timestamp),
-            entry.ref_name,
-            entry.old_oid,
-            old_state.map_or("待检查", RecoveryObjectState::label),
-            entry.new_oid,
-            new_state.map_or("待检查", RecoveryObjectState::label),
-            if entry.lossy {
-                "\n原始日志包含无法按 UTF-8 解码的内容，展示时已替换。"
-            } else {
-                ""
-            }
+        let tooltip = khaslana::ui_i18n::format(
+            if entry.lossy { messages::RECORD_TOOLTIP_LOSSY } else { messages::RECORD_TOOLTIP },
+            &[("message", &entry.message), ("timestamp", &commit_time_label(entry.timestamp)),
+              ("reference", &entry.ref_name), ("before", &entry.old_oid), ("before_state", object_status(old_state)),
+              ("after", &entry.new_oid), ("after_state", object_status(new_state))],
         );
         let id = entry.id.clone();
         list_row_surface(format!("recovery-record-{}", entry.id), selected)
@@ -997,7 +987,7 @@ impl RepositoryView {
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(theme::CONTENT_PRIMARY))
                     .child(if entry.message.is_empty() {
-                        "（无操作说明）".into()
+                        khaslana::ui_i18n::text(messages::NO_OPERATION_DESCRIPTION).into()
                     } else {
                         entry.message.clone()
                     }),
@@ -1056,11 +1046,7 @@ impl RepositoryView {
                                     theme::FEEDBACK_WARNING_TEXT
                                 },
                             ))
-                            .child(format!(
-                                "· 前：{} / 后：{}",
-                                object_status(old_state),
-                                object_status(new_state)
-                            )),
+                            .child(khaslana::ui_i18n::format(messages::BEFORE_OLD_STATE_AFTER_NEW_STATE, &[("old_state", &(object_status(old_state)).to_string()), ("new_state", &(object_status(new_state)).to_string())])),
                     ),
             )
             .into_any_element()
@@ -1076,14 +1062,14 @@ impl RepositoryView {
             return self.render_recovery_compact_preview(layout, cx);
         }
         let mut header = panel_section_header(if preview_open {
-            "提交预览"
+            khaslana::ui_i18n::text(messages::COMMIT_PREVIEW)
         } else {
-            "恢复详情"
+            khaslana::ui_i18n::text(messages::RECOVERY_DETAILS)
         })
         .top_rounded();
         if preview_open {
             header = header.action(
-                workbench_command_button("recovery-preview-close", "返回详情", false, true, cx)
+                workbench_command_button("recovery-preview-close", khaslana::ui_i18n::text(messages::BACK_TO_DETAILS), false, true, cx)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.recovery.preview.open = false;
                         cx.notify();
@@ -1101,8 +1087,8 @@ impl RepositoryView {
         let Some(entry) = self.recovery.selected_entry() else {
             return panel
                 .child(
-                    EmptyState::new("选择一条恢复记录")
-                        .detail("对比操作前后的完整 OID，确认目标提交后创建本地分支")
+                    EmptyState::new(khaslana::ui_i18n::text(messages::SELECT_A_RECOVERY_RECORD))
+                        .detail(khaslana::ui_i18n::text(messages::COMPARE_FULL_OIDS_BEFORE_AND_AFTER_THE_OPERATION_VERIFY_THE))
                         .fill()
                         .build(),
                 )
@@ -1120,7 +1106,7 @@ impl RepositoryView {
             });
         let operation_busy = self.busy || self.recovery.operation.is_some();
         let reason = if self.recovery.details_loading {
-            "正在读取目标提交，请稍候".into()
+            khaslana::ui_i18n::text(messages::READING_TARGET_COMMIT_PLEASE_WAIT).into()
         } else {
             object_explanation(details.map(|details| &details.state))
         };
@@ -1160,7 +1146,7 @@ impl RepositoryView {
         panel = panel.child(sides);
         let copy_oid = oid.clone();
         let create_reason = if operation_busy {
-            "当前操作进行中，请稍候".into()
+            khaslana::ui_i18n::text(messages::AN_OPERATION_IS_IN_PROGRESS_PLEASE_WAIT).into()
         } else {
             reason.clone()
         };
@@ -1177,12 +1163,12 @@ impl RepositoryView {
                     .child(
                         workbench_command_button(
                             "recovery-copy-oid",
-                            "复制 OID",
+                            khaslana::ui_i18n::text(messages::COPY_OID),
                             false,
                             !oid.is_empty(),
                             cx,
                         )
-                        .tooltip(format!("复制{}完整 OID：{oid}", self.recovery.side.label()))
+                        .tooltip(khaslana::ui_i18n::format(match self.recovery.side { RecoverySide::Before => messages::COPY_BEFORE_OID, RecoverySide::After => messages::COPY_AFTER_OID }, &[("oid", &oid)]))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.copy_commit_sha(copy_oid.clone(), cx)
                         })),
@@ -1190,13 +1176,13 @@ impl RepositoryView {
                     .child(
                         workbench_command_button(
                             "recovery-show-commit",
-                            "查看提交",
+                            khaslana::ui_i18n::text(messages::VIEW_COMMIT),
                             false,
                             available && !operation_busy,
                             cx,
                         )
                         .tooltip(if operation_busy {
-                            "当前操作进行中，请稍候".into()
+                            khaslana::ui_i18n::text(messages::AN_OPERATION_IS_IN_PROGRESS_PLEASE_WAIT).into()
                         } else {
                             reason
                         })
@@ -1207,7 +1193,7 @@ impl RepositoryView {
                             .id("recovery-create-branch-command")
                             .tooltip(move |_, cx| tooltip_text(create_reason.clone(), cx))
                             .child(self.primary_button(
-                                "从此提交创建分支",
+                                khaslana::ui_i18n::text(messages::CREATE_BRANCH_FROM_THIS_COMMIT),
                                 available && !operation_busy,
                                 |this, _, cx| this.open_recovery_branch_dialog(cx),
                                 cx,
@@ -1248,7 +1234,7 @@ impl RepositoryView {
             .px_3()
             .py_2()
             .child(
-                workbench_command_button("recovery-compact-back", "返回详情", false, true, cx)
+                workbench_command_button("recovery-compact-back", khaslana::ui_i18n::text(messages::BACK_TO_DETAILS), false, true, cx)
                     .h(px(24.0))
                     .min_h(px(24.0))
                     .py_0()
@@ -1282,7 +1268,7 @@ impl RepositoryView {
         let copy_oid = oid.clone();
         controls = controls
             .child(
-                workbench_command_button("recovery-compact-copy", "复制 OID", false, true, cx)
+                workbench_command_button("recovery-compact-copy", khaslana::ui_i18n::text(messages::COPY_OID), false, true, cx)
                     .h(px(24.0))
                     .min_h(px(24.0))
                     .py_0()
@@ -1295,7 +1281,7 @@ impl RepositoryView {
             .child(
                 crate::ui::components::settings_command_button(
                     "recovery-compact-create",
-                    "创建分支",
+                    khaslana::ui_i18n::text(messages::CREATE_BRANCH),
                     crate::ui::components::SettingsButtonTone::Primary,
                     enabled && available,
                     cx,
@@ -1312,7 +1298,7 @@ impl RepositoryView {
             .flex_1()
             .min_w(px(0.0))
             .min_h(px(0.0))
-            .child(panel_section_header("提交预览").top_rounded().build())
+            .child(panel_section_header(khaslana::ui_i18n::text(messages::COMMIT_PREVIEW)).top_rounded().build())
             .child(controls)
             .child(self.render_recovery_preview(layout, cx))
             .into_any_element()
@@ -1347,9 +1333,9 @@ impl RepositoryView {
             .gap_3()
             .child(meta(
                 if self.recovery.side == RecoverySide::Before {
-                    "操作前 · 目标完整 OID"
+                    khaslana::ui_i18n::text(messages::BEFORE_OPERATION_FULL_TARGET_OID)
                 } else {
-                    "操作后 · 目标完整 OID"
+                    khaslana::ui_i18n::text(messages::AFTER_OPERATION_FULL_TARGET_OID)
                 },
                 oid.to_string(),
                 true,
@@ -1366,7 +1352,7 @@ impl RepositoryView {
                         theme::FEEDBACK_WARNING_TEXT
                     }))
                     .child(if self.recovery.details_loading {
-                        "正在读取目标提交…".into()
+                        khaslana::ui_i18n::text(messages::READING_TARGET_COMMIT).into()
                     } else {
                         object_explanation(state)
                     }),
@@ -1384,22 +1370,22 @@ impl RepositoryView {
                         .child(commit.summary.clone()),
                 )
                 .child(meta(
-                    "作者",
+                    khaslana::ui_i18n::text(messages::AUTHOR),
                     crate::history_view::author_label(commit),
                     false,
                 ))
-                .child(meta("提交时间", commit_time_label(commit.time), false))
+                .child(meta(khaslana::ui_i18n::text(messages::COMMIT_TIME), commit_time_label(commit.time), false))
                 .child(meta(
-                    "父提交",
+                    khaslana::ui_i18n::text(messages::PARENT_COMMITS),
                     crate::history_view::parents_note(&commit.parents),
                     false,
                 ));
             if let Some(committer) = crate::history_view::committer_note(commit) {
-                content = content.child(meta("提交者", committer, false));
+                content = content.child(meta(khaslana::ui_i18n::text(messages::COMMITTER), committer, false));
             }
             if commit.message.trim() != commit.summary {
                 content = content.child(meta(
-                    "完整提交说明",
+                    khaslana::ui_i18n::text(messages::FULL_COMMIT_MESSAGE),
                     commit.message.trim().to_string(),
                     false,
                 ));
@@ -1410,7 +1396,7 @@ impl RepositoryView {
                         .text_size(px(11.0))
                         .line_height(px(17.0))
                         .text_color(rgb(theme::CONTENT_SECONDARY))
-                        .child("这是合并提交，文件列表与差异以第一父提交为基准。"),
+                        .child(khaslana::ui_i18n::text(messages::THIS_IS_A_MERGE_COMMIT_FILES_AND_DIFFERENCES_ARE_SHOWN)),
                 );
             }
         }
@@ -1420,21 +1406,21 @@ impl RepositoryView {
                     .text_size(px(12.0))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(theme::CONTENT_PRIMARY))
-                    .child("日志证据"),
+                    .child(khaslana::ui_i18n::text(messages::LOG_EVIDENCE)),
             )
             .child(meta(
-                "操作说明",
+                khaslana::ui_i18n::text(messages::OPERATION_DESCRIPTION),
                 if entry.message.is_empty() {
-                    "（无操作说明）".into()
+                    khaslana::ui_i18n::text(messages::NO_OPERATION_DESCRIPTION).into()
                 } else {
                     entry.message.clone()
                 },
                 false,
             ))
-            .child(meta("来源引用", entry.ref_name.clone(), true))
-            .child(meta("操作时间", commit_time_label(entry.timestamp), false))
+            .child(meta(khaslana::ui_i18n::text(messages::SOURCE_REFERENCE), entry.ref_name.clone(), true))
+            .child(meta(khaslana::ui_i18n::text(messages::OPERATION_TIME), commit_time_label(entry.timestamp), false))
             .child(meta(
-                "操作者",
+                khaslana::ui_i18n::text(messages::ACTOR),
                 if entry.actor_email.is_empty() {
                     entry.actor.clone()
                 } else {
@@ -1442,10 +1428,10 @@ impl RepositoryView {
                 },
                 false,
             ))
-            .child(meta("操作前完整 OID", entry.old_oid.clone(), true))
-            .child(meta("操作后完整 OID", entry.new_oid.clone(), true));
+            .child(meta(khaslana::ui_i18n::text(messages::FULL_OID_BEFORE_OPERATION), entry.old_oid.clone(), true))
+            .child(meta(khaslana::ui_i18n::text(messages::FULL_OID_AFTER_OPERATION), entry.new_oid.clone(), true));
         if entry.lossy {
-            content = content.child(div().text_size(px(11.0)).line_height(px(17.0)).text_color(rgb(theme::FEEDBACK_WARNING_TEXT)).child("原始日志包含无法按 UTF-8 解码的内容，展示时已替换。恢复目标仍使用完整 OID。"));
+            content = content.child(div().text_size(px(11.0)).line_height(px(17.0)).text_color(rgb(theme::FEEDBACK_WARNING_TEXT)).child(khaslana::ui_i18n::text(messages::THE_ORIGINAL_LOG_CONTAINS_INVALID_UTF_AND_IS_DISPLAYED_WITH)));
         }
         scrollable_frame_when(
             "recovery-details-scroll",
@@ -1476,7 +1462,7 @@ impl RepositoryView {
             .diff
             .as_deref()
             .map(crate::diff_encoding_label)
-            .unwrap_or_else(|| format!("编码：{}", current.label()));
+            .unwrap_or_else(|| khaslana::ui_i18n::format(messages::ENCODING_LABEL, &[("label", &(current.label()).to_string())]));
         let entity = cx.entity();
         let tab_id = self.active_tab_id();
         let repo_path = self.repo_path.clone();
@@ -1486,7 +1472,7 @@ impl RepositoryView {
             .py_0()
             .px_2()
             .dropdown_caret(true)
-            .tooltip("选择当前仓库的差异解码方式")
+            .tooltip(khaslana::ui_i18n::text(messages::CHOOSE_DIFF_DECODING_FOR_THE_CURRENT_REPOSITORY))
             .dropdown_menu(move |mut menu, window, _| {
                 for choice in [
                     crate::DiffEncodingChoice::Auto,
@@ -1516,9 +1502,9 @@ impl RepositoryView {
                 workbench_command_button(
                     "recovery-full-file-kit",
                     if self.full_file_view {
-                        "差异"
+                        khaslana::ui_i18n::text(messages::DIFF)
                     } else {
-                        "全文"
+                        khaslana::ui_i18n::text(messages::FULL_FILE)
                     },
                     self.full_file_view,
                     enabled,
@@ -1529,9 +1515,9 @@ impl RepositoryView {
                 .py_0()
                 .px_2()
                 .tooltip(if self.full_file_view {
-                    "显示差异与相邻上下文"
+                    khaslana::ui_i18n::text(messages::SHOW_DIFFERENCES_AND_SURROUNDING_CONTEXT)
                 } else {
-                    "显示完整文件上下文"
+                    khaslana::ui_i18n::text(messages::SHOW_FULL_FILE_CONTEXT)
                 })
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_full_file_view(cx))),
             )
@@ -1550,20 +1536,17 @@ impl RepositoryView {
             .selected_file
             .as_ref()
             .map(|path| {
-                format!(
-                    "{}提交差异：{path}",
-                    if self.full_file_view { "全文：" } else { "" }
-                )
+                khaslana::ui_i18n::format(if self.full_file_view { messages::FULL_FILE_TITLE } else { messages::DIFF_TITLE }, &[("path", path)])
             })
-            .unwrap_or_else(|| "提交差异".into());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::COMMIT_DIFF).into());
         let empty = if self.recovery.preview.loading_diff {
-            "提交差异加载中…".into()
+            khaslana::ui_i18n::text(messages::LOADING_COMMIT_DIFFERENCES).into()
         } else {
             self.recovery
                 .preview
                 .error
-                .clone()
-                .unwrap_or_else(|| "选择一个提交文件查看差异".into())
+                .as_ref().map(|error| khaslana::ui_i18n::resolve(error))
+                .unwrap_or_else(|| khaslana::ui_i18n::text(messages::SELECT_A_COMMIT_FILE_TO_VIEW_ITS_DIFFERENCES).into())
         };
         let diff = div()
             .flex()
@@ -1603,10 +1586,7 @@ impl RepositoryView {
                     .text_size(px(11.0))
                     .line_height(px(17.0))
                     .text_color(rgb(theme::CONTENT_SECONDARY))
-                    .child(format!(
-                        "合并提交：以第一父提交 {} 为基准预览。",
-                        short_oid(&commit.parents[0])
-                    )),
+                    .child(khaslana::ui_i18n::format(messages::MERGE_COMMIT_PREVIEW_RELATIVE_TO_FIRST_PARENT_PARENTS, &[("parents", &(short_oid(&commit.parents[0])).to_string())])),
             );
         }
         preview
@@ -1677,7 +1657,7 @@ impl RepositoryView {
             .min_w(px(0.0))
             .min_h(px(0.0))
             .child(
-                panel_section_header(format!("提交文件 · {}", self.recovery.preview.files.len()))
+                panel_section_header(khaslana::ui_i18n::format(messages::COMMIT_FILES_FILES, &[("files", &(self.recovery.preview.files.len()).to_string())]))
                     .build(),
             )
             .child(scrollable_uniform_frame(
@@ -1695,11 +1675,11 @@ impl RepositoryView {
         let Some(file) = self.recovery.preview.files.get(index) else {
             return panel_empty_row(
                 if self.recovery.preview.loading_files {
-                    "提交文件加载中…"
+                    khaslana::ui_i18n::text(messages::LOADING_COMMIT_FILES)
                 } else if self.recovery.preview.error.is_some() {
-                    "文件读取失败"
+                    khaslana::ui_i18n::text(messages::FAILED_TO_READ_FILES)
                 } else {
-                    "该提交没有文件变更"
+                    khaslana::ui_i18n::text(messages::THIS_COMMIT_HAS_NO_FILE_CHANGES)
                 },
                 CHANGE_ROW_HEIGHT,
                 PlaceholderAlign::Start,
@@ -1782,13 +1762,13 @@ impl RepositoryView {
             .gap_3()
             .pr_1()
             .child(meta(
-                "工作区",
+                khaslana::ui_i18n::text(messages::WORKING_TREE),
                 dialog.identity.worktree_path.display().to_string(),
                 false,
             ))
-            .child(meta("目标完整 OID", dialog.oid.clone(), true))
-            .child(meta("来源记录", dialog.source.clone(), true))
-            .child(meta("恢复目标", dialog.side.label().to_string(), false))
+            .child(meta(khaslana::ui_i18n::text(messages::FULL_TARGET_OID), dialog.oid.clone(), true))
+            .child(meta(khaslana::ui_i18n::text(messages::SOURCE_RECORD), dialog.source.clone(), true))
+            .child(meta(khaslana::ui_i18n::text(messages::RECOVERY_TARGET), dialog.side.label().to_string(), false))
             .child(
                 div()
                     .flex()
@@ -1798,7 +1778,7 @@ impl RepositoryView {
                         div()
                             .text_size(px(12.0))
                             .text_color(rgb(theme::CONTENT_PRIMARY))
-                            .child("本地分支名称"),
+                            .child(khaslana::ui_i18n::text(messages::LOCAL_BRANCH_NAME)),
                     )
                     .child(self.input(FieldId::RecoveryBranchName, false, window, cx)),
             )
@@ -1807,19 +1787,19 @@ impl RepositoryView {
                     .text_size(px(12.0))
                     .line_height(px(18.0))
                     .text_color(rgb(theme::CONTENT_SECONDARY))
-                    .child("只创建指向此提交的本地分支，不切换当前分支，未提交修改不受影响。"),
+                    .child(khaslana::ui_i18n::text(messages::ONLY_CREATES_A_LOCAL_BRANCH_POINTING_TO_THIS_COMMIT_THE)),
             );
         if let Some(error) = error {
-            let tooltip = error.clone();
+            let tooltip = khaslana::ui_i18n::resolve(&error);
             body = body.child(
                 div()
                     .id("recovery-branch-error")
                     .min_w(px(0.0))
                     .tooltip(move |_, cx| tooltip_text(tooltip.clone(), cx))
-                    .child(inline_error_bubble(error)),
+                    .child(inline_error_bubble(khaslana::ui_i18n::resolve(&error))),
             );
         }
-        self.dialog_panel("创建恢复分支", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::CREATE_RECOVERY_BRANCH), cx)
             .w(width)
             .h(height)
             .min_w(px(0.0))
@@ -1836,12 +1816,12 @@ impl RepositoryView {
                 dialog_actions()
                     .flex_none()
                     .flex_wrap()
-                    .child(self.button("取消", !busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.primary_button(
                         if busy {
-                            "创建中…"
+                            khaslana::ui_i18n::text(messages::CREATING)
                         } else {
-                            "创建本地分支"
+                            khaslana::ui_i18n::text(messages::CREATE_LOCAL_BRANCH)
                         },
                         can_submit,
                         |this, _, cx| this.submit_recovery_branch(cx),

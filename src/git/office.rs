@@ -10,6 +10,7 @@
 //! 任何解析失败（损坏、加密、缺条目、超限）返回 `None`，调用方回退到
 //! 二进制占位卡。
 
+use crate::types::domain_ui_resources;
 use std::io::Read;
 
 /// 提取入口的文件体积上限：与全文差异视图同一档（`FULL_FILE_MAX_BYTES`），
@@ -423,7 +424,7 @@ fn extract_pptx(archive: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>) -> Option
     }
     let mut lines = Vec::new();
     for (num, name) in &slide_names {
-        lines.push(format!("── 幻灯片 {num} ──"));
+        lines.push(crate::ui_i18n::format(domain_ui_resources::SLIDE, &[("num", &format!("{}", num))]));
         let xml_bytes = read_entry(archive, name)?;
         let xml = std::str::from_utf8(&xml_bytes).ok()?;
         for element in scan_elements(xml, "a:p") {

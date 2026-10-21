@@ -1,3 +1,6 @@
+#[path = "ui_resources/remote_branch_operation_messages.rs"]
+mod messages;
+
 use crate::ui::theme::rgb;
 use gpui::{
     Animation, AnimationExt, Context, IntoElement, MouseButton, Window, div, prelude::*, px,
@@ -30,30 +33,30 @@ pub(crate) enum RemoteBranchOperationKind {
 impl RemoteBranchOperationKind {
     pub(crate) fn title(self) -> &'static str {
         match self {
-            Self::Pull => "拉取",
-            Self::Push => "推送",
-            Self::SetUpstream => "设置 upstream",
+            Self::Pull => khaslana::ui_i18n::text(messages::PULL),
+            Self::Push => khaslana::ui_i18n::text(messages::PUSH),
+            Self::SetUpstream => khaslana::ui_i18n::text(messages::SET_UPSTREAM),
         }
     }
 
     pub(crate) fn confirm_label(self) -> &'static str {
         match self {
-            Self::Pull => "拉取",
-            Self::Push => "推送",
-            Self::SetUpstream => "设置",
+            Self::Pull => khaslana::ui_i18n::text(messages::PULL),
+            Self::Push => khaslana::ui_i18n::text(messages::PUSH),
+            Self::SetUpstream => khaslana::ui_i18n::text(messages::SETTINGS),
         }
     }
 
     fn help(self) -> &'static str {
         match self {
             Self::Pull => {
-                "拉取会先获取所选远端，然后把远端分支合并到当前本地分支。远端分支必须已存在。"
+                khaslana::ui_i18n::text(messages::PULL_FETCHES_THE_SELECTED_REMOTE_THEN_MERGES_THE_REMOTE_BRANCH)
             }
             Self::Push => {
-                "推送会把当前本地分支推送到填写的远程分支；远端分支不存在时会自动创建，并设置为上游分支。"
+                khaslana::ui_i18n::text(messages::PUSH_SENDS_THE_CURRENT_LOCAL_BRANCH_TO_THE_SPECIFIED_REMOTE)
             }
             Self::SetUpstream => {
-                "upstream 用来计算本地分支相对远端分支的拉取和推送状态；只能选择已存在的远端分支。"
+                khaslana::ui_i18n::text(messages::UPSTREAM_IS_USED_TO_CALCULATE_PULL_AND_PUSH_STATUS_RELATIVE)
             }
         }
     }
@@ -148,7 +151,7 @@ pub(crate) fn remote_branch_dialog_defaults(
     current_remote: Option<String>,
 ) -> Result<RemoteBranchDialogDefaults, String> {
     let local_branch = current_local_branch(snapshot)
-        .ok_or_else(|| "当前不是本地分支，无法拉取或推送".to_string())?;
+        .ok_or_else(|| khaslana::ui_i18n::encode(messages::NOT_ON_A_LOCAL_BRANCH_CANNOT_PULL_OR_PUSH, &[]))?;
     let remote = current_remote
         .filter(|remote| snapshot.remotes.iter().any(|info| info.name == *remote))
         .or_else(|| {
@@ -159,7 +162,7 @@ pub(crate) fn remote_branch_dialog_defaults(
                 .map(|remote| remote.name.clone())
         })
         .or_else(|| snapshot.remotes.first().map(|remote| remote.name.clone()))
-        .ok_or_else(|| "当前仓库没有远端".to_string())?;
+        .ok_or_else(|| khaslana::ui_i18n::encode(messages::THIS_REPOSITORY_HAS_NO_REMOTE, &[]))?;
     let remote_branch = default_remote_branch_for(local_branch, &remote);
     Ok(RemoteBranchDialogDefaults {
         local_branch: local_branch.name.clone(),
@@ -194,7 +197,7 @@ impl RepositoryView {
                     .or_else(|| current_local_branch(snapshot))
             })
             .map(|branch| branch.name.clone());
-        let local_branch_label = local_branch.as_deref().unwrap_or("无本地分支").to_string();
+        let local_branch_label = local_branch.as_deref().unwrap_or(khaslana::ui_i18n::text(messages::NO_LOCAL_BRANCH)).to_string();
         let selected_remote = self
             .remote_branch_operation
             .selected_remote
@@ -216,7 +219,7 @@ impl RepositoryView {
             && !remote_branch.is_empty()
             && !branch_exists
         {
-            Some("远端分支不存在，请点击刷新或选择已有分支")
+            Some(khaslana::ui_i18n::text(messages::REMOTE_BRANCH_DOES_NOT_EXIST_REFRESH_OR_CHOOSE_AN_EXISTING))
         } else {
             None
         };
@@ -239,7 +242,7 @@ impl RepositoryView {
                                 div()
                                     .text_size(px(12.0))
                                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                    .child("当前本地分支"),
+                                    .child(khaslana::ui_i18n::text(messages::CURRENT_LOCAL_BRANCH)),
                             )
                             .child(
                                 div()
@@ -251,7 +254,7 @@ impl RepositoryView {
                             ),
                     )
                     .child(self.button(
-                        "刷新",
+                        khaslana::ui_i18n::text(messages::REFRESH),
                         !self.busy && !selected_remote.is_empty(),
                         |this, _, _| this.refresh_remote_branch_operation(),
                         cx,
@@ -273,7 +276,7 @@ impl RepositoryView {
                         div()
                             .text_size(px(12.0))
                             .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                            .child("远程分支"),
+                            .child(khaslana::ui_i18n::text(messages::REMOTE_BRANCH)),
                     )
                     .child(self.remote_branch_editable_selector(
                         selected_remote.clone(),
@@ -318,13 +321,13 @@ impl RepositoryView {
                                         !this.remote_branch_operation.use_rebase;
                                     cx.notify();
                                 }))
-                                .child("用变基代替合并"),
+                                .child(khaslana::ui_i18n::text(messages::REBASE_INSTEAD_OF_MERGING)),
                         ),
                 )
             })
             .child(
                 dialog_actions()
-                    .child(self.button("取消", !self.busy, |this, _, _| this.close_dialog(), cx))
+                    .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.busy, |this, _, _| this.close_dialog(), cx))
                     .child(self.primary_button(
                         kind.confirm_label(),
                         can_confirm,
@@ -347,7 +350,7 @@ impl RepositoryView {
             .map(|remote| remote.url.clone());
         let disabled = remotes.is_empty() || self.busy;
         let trigger_label = if selected_remote.is_empty() {
-            "选择远端".to_string()
+            khaslana::ui_i18n::text(messages::SELECT_REMOTE).to_string()
         } else {
             selected_remote.clone()
         };
@@ -360,12 +363,12 @@ impl RepositoryView {
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("远端"),
+                    .child(khaslana::ui_i18n::text(messages::REMOTES)),
             )
             .child(
                 Button::new("remote-branch-operation-remote-select")
                     .label(trigger_label)
-                    .accessibility_label("选择远端")
+                    .accessibility_label(khaslana::ui_i18n::text(messages::SELECT_REMOTE))
                     .outline()
                     .dropdown_caret(true)
                     .disabled(disabled)
@@ -518,7 +521,7 @@ impl RepositoryView {
                         .py_2()
                         .text_size(px(12.0))
                         .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                        .child("暂无远端分支，请点击刷新获取"),
+                        .child(khaslana::ui_i18n::text(messages::NO_REMOTE_BRANCHES_REFRESH_TO_FETCH_THEM)),
                 )
             })
             .children(

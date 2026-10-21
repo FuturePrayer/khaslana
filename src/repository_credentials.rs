@@ -1,5 +1,8 @@
 //! RepositoryView 的凭据、OAuth 与远端管理动作。
 
+#[path = "repository_credentials_resources.rs"]
+mod messages;
+
 use crate::*;
 
 impl RepositoryView {
@@ -97,14 +100,14 @@ impl RepositoryView {
                 &self.credential_username.value,
             ) {
                 self.credential_remote_url.set_value(ssh_url.clone());
-                self.status = format!("已将适用远端地址切换为 SSH：{ssh_url}");
+                self.status = khaslana::ui_i18n::encode(messages::REMOTE_URL_CHANGED_TO_SSH, &[("ssh_url", &(ssh_url).to_string())]);
             }
             self.discover_ssh_credentials_if_needed();
         } else if let Some(https_url) =
             ssh_credentials::ssh_remote_to_https(&self.credential_remote_url.value)
         {
             self.credential_remote_url.set_value(https_url.clone());
-            self.status = format!("已将适用远端地址切换为 HTTPS：{https_url}");
+            self.status = khaslana::ui_i18n::encode(messages::REMOTE_URL_CHANGED_TO_HTTPS, &[("https_url", &(https_url).to_string())]);
         }
     }
 
@@ -127,7 +130,7 @@ impl RepositoryView {
         let request_id = self.ssh_credential_discovery.request_id;
         self.ssh_credential_discovery.loading = true;
         self.ssh_credential_discovery.error = None;
-        self.status = "正在检测本机 SSH 身份".into();
+        self.status = khaslana::ui_i18n::encode(messages::DISCOVERING_LOCAL_SSH_IDENTITIES, &[]);
         self.last_error = None;
         let tx = self.tx.clone();
         self.tasks.spawn(TaskKind::Short, move || {
@@ -153,7 +156,7 @@ impl RepositoryView {
         {
             self.credential_display_name.set_value("本机 SSH Agent");
         }
-        self.status = "已选择本机 SSH Agent".into();
+        self.status = khaslana::ui_i18n::encode(messages::LOCAL_SSH_AGENT_SELECTED, &[]);
         self.last_error = None;
     }
 
@@ -171,17 +174,17 @@ impl RepositoryView {
             self.credential_display_name
                 .set_value(format!("SSH · {name}"));
         }
-        self.status = format!("已选择 SSH 私钥：{}", path.display());
+        self.status = khaslana::ui_i18n::encode(messages::SSH_PRIVATE_KEY_SELECTED, &[("arg0", &(path.display()).to_string())]);
         self.last_error = None;
     }
 
     pub(crate) fn browse_credential_ssh_key(&mut self) {
-        self.status = "正在选择 SSH 私钥...".into();
+        self.status = khaslana::ui_i18n::encode(messages::SELECTING_AN_SSH_PRIVATE_KEY, &[]);
         self.last_error = None;
         let tx = self.tx.clone();
         thread::spawn(move || {
             let path = rfd::FileDialog::new()
-                .set_title("选择 SSH 私钥")
+                .set_title(khaslana::ui_i18n::text(messages::SELECT_AN_SSH_PRIVATE_KEY))
                 .pick_file();
             send_ui_event(&tx, UiEvent::CredentialSshKeyFileSelected { path });
         });
@@ -208,11 +211,11 @@ impl RepositoryView {
             return;
         }
         if !oauth::is_configured() {
-            self.last_error = Some("尚未配置 GitHub OAuth Client ID，请联系维护者".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::GITHUB_OAUTH_CLIENT_ID_IS_NOT_CONFIGURED_CONTACT_THE_MAINTAINER, &[]));
             return;
         }
         let (request_id, cancel) = self.begin_oauth_login(OAuthProvider::Github);
-        self.status = "正在请求 GitHub 设备码...".into();
+        self.status = khaslana::ui_i18n::encode(messages::REQUESTING_A_GITHUB_DEVICE_CODE, &[]);
         // 复用全局代理设置，与 AI/更新等网络请求保持一致。
         let proxy_url = self
             .proxy_settings
@@ -278,11 +281,11 @@ impl RepositoryView {
             return;
         }
         if !oauth::is_gitee_configured() {
-            self.last_error = Some("尚未配置 Gitee 登录服务（broker URL），详见 AGENTS.md".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::GITEE_LOGIN_SERVICE_BROKER_URL_IS_NOT_CONFIGURED_SEE_AGENTS, &[]));
             return;
         }
         let (request_id, cancel) = self.begin_oauth_login(OAuthProvider::Gitee);
-        self.status = "正在等待浏览器完成 Gitee 授权...".into();
+        self.status = khaslana::ui_i18n::encode(messages::WAITING_FOR_GITEE_AUTHORIZATION_IN_THE_BROWSER, &[]);
         let proxy_url = self
             .proxy_settings
             .proxy_url_for_target("https://gitee.com/");
@@ -325,13 +328,13 @@ impl RepositoryView {
         self.oauth_login_flow.provider = None;
         self.oauth_login_flow.user_code = None;
         self.oauth_login_flow.verification_uri = None;
-        self.status = "已取消登录".into();
+        self.status = khaslana::ui_i18n::encode(messages::LOGIN_CANCELLED, &[]);
     }
 
     pub(crate) fn save_credential_form(&mut self) {
         let url = self.credential_remote_url.value.trim().to_string();
         if url.is_empty() {
-            self.last_error = Some("需要填写适用远端 URL".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::ENTER_A_REMOTE_URL, &[]));
             return;
         }
         let inferred_mode = credential_form_mode_for_request(&CredentialRequest {
@@ -346,11 +349,11 @@ impl RepositoryView {
         if inferred_mode != self.credential_form_mode {
             self.last_error = Some(match self.credential_form_mode {
                 CredentialFormMode::Ssh => {
-                    "当前“适用远端 URL”不是 SSH 地址，请使用 git@主机:仓库路径 或 ssh:// 地址"
+                    khaslana::ui_i18n::text(messages::THE_REMOTE_URL_IS_NOT_AN_SSH_URL_USE_GIT)
                         .into()
                 }
                 CredentialFormMode::Https => {
-                    "当前“适用远端 URL”不是 HTTP(S) 地址，请切换到 SSH 凭据或修改地址".into()
+                    khaslana::ui_i18n::text(messages::THE_REMOTE_URL_IS_NOT_AN_HTTP_S_URL_SWITCH).into()
                 }
             });
             return;
@@ -365,7 +368,7 @@ impl RepositoryView {
         let credential = match self.credential_form_mode {
             CredentialFormMode::Https => {
                 if self.credential_secret.value.is_empty() {
-                    self.last_error = Some("需要填写密码或 PAT".into());
+                    self.last_error = Some(khaslana::ui_i18n::encode(messages::ENTER_A_PASSWORD_OR_PAT, &[]));
                     return;
                 }
                 GitCredential::UserPass {
@@ -379,7 +382,7 @@ impl RepositoryView {
             CredentialFormMode::Ssh => {
                 let key_path = self.credential_key_path.value.trim().to_string();
                 if !self.credential_use_ssh_agent && key_path.is_empty() {
-                    self.last_error = Some("需要填写 SSH 私钥路径或选择使用 SSH agent".into());
+                    self.last_error = Some(khaslana::ui_i18n::encode(messages::ENTER_AN_SSH_PRIVATE_KEY_PATH_OR_USE_THE_SSH, &[]));
                     return;
                 }
                 if !self.credential_use_ssh_agent
@@ -416,7 +419,7 @@ impl RepositoryView {
                 self.reset_credential_form();
                 self.open_credential_manager();
                 self.last_error = None;
-                self.reload_credential_records("凭据已添加");
+                self.reload_credential_records(khaslana::ui_i18n::encode(messages::CREDENTIAL_ADDED, &[]));
                 self.pending_gitee_refresh_record = Some(record.id);
             }
             Err(err) => {
@@ -427,24 +430,24 @@ impl RepositoryView {
 
     pub(crate) fn open_remote_manager(&mut self) {
         if self.repo_path.is_none() {
-            self.last_error = Some("请先打开一个仓库".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
             return;
         }
         self.close_popups();
         self.active_dialog = Some(DialogState::RemoteManager);
-        self.reload_credential_records("远端管理已打开");
+        self.reload_credential_records(khaslana::ui_i18n::encode(messages::REMOTE_MANAGER_OPENED, &[]));
     }
 
     pub(crate) fn open_remote_form(&mut self, editing: Option<String>) {
         let remote = match editing.as_ref() {
             Some(name) => {
                 let Some(snapshot) = self.snapshot.as_ref() else {
-                    self.last_error = Some("请先打开一个仓库".into());
+                    self.last_error = Some(khaslana::ui_i18n::encode(messages::OPEN_A_REPOSITORY_FIRST, &[]));
                     return;
                 };
                 let Some(remote) = snapshot.remotes.iter().find(|remote| remote.name == *name)
                 else {
-                    self.last_error = Some("远端不存在".into());
+                    self.last_error = Some(khaslana::ui_i18n::encode(messages::REMOTE_DOES_NOT_EXIST, &[]));
                     return;
                 };
                 Some(remote.clone())
@@ -475,7 +478,7 @@ impl RepositoryView {
 
     pub(crate) fn open_delete_remote_branch_confirm(&mut self, remote_branch: String) {
         let Some((remote, branch)) = remote_branch.split_once('/') else {
-            self.last_error = Some(format!("远端分支名称无效：{remote_branch}"));
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::INVALID_REMOTE_BRANCH_NAME, &[("remote_branch", &(remote_branch).to_string())]));
             return;
         };
         self.branch_context_menu = None;
@@ -490,15 +493,15 @@ impl RepositoryView {
         let name = self.remote_name.value.trim().to_string();
         let url = self.remote_url.value.trim().to_string();
         if name.is_empty() {
-            self.last_error = Some("需要填写远端名称".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::ENTER_A_REMOTE_NAME, &[]));
             return;
         }
         if url.is_empty() {
-            self.last_error = Some("需要填写远端地址".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::ENTER_A_REMOTE_URL_2, &[]));
             return;
         }
         if name.contains(char::is_whitespace) || name.contains('\\') || name.starts_with('-') {
-            self.last_error = Some(format!("远端名称无效：{name}"));
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::INVALID_REMOTE_NAME, &[("name", &(name).to_string())]));
             return;
         }
 
@@ -510,7 +513,7 @@ impl RepositoryView {
         if editing.as_deref() != Some(name.as_str())
             && existing_remotes.iter().any(|remote| remote.name == name)
         {
-            self.last_error = Some(format!("远端名称已存在：{name}"));
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::REMOTE_NAME_ALREADY_EXISTS, &[("name", &(name).to_string())]));
             return;
         }
 
@@ -522,7 +525,7 @@ impl RepositoryView {
                     .find(|record| record.id == *id)
                     .cloned()
                 else {
-                    self.last_error = Some("所选凭据记录不存在".into());
+                    self.last_error = Some(khaslana::ui_i18n::encode(messages::THE_SELECTED_CREDENTIAL_RECORD_DOES_NOT_EXIST, &[]));
                     return;
                 };
                 Some(record)
@@ -537,7 +540,7 @@ impl RepositoryView {
                 CredentialScope::Host => credential_record_matches_remote_url(record, &url),
             };
             if !compatible {
-                self.last_error = Some("所选凭据与远端地址协议或站点不匹配".into());
+                self.last_error = Some(khaslana::ui_i18n::encode(messages::THE_SELECTED_CREDENTIALS_DO_NOT_MATCH_THE_REMOTE_URL_PROTOCOL, &[]));
                 return;
             }
             if record.scope == CredentialScope::RemoteUrl
@@ -554,7 +557,7 @@ impl RepositoryView {
                 self.last_error = Some(err.to_string());
                 return;
             }
-            self.reload_credential_records("远端凭据绑定已更新");
+            self.reload_credential_records(khaslana::ui_i18n::encode(messages::REMOTE_CREDENTIAL_BINDING_UPDATED, &[]));
         }
 
         if let Some(repo_path) = self.repo_path.as_ref() {
@@ -584,7 +587,7 @@ impl RepositoryView {
         let new_name = name.clone();
         match editing {
             Some(old_name) => {
-                self.with_repo("远端已更新", move |service, repo| {
+                self.with_repo(crate::operation_ui_resources::REMOTE_UPDATED, move |service, repo| {
                     service.update_remote(
                         repo,
                         &RemoteName::new(old_name),
@@ -595,7 +598,7 @@ impl RepositoryView {
             }
             None => {
                 self.selected_remote = Some(name.clone());
-                self.with_repo("远端已新增", move |service, repo| {
+                self.with_repo(crate::operation_ui_resources::REMOTE_ADDED, move |service, repo| {
                     service.add_remote(repo, &RemoteName::new(name), &url)
                 });
             }
@@ -606,23 +609,23 @@ impl RepositoryView {
         if self.selected_remote.as_deref() == Some(name.as_str()) {
             self.selected_remote = None;
         }
-        self.with_repo("远端已删除", move |service, repo| {
+        self.with_repo(crate::operation_ui_resources::REMOTE_DELETED, move |service, repo| {
             service.delete_remote(repo, &RemoteName::new(name))
         });
     }
 
     pub(crate) fn delete_remote_branch(&mut self, remote: String, branch: String) {
-        self.with_repo("远端分支已删除", move |service, repo| {
+        self.with_repo(crate::operation_ui_resources::REMOTE_BRANCH_DELETED, move |service, repo| {
             service.delete_remote_branch(repo, &RemoteName::new(remote), &BranchName::new(branch))
         });
     }
 
-    pub(crate) fn reload_credential_records(&mut self, message: &'static str) {
+    pub(crate) fn reload_credential_records(&mut self, message: impl Into<String>) {
         self.credential_context_menu = None;
         match self.credential_store.list_records() {
             Ok(records) => {
                 self.credential_records = records;
-                self.status = message.to_string();
+                self.status = message.into();
                 self.last_error = None;
             }
             Err(err) => {
@@ -668,13 +671,13 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) {
         let Some(text) = text.filter(|text| !text.is_empty()) else {
-            self.last_error = Some(format!("{label}为空，无法复制"));
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::IS_EMPTY_CANNOT_COPY, &[("label", &(label).to_string())]));
             self.credential_context_menu = None;
-            self.notify_warning(format!("{label}为空，无法复制"), cx);
+            self.notify_warning(khaslana::ui_i18n::format(messages::IS_EMPTY_CANNOT_COPY, &[("label", &(label).to_string())]), cx);
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
-        self.status = format!("已复制{label}");
+        self.status = khaslana::ui_i18n::encode(messages::COPIED, &[("label", &(label).to_string())]);
         self.last_error = None;
         self.credential_context_menu = None;
         self.notify_success(self.status.clone(), cx);
@@ -685,7 +688,7 @@ impl RepositoryView {
             Ok(()) => {
                 self.open_credential_manager();
                 self.credential_context_menu = None;
-                self.reload_credential_records("凭据已删除");
+                self.reload_credential_records(khaslana::ui_i18n::encode(messages::CREDENTIAL_DELETED, &[]));
             }
             Err(err) => {
                 self.open_credential_manager();
@@ -703,7 +706,7 @@ impl RepositoryView {
             .find(|record| record.id == record_id)
             .cloned()
         else {
-            self.last_error = Some("凭据记录不存在".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::CREDENTIAL_RECORD_DOES_NOT_EXIST, &[]));
             return;
         };
         self.credential_test_error = None;
@@ -726,7 +729,7 @@ impl RepositoryView {
         else {
             // 记录列表已刷新导致记录消失：直接关窗提示。
             self.close_dialog();
-            self.last_error = Some("凭据记录不存在".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::CREDENTIAL_RECORD_DOES_NOT_EXIST, &[]));
             return;
         };
         let url = self.credential_test_url.value.trim().to_string();
@@ -741,7 +744,7 @@ impl RepositoryView {
 
     fn test_credential_record(&mut self, record_id: String, url: String) {
         if self.busy || self.global_busy_tab.is_some() {
-            self.last_error = Some("已有操作正在运行".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::AN_OPERATION_IS_ALREADY_RUNNING, &[]));
             return;
         }
         let Some(mut record) = self
@@ -750,12 +753,12 @@ impl RepositoryView {
             .find(|record| record.id == record_id)
             .cloned()
         else {
-            self.last_error = Some("凭据记录不存在".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::CREDENTIAL_RECORD_DOES_NOT_EXIST, &[]));
             return;
         };
         // 连接目标用弹窗确认的地址（记录本体保持原值，测试不改凭据）。
         record.remote_url = url;
-        self.begin_global_test_busy("正在测试凭据连接");
+        self.begin_global_test_busy(&khaslana::ui_i18n::encode(messages::TESTING_CREDENTIAL_CONNECTION, &[]));
         let store: Arc<dyn CredentialStore> = self.credential_store.clone();
         let tx = self.tx.clone();
         self.tasks.spawn(TaskKind::Long, move || {
@@ -766,7 +769,7 @@ impl RepositoryView {
                         &tx,
                         UiEvent::CredentialRecordsLoaded {
                             records,
-                            message: "凭据测试通过".to_string(),
+                            message: khaslana::ui_i18n::encode(messages::CREDENTIAL_TEST_PASSED, &[]),
                         },
                     );
                 }

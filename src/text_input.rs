@@ -63,6 +63,7 @@ impl TextEditState {
 pub(crate) struct TextFieldState {
     pub(crate) focus: FocusHandle,
     pub(crate) placeholder: SharedString,
+    placeholder_message: Option<khaslana::ui_i18n::UiMessage>,
     /// 构造时分配的身份：随对象移动（Vec 重排不改变它），业务对象被整体
     /// 更换时必然不同。Kit 宿主据此判断「同一个输入框」还是「同一个位置
     /// 换了内容」——后者必须完整重绑，不能以字符串相同跳过。
@@ -78,16 +79,37 @@ impl TextFieldState {
         Self {
             focus: cx.focus_handle().tab_stop(true),
             placeholder: placeholder.into(),
+            placeholder_message: None,
             uid: NEXT_TEXT_FIELD_UID.fetch_add(1, Ordering::Relaxed),
             edit: TextEditState::new(),
         }
     }
+
+    pub(crate) fn localized(cx: &mut App, message: khaslana::ui_i18n::UiMessage) -> Self {
+        let mut field = Self::new(cx, khaslana::ui_i18n::text(message));
+        field.placeholder_message = Some(message);
+        field
+    }
+
+    /// 只替换占位文案身份；保留字段 uid、焦点与编辑状态，避免语言或用途变化重建输入宿主。
+    pub(crate) fn set_placeholder_message(&mut self, message: khaslana::ui_i18n::UiMessage) {
+        self.placeholder = khaslana::ui_i18n::text(message).into();
+        self.placeholder_message = Some(message);
+    }
+
+    pub(crate) fn displayed_placeholder(&self) -> SharedString {
+        self.placeholder_message.map(|message| khaslana::ui_i18n::text(message).into())
+            .unwrap_or_else(|| self.placeholder.clone())
+    }
+
+    pub(crate) fn has_localized_placeholder(&self) -> bool { self.placeholder_message.is_some() }
 
     /// 新仓库的独立真值；首次显示时 Kit 根据新身份重绑自己的焦点句柄。
     pub(crate) fn empty_sibling(&self) -> Self {
         Self {
             focus: self.focus.clone(),
             placeholder: self.placeholder.clone(),
+            placeholder_message: self.placeholder_message,
             uid: NEXT_TEXT_FIELD_UID.fetch_add(1, Ordering::Relaxed),
             edit: TextEditState::new(),
         }

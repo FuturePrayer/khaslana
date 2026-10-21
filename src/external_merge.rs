@@ -1,3 +1,4 @@
+use crate::types::domain_ui_resources;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -9,7 +10,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{GitError, Result};
 
-const IDEA_NOT_FOUND_MESSAGE: &str = "未找到 IntelliJ IDEA 命令，请确认 idea64 或 idea 已加入 PATH";
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ExternalMergeSettings {
@@ -74,7 +74,7 @@ pub fn run_intellij_idea_merge_with_settings(
     settings: &ExternalMergeSettings,
 ) -> Result<Vec<u8>> {
     if !settings.enabled {
-        return Err(GitError::Message("外部合并工具未启用".into()));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_EXTERNAL_MERGE_TOOL_IS_DISABLED, &[])));
     }
     let command = resolve_intellij_idea_command_with_settings(settings)?;
     run_intellij_idea_merge_with_command(repo, path, &command)
@@ -91,10 +91,7 @@ pub(crate) fn resolve_intellij_idea_command_for_settings(
         if path.is_file() {
             return Ok(path);
         }
-        return Err(GitError::Message(format!(
-            "IntelliJ IDEA 命令不存在：{}",
-            path.display()
-        )));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INTELLIJ_IDEA_COMMAND_DOES_NOT_EXIST, &[("value0", &format!("{}", path.display()))])));
     }
     resolve_intellij_idea_command_from_env_and_path(env_path, path_dirs)
 }
@@ -107,10 +104,7 @@ pub(crate) fn resolve_intellij_idea_command_from_env_and_path(
         if path.is_file() {
             return Ok(path.to_path_buf());
         }
-        return Err(GitError::Message(format!(
-            "IntelliJ IDEA 命令不存在：{}",
-            path.display()
-        )));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INTELLIJ_IDEA_COMMAND_DOES_NOT_EXIST, &[("value0", &format!("{}", path.display()))])));
     }
 
     if let Some(command) = find_command_in_path("idea64", path_dirs) {
@@ -123,7 +117,7 @@ pub(crate) fn resolve_intellij_idea_command_from_env_and_path(
         return Ok(command);
     }
 
-    Err(GitError::Message(IDEA_NOT_FOUND_MESSAGE.into()))
+    Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INTELLIJ_COMMAND_NOT_FOUND, &[])))
 }
 
 pub(crate) fn intellij_idea_merge_args(
@@ -146,18 +140,15 @@ pub(crate) fn run_intellij_idea_merge_with_command(
     path: &Path,
     command: &Path,
 ) -> Result<Vec<u8>> {
-    ensure_worktree_relative_path(path, "不能使用 IntelliJ IDEA 解决冲突")?;
+    ensure_worktree_relative_path(path, crate::ui_i18n::text(domain_ui_resources::CANNOT_RESOLVE_CONFLICTS_USING_INTELLIJ_IDEA))?;
 
     let index = repo.index()?;
     let conflict = index.conflict_get(path).map_err(|err| {
         if err.code() == git2::ErrorCode::NotFound {
-            GitError::Message(format!(
-                "该文件不存在冲突：{}",
-                path.components()
+            GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_FILE_HAS_NO_CONFLICTS_3, &[("value0", &format!("{}", path.components()
                     .map(|component| component.as_os_str().to_string_lossy())
                     .collect::<Vec<_>>()
-                    .join("/")
-            ))
+                    .join("/")))]))
         } else {
             GitError::Git(err)
         }
@@ -199,16 +190,14 @@ fn run_external_merge(
 
     let args = intellij_idea_merge_args(&ours_path, &theirs_path, &base_path, &result_path);
     let status = run_command(command, &args)
-        .map_err(|err| GitError::Message(format!("无法启动外部合并工具：{err}")))?;
+        .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_START_THE_EXTERNAL_MERGE_TOOL, &[("err", &format!("{}", err))])))?;
     if !status.success() {
-        return Err(GitError::Message(format!(
-            "IntelliJ IDEA 合并工具退出失败：{status}"
-        )));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INTELLIJ_IDEA_MERGE_TOOL_EXITED_UNSUCCESSFULLY, &[("status", &format!("{}", status))])));
     }
 
     fs::read(&result_path).map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
-            GitError::Message("IntelliJ IDEA 合并未生成结果文件".into())
+            GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INTELLIJ_IDEA_MERGE_DID_NOT_PRODUCE_A_RESULT_FILE, &[]))
         } else {
             GitError::Io(err)
         }
@@ -217,14 +206,10 @@ fn run_external_merge(
 
 fn read_conflict_blob(repo: &Repository, entry: Option<&git2::IndexEntry>) -> Result<Vec<u8>> {
     let Some(entry) = entry else {
-        return Err(GitError::Message(
-            "该冲突缺少 BASE/OURS/THEIRS，暂不能用 IntelliJ IDEA 三方合并".into(),
-        ));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_CONFLICT_IS_MISSING_BASE_OURS_THEIRS_INTELLIJ_IDEA_THREE_WAY_MERGE_IS_UNAVAILABL, &[])));
     };
     if entry.mode == 0 || entry.id.is_zero() {
-        return Err(GitError::Message(
-            "该冲突缺少 BASE/OURS/THEIRS，暂不能用 IntelliJ IDEA 三方合并".into(),
-        ));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_CONFLICT_IS_MISSING_BASE_OURS_THEIRS_INTELLIJ_IDEA_THREE_WAY_MERGE_IS_UNAVAILABL, &[])));
     }
     Ok(repo.find_blob(entry.id)?.content().to_vec())
 }
@@ -237,7 +222,7 @@ fn ensure_worktree_relative_path(path: &Path, action: &str) -> Result<()> {
         return Ok(());
     }
 
-    Err(GitError::Message(format!("文件路径无效，{action}")))
+    Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INVALID_FILE_PATH, &[("action", &format!("{}", action))])))
 }
 
 fn create_merge_temp_dir() -> Result<PathBuf> {

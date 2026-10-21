@@ -9,6 +9,7 @@
 //! 3. `rebase_skip`：跳过当前冲突提交（reset + 空 commit 推进操作指针）。
 //! 4. `rebase_abort`：中止变基，回到变基前状态。
 
+use crate::types::domain_ui_resources;
 use git2::{RebaseOperationType, RebaseOptions, Repository};
 
 use crate::types::{BranchName, GitError, OperationEvent, RebaseOutcome, Result};
@@ -18,7 +19,7 @@ impl super::GitService {
     /// 把当前分支变基到 `onto` 分支之上。
     pub fn rebase_branch(&self, repo: &mut Repository, onto: &BranchName) -> Result<RebaseOutcome> {
         self.progress
-            .emit(OperationEvent::Started(format!("正在变基 {}", onto.0)));
+            .emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::REBASING, &[("value0", &format!("{}", onto.0))])));
 
         let head_ref = repo.head()?;
         let branch_annotated = repo.reference_to_annotated_commit(&head_ref)?;
@@ -47,9 +48,7 @@ impl super::GitService {
             drop(onto_ref);
             let mut snapshot = self.snapshot_after_operation(repo)?;
             snapshot.rebase_in_progress = true;
-            self.progress.emit(OperationEvent::Progress(format!(
-                "变基暂停：正在重放提交 {current}/{total}，请解决冲突后继续"
-            )));
+            self.progress.emit(OperationEvent::Progress(crate::ui_i18n::format(domain_ui_resources::REBASE_PAUSED_WHILE_REPLAYING_COMMIT_RESOLVE_CONFLICTS_BEFORE_CONTINUING, &[("current", &format!("{}", current)), ("total", &format!("{}", total))])));
             return Ok(RebaseOutcome::Conflicts {
                 snapshot,
                 current,
@@ -64,7 +63,7 @@ impl super::GitService {
         drop(head_ref);
         drop(onto_ref);
         self.progress
-            .emit(OperationEvent::Finished(format!("已变基 {}", onto.0)));
+            .emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::REBASED, &[("value0", &format!("{}", onto.0))])));
         let mut snapshot = self.snapshot_after_operation(repo)?;
         snapshot.rebase_in_progress = false;
         Ok(RebaseOutcome::Completed(snapshot))
@@ -73,7 +72,7 @@ impl super::GitService {
     /// 变基遇到冲突后，用户已解决所有冲突，继续重放下一个提交。
     pub fn rebase_continue(&self, repo: &mut Repository) -> Result<RebaseOutcome> {
         self.progress
-            .emit(OperationEvent::Started("正在继续变基".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::CONTINUING_REBASE).into()));
 
         let mut opts = RebaseOptions::new();
         let mut rebase =
@@ -83,9 +82,7 @@ impl super::GitService {
 
         // 用户已解决冲突，提交当前操作
         if repo.index()?.has_conflicts() {
-            return Err(GitError::Message(
-                "仍有冲突未解决，请先解决所有冲突再继续变基".into(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::UNRESOLVED_CONFLICTS_REMAIN_RESOLVE_ALL_CONFLICTS_BEFORE_CONTINUING_THE_REBASE, &[])));
         }
         rebase.commit(None, &sig, None)?;
 
@@ -95,9 +92,7 @@ impl super::GitService {
             drop(rebase);
             let mut snapshot = self.snapshot_after_operation(repo)?;
             snapshot.rebase_in_progress = true;
-            self.progress.emit(OperationEvent::Progress(format!(
-                "变基暂停：正在重放提交 {current}/{total}，请解决冲突后继续"
-            )));
+            self.progress.emit(OperationEvent::Progress(crate::ui_i18n::format(domain_ui_resources::REBASE_PAUSED_WHILE_REPLAYING_COMMIT_RESOLVE_CONFLICTS_BEFORE_CONTINUING, &[("current", &format!("{}", current)), ("total", &format!("{}", total))])));
             return Ok(RebaseOutcome::Conflicts {
                 snapshot,
                 current,
@@ -108,7 +103,7 @@ impl super::GitService {
         rebase.finish(Some(&sig))?;
         drop(rebase);
         self.progress
-            .emit(OperationEvent::Finished("变基已完成".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::REBASE_COMPLETED).into()));
         let mut snapshot = self.snapshot_after_operation(repo)?;
         snapshot.rebase_in_progress = false;
         Ok(RebaseOutcome::Completed(snapshot))
@@ -117,7 +112,7 @@ impl super::GitService {
     /// 跳过当前冲突提交：reset 到 HEAD 清理冲突状态后推进操作指针。
     pub fn rebase_skip(&self, repo: &mut Repository) -> Result<RebaseOutcome> {
         self.progress
-            .emit(OperationEvent::Started("正在跳过变基提交".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::SKIPPING_REBASE_COMMIT).into()));
 
         let mut opts = RebaseOptions::new();
         let mut rebase =
@@ -144,9 +139,7 @@ impl super::GitService {
             drop(rebase);
             let mut snapshot = self.snapshot_after_operation(repo)?;
             snapshot.rebase_in_progress = true;
-            self.progress.emit(OperationEvent::Progress(format!(
-                "变基暂停：正在重放提交 {current}/{total}，请解决冲突后继续"
-            )));
+            self.progress.emit(OperationEvent::Progress(crate::ui_i18n::format(domain_ui_resources::REBASE_PAUSED_WHILE_REPLAYING_COMMIT_RESOLVE_CONFLICTS_BEFORE_CONTINUING, &[("current", &format!("{}", current)), ("total", &format!("{}", total))])));
             return Ok(RebaseOutcome::Conflicts {
                 snapshot,
                 current,
@@ -157,7 +150,7 @@ impl super::GitService {
         rebase.finish(Some(&sig))?;
         drop(rebase);
         self.progress
-            .emit(OperationEvent::Finished("变基已完成".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::REBASE_COMPLETED).into()));
         let mut snapshot = self.snapshot_after_operation(repo)?;
         snapshot.rebase_in_progress = false;
         Ok(RebaseOutcome::Completed(snapshot))
@@ -166,7 +159,7 @@ impl super::GitService {
     /// 中止变基，回到变基前的状态。
     pub fn rebase_abort(&self, repo: &mut Repository) -> Result<RepositorySnapshot> {
         self.progress
-            .emit(OperationEvent::Started("正在中止变基".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::ABORTING_REBASE).into()));
 
         let mut opts = RebaseOptions::new();
         let mut rebase =
@@ -175,7 +168,7 @@ impl super::GitService {
         drop(rebase);
 
         self.progress
-            .emit(OperationEvent::Finished("变基已中止".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::REBASE_ABORTED).into()));
         let mut snapshot = self.snapshot_after_operation(repo)?;
         snapshot.rebase_in_progress = false;
         Ok(snapshot)
@@ -190,10 +183,7 @@ impl super::GitService {
         remote_branch: &BranchName,
     ) -> Result<RepositorySnapshot> {
         super::validate_branch_name(&remote_branch.0)?;
-        self.progress.emit(OperationEvent::Started(format!(
-            "正在变基拉取 {}/{}",
-            remote.0, remote_branch.0
-        )));
+        self.progress.emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::PULLING_WITH_REBASE, &[("value0", &format!("{}", remote.0)), ("value1", &format!("{}", remote_branch.0))])));
         self.fetch_remote_refs(repo, remote)?;
 
         let remote_ref = self.remote_ref_for_remote_branch(repo, remote, &remote_branch.0)?;
@@ -229,10 +219,7 @@ impl super::GitService {
         drop(head_ref);
         drop(remote_ref);
 
-        self.progress.emit(OperationEvent::Finished(format!(
-            "已变基拉取 {}/{}",
-            remote.0, remote_branch.0
-        )));
+        self.progress.emit(OperationEvent::Finished(crate::ui_i18n::format(domain_ui_resources::PULLED_WITH_REBASE, &[("value0", &format!("{}", remote.0)), ("value1", &format!("{}", remote_branch.0))])));
         let mut snapshot = self.snapshot_after_operation(repo)?;
         snapshot.rebase_in_progress = false;
         Ok(snapshot)

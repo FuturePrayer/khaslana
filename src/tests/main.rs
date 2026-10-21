@@ -485,13 +485,17 @@ fn stale_submodule_remote_status_requests_do_not_match_current_state() {
 
 #[test]
 fn submodule_dialog_refreshes_after_all_update_modes() {
-    assert!(operation_refreshes_submodule_dialog("子模块已同步记录版本"));
-    assert!(operation_refreshes_submodule_dialog(
-        "子模块已更新到远端最新"
-    ));
-    assert!(operation_refreshes_submodule_dialog(
-        "子模块 deps/core 已更新到远端最新"
-    ));
+    use khaslana::ui_i18n::encode;
+    assert!(operation_refreshes_submodule_dialog(&encode(
+        crate::operation_ui_resources::SUBMODULE_SYNCED, &[],
+    )));
+    assert!(operation_refreshes_submodule_dialog(&encode(
+        crate::operation_ui_resources::SUBMODULES_UPDATED, &[],
+    )));
+    assert!(operation_refreshes_submodule_dialog(&encode(
+        crate::operation_ui_resources::SUBMODULE_UPDATED, &[("name", "deps/core")],
+    )));
+    assert!(!operation_refreshes_submodule_dialog("子模块已同步记录版本"));
     assert!(!operation_refreshes_submodule_dialog("已获取 origin"));
 }
 
@@ -547,11 +551,11 @@ fn submodule_state_labels_cover_common_states() {
 
 #[test]
 fn worktree_diff_load_completion_does_not_emit_toast() {
-    assert!(!should_notify_operation_finished("差异已加载", false, true));
-    assert!(should_notify_operation_finished("差异已加载", true, true));
-    assert!(should_notify_operation_finished("拉取完成", true, false));
+    assert!(!should_notify_operation_finished(&ui_encode(operation_ui_resources::DIFF_LOADED, &[]), false, true));
+    assert!(should_notify_operation_finished(&ui_encode(operation_ui_resources::DIFF_LOADED, &[]), true, true));
+    assert!(should_notify_operation_finished(&ui_encode(operation_ui_resources::PULLED, &[]), true, false));
     assert!(should_notify_operation_finished(
-        "提交已还原到暂存区",
+        &ui_encode(operation_ui_resources::COMMIT_UNDONE, &[]),
         true,
         false
     ));
@@ -561,21 +565,21 @@ fn worktree_diff_load_completion_does_not_emit_toast() {
 fn update_check_feedback_only_for_manual_checks() {
     // 手动检查：已是最新 → 成功气泡；真失败 → 错误气泡（带前缀）
     assert_eq!(
-        update_check_feedback("当前已是最新版本", UpdateCheckTrigger::Manual),
-        Some((AppToastKind::Success, "当前已是最新版本".to_string()))
+        update_check_feedback(&ui_encode(khaslana::ui_i18n::UiMessage::new("update.up_to_date", "当前已是最新版本", "Up to date"), &[]), UpdateCheckTrigger::Manual),
+        Some((AppToastKind::Success, ui_encode(khaslana::ui_i18n::UiMessage::new("update.up_to_date", "当前已是最新版本", "Up to date"), &[])))
     );
     assert_eq!(
         update_check_feedback("清单下载失败", UpdateCheckTrigger::Manual),
         Some((
             AppToastKind::Error,
-            "检查更新失败：清单下载失败".to_string()
+            khaslana::ui_i18n::encode_with_messages(app_messages::UPDATE_CHECK_FAILED, &[], &[("error", "清单下载失败")])
         ))
     );
     // 手动但静默：跳过版本（空 error）
     assert_eq!(update_check_feedback("", UpdateCheckTrigger::Manual), None);
     // 启动自动检查：一律不弹（每次启动都弹会打扰；发现新版本走弹窗）
     assert_eq!(
-        update_check_feedback("当前已是最新版本", UpdateCheckTrigger::Startup),
+        update_check_feedback(&ui_encode(khaslana::ui_i18n::UiMessage::new("update.up_to_date", "当前已是最新版本", "Up to date"), &[]), UpdateCheckTrigger::Startup),
         None
     );
     assert_eq!(
@@ -584,7 +588,7 @@ fn update_check_feedback_only_for_manual_checks() {
     );
     // 周期静默检查：无新版本/失败同样安静（发现新版本走可点击气泡）
     assert_eq!(
-        update_check_feedback("当前已是最新版本", UpdateCheckTrigger::Periodic),
+        update_check_feedback(&ui_encode(khaslana::ui_i18n::UiMessage::new("update.up_to_date", "当前已是最新版本", "Up to date"), &[]), UpdateCheckTrigger::Periodic),
         None
     );
     assert_eq!(
@@ -598,11 +602,11 @@ fn periodic_update_found_toast_dedupes_known_version() {
     // 未知版本 → 提示文案
     assert_eq!(
         periodic_update_found_toast(None, "2.0.2"),
-        Some("发现新版本 v2.0.2，点击查看更新".to_string())
+        Some(ui_encode(app_messages::UPDATE_NEW, &[("version", "2.0.2")]))
     );
     assert_eq!(
         periodic_update_found_toast(Some("2.0.1"), "2.0.2"),
-        Some("发现新版本 v2.0.2，点击查看更新".to_string())
+        Some(ui_encode(app_messages::UPDATE_NEW, &[("version", "2.0.2")]))
     );
     // 同版本已提示过（点 ✕ / 超时消失 = 稍后）→ 不再重复打扰
     assert_eq!(periodic_update_found_toast(Some("2.0.2"), "2.0.2"), None);
@@ -620,17 +624,17 @@ fn periodic_update_check_interval_is_twelve_hours() {
 #[test]
 fn branch_reference_operations_require_repository_refresh() {
     for message in [
-        "切换分支完成",
-        "远端分支已拉取到本地",
-        "分支已创建",
-        "分支已重命名",
-        "分支已删除",
-        "拉取远程引用完成",
-        "拉取完成",
-        "变基拉取完成",
-        "分支拉取完成",
-        "推送完成",
-        "upstream 已设置",
+        &ui_encode(operation_ui_resources::BRANCH_CHECKED_OUT, &[]),
+        &ui_encode(operation_ui_resources::REMOTE_BRANCH_PULLED, &[]),
+        &ui_encode(operation_ui_resources::BRANCH_CREATED, &[]),
+        &ui_encode(operation_ui_resources::BRANCH_RENAMED, &[]),
+        &ui_encode(operation_ui_resources::BRANCH_DELETED, &[]),
+        &ui_encode(operation_ui_resources::FETCHED, &[]),
+        &ui_encode(operation_ui_resources::PULLED, &[]),
+        &ui_encode(operation_ui_resources::REBASE_PULLED, &[]),
+        &ui_encode(operation_ui_resources::BRANCH_PULLED, &[]),
+        &ui_encode(operation_ui_resources::PUSHED, &[]),
+        &ui_encode(operation_ui_resources::UPSTREAM_SET, &[]),
     ] {
         assert!(
             operation_requires_repository_refresh(message),
@@ -641,7 +645,7 @@ fn branch_reference_operations_require_repository_refresh() {
 
 #[test]
 fn ordinary_worktree_operations_do_not_require_repository_refresh() {
-    for message in ["暂存完成", "取消暂存完成", "差异已加载", "应用贮藏完成"] {
+    for message in ["暂存完成", "取消暂存完成", &ui_encode(operation_ui_resources::DIFF_LOADED, &[]), &ui_encode(operation_ui_resources::STASH_APPLIED, &[])] {
         assert!(
             !operation_requires_repository_refresh(message),
             "{message} 不应触发仓库刷新"
@@ -652,17 +656,17 @@ fn ordinary_worktree_operations_do_not_require_repository_refresh() {
 #[test]
 fn commit_creating_operations_affect_commit_history() {
     for message in [
-        "提交完成",
-        "提交并推送完成",
-        "合并操作已完成",
-        "合并已完成",
-        "合并已中止",
-        "变基完成",
-        "变基已中止",
-        "分支已重置",
-        "回滚提交完成",
-        "撤销合并完成",
-        "提交已还原到暂存区",
+        &ui_encode(operation_ui_resources::COMMITTED, &[]),
+        &ui_encode(operation_ui_resources::COMMITTED_PUSHED, &[]),
+        &ui_encode(operation_ui_resources::MERGE_OPERATION_COMPLETED, &[]),
+        &ui_encode(operation_ui_resources::MERGE_COMPLETED, &[]),
+        &ui_encode(operation_ui_resources::MERGE_ABORTED, &[]),
+        &ui_encode(operation_ui_resources::REBASE_COMPLETED, &[]),
+        &ui_encode(operation_ui_resources::REBASE_ABORTED, &[]),
+        &ui_encode(operation_ui_resources::BRANCH_RESET, &[]),
+        &ui_encode(operation_ui_resources::COMMIT_REVERTED, &[]),
+        &ui_encode(operation_ui_resources::MERGE_REVERTED, &[]),
+        &ui_encode(operation_ui_resources::COMMIT_UNDONE, &[]),
     ] {
         assert!(
             operation_affects_commit_history(message),
@@ -677,9 +681,9 @@ fn history_untouched_operations_do_not_affect_commit_history() {
     for message in [
         "暂存完成",
         "取消暂存完成",
-        "差异已加载",
+        &ui_encode(operation_ui_resources::DIFF_LOADED, &[]),
         "已贮藏当前修改",
-        "应用贮藏完成",
+        &ui_encode(operation_ui_resources::STASH_APPLIED, &[]),
     ] {
         assert!(
             !operation_affects_commit_history(message),
@@ -693,24 +697,24 @@ fn commit_history_and_repository_refresh_message_lists_are_disjoint() {
     // 两个名单互不重叠：引用类操作走完整仓库重载（RepositoryFastLoaded 统一刷历史），
     // 提交/HEAD 类操作走 OperationFinished 直接刷历史。
     for message in [
-        "提交完成",
-        "提交并推送完成",
-        "合并操作已完成",
-        "合并已完成",
-        "合并已中止",
-        "变基完成",
-        "变基已中止",
-        "分支已重置",
-        "回滚提交完成",
-        "撤销合并完成",
-        "提交已还原到暂存区",
+        &ui_encode(operation_ui_resources::COMMITTED, &[]),
+        &ui_encode(operation_ui_resources::COMMITTED_PUSHED, &[]),
+        &ui_encode(operation_ui_resources::MERGE_OPERATION_COMPLETED, &[]),
+        &ui_encode(operation_ui_resources::MERGE_COMPLETED, &[]),
+        &ui_encode(operation_ui_resources::MERGE_ABORTED, &[]),
+        &ui_encode(operation_ui_resources::REBASE_COMPLETED, &[]),
+        &ui_encode(operation_ui_resources::REBASE_ABORTED, &[]),
+        &ui_encode(operation_ui_resources::BRANCH_RESET, &[]),
+        &ui_encode(operation_ui_resources::COMMIT_REVERTED, &[]),
+        &ui_encode(operation_ui_resources::MERGE_REVERTED, &[]),
+        &ui_encode(operation_ui_resources::COMMIT_UNDONE, &[]),
     ] {
         assert!(
             !operation_requires_repository_refresh(message),
             "{message} 不应同时出现在仓库刷新名单中"
         );
     }
-    for message in ["切换分支完成", "拉取完成", "推送完成", "upstream 已设置"] {
+    for message in [&ui_encode(operation_ui_resources::BRANCH_CHECKED_OUT, &[]), &ui_encode(operation_ui_resources::PULLED, &[]), &ui_encode(operation_ui_resources::PUSHED, &[]), &ui_encode(operation_ui_resources::UPSTREAM_SET, &[])] {
         assert!(
             !operation_affects_commit_history(message),
             "{message} 不应同时出现在提交历史刷新名单中"
@@ -1461,19 +1465,19 @@ fn repo_switcher_filter_ranks_name_matches_before_path_matches() {
 fn stage_operations_refresh_worktree_diff() {
     // 整文件（含行内 +/- 按钮路径）与按块/按行部分暂存的消息都触发差异面板跟随刷新
     for message in [
-        "暂存",
-        "取消暂存",
-        "已暂存选定文件",
-        "已暂存所有文件",
-        "已取消暂存选定文件",
-        "已取消暂存所有文件",
-        "已暂存选中改动",
-        "已取消暂存选中改动",
+        &ui_encode(operation_ui_resources::STAGED, &[]),
+        &ui_encode(operation_ui_resources::UNSTAGED, &[]),
+        &ui_encode(operation_ui_resources::STAGED_FILES, &[]),
+        &ui_encode(operation_ui_resources::STAGED_ALL, &[]),
+        &ui_encode(operation_ui_resources::UNSTAGED_FILES, &[]),
+        &ui_encode(operation_ui_resources::UNSTAGED_ALL, &[]),
+        &ui_encode(operation_ui_resources::STAGED_LINES, &[]),
+        &ui_encode(operation_ui_resources::UNSTAGED_LINES, &[]),
     ] {
         assert!(operation_refreshes_worktree_diff(message), "{message}");
     }
     // 其它操作不触发（差异加载/刷新/提交各有自己的路径）
-    for message in ["差异已加载", "已刷新", "提交完成", "拉取完成"] {
+    for message in [&ui_encode(operation_ui_resources::DIFF_LOADED, &[]), &ui_encode(operation_ui_resources::REFRESHED, &[]), &ui_encode(operation_ui_resources::COMMITTED, &[]), &ui_encode(operation_ui_resources::PULLED, &[])] {
         assert!(!operation_refreshes_worktree_diff(message), "{message}");
     }
 }
@@ -1776,8 +1780,8 @@ fn is_gitee_https_record_matches_host_key_form_only() {
 // 任何已收录关键词，只有状态栏小字。
 #[test]
 fn should_toast_completion_accepts_test_passed_messages() {
-    assert!(RepositoryView::should_toast_completion("凭据测试通过"));
-    assert!(RepositoryView::should_toast_completion("代理测试通过"));
+    assert!(RepositoryView::should_toast_completion(&khaslana::ui_i18n::encode(khaslana::ui_i18n::UiMessage::new("repository_credentials.credential_test_passed", "凭据测试通过", "Credential test passed"), &[])));
+    assert!(RepositoryView::should_toast_completion(&khaslana::ui_i18n::encode(khaslana::ui_i18n::UiMessage::new("repository_core.proxy_test_passed", "代理测试通过", "Proxy test passed"), &[])));
     // 非完成语义的消息仍然不打扰
     assert!(!RepositoryView::should_toast_completion("正在测试凭据连接"));
     assert!(!RepositoryView::should_toast_completion(
@@ -2067,4 +2071,21 @@ fn workflow_merge_snapshot_rejects_stale_identity_and_unknown_state() {
     tab.commit_message.set_value("运行已结束后的新草稿");
     assert!(!tab.sync_workflow_merge_message(&identity, Some(&merge)));
     assert_eq!(tab.commit_message.value, "运行已结束后的新草稿");
+}
+
+#[test]
+fn operation_refresh_identity_does_not_depend_on_display_language() {
+    use khaslana::{language::Language, ui_i18n::{encode, resolve_in}};
+    let fetched = encode(operation_ui_resources::FETCHED, &[]);
+    let committed = encode(operation_ui_resources::COMMITTED, &[]);
+    let staged = encode(operation_ui_resources::STAGED_LINES, &[]);
+    for language in [Language::ZhCn, Language::En] {
+        assert!(!resolve_in(language, &fetched).is_empty());
+        assert!(operation_requires_repository_refresh(&fetched));
+        assert!(operation_affects_commit_history(&committed));
+        assert!(operation_refreshes_worktree_diff(&staged));
+    }
+    // 显示字符串不是业务协议，不能重新混入刷新判断。
+    assert!(!operation_requires_repository_refresh("拉取远程引用完成"));
+    assert!(!operation_requires_repository_refresh("Remote references fetched"));
 }

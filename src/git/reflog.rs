@@ -1,5 +1,6 @@
 //! 直接读取 files 引用后端的本地日志；不能用会在缺失时创建日志的 libgit2 reflog API。
 
+use crate::types::domain_ui_resources;
 use std::fs::{self, File, Metadata};
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
@@ -62,12 +63,10 @@ impl Diagnostics {
     fn finish(mut self, sources_read: usize, sources_total: usize) -> Vec<String> {
         if self.omitted > 0 {
             self.messages
-                .push(format!("另有 {} 条日志诊断未逐条展示", self.omitted));
+                .push(crate::ui_i18n::format(domain_ui_resources::ADDITIONAL_REFLOG_DIAGNOSTICS_WERE_OMITTED, &[("value0", &format!("{}", self.omitted))]));
         }
         if sources_read < sources_total {
-            self.messages.push(format!(
-                "日志覆盖不完整：成功读取 {sources_read}/{sources_total} 个来源；缺失或不可读的来源未计入结果"
-            ));
+            self.messages.push(crate::ui_i18n::format(domain_ui_resources::INCOMPLETE_REFLOG_COVERAGE_READ_SOURCES_MISSING_OR_UNREADABLE_SOURCES_ARE_NOT_INCLUDE, &[("sources_read", &format!("{}", sources_read)), ("sources_total", &format!("{}", sources_total))]));
         }
         self.messages
     }
@@ -155,9 +154,7 @@ impl GitService {
                 return Ok(snapshot);
             }
         }
-        Err(GitError::Message(
-            "读取期间 Reflog 日志持续变化，无法生成一致快照，请重试".into(),
-        ))
+        Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_REFLOG_KEPT_CHANGING_DURING_READING_CANNOT_CREATE_A_CONSISTENT_SNAPSHOT_RETRY, &[])))
     }
 }
 
@@ -206,19 +203,15 @@ impl ReflogSnapshot {
 fn require_files_backend(repo: &Repository) -> Result<()> {
     match repo.config()?.get_string("extensions.refStorage") {
         Ok(backend) if backend.eq_ignore_ascii_case("files") => Ok(()),
-        Ok(backend) => Err(GitError::Message(format!(
-            "不支持引用后端 {backend}：本地 Reflog 目前仅支持 files 引用后端"
-        ))),
+        Ok(backend) => Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::UNSUPPORTED_REFERENCE_BACKEND_LOCAL_REFLOG_CURRENTLY_SUPPORTS_ONLY_THE_FILES_BACKEND, &[("backend", &format!("{}", backend))]))),
         Err(error) if error.code() == ErrorCode::NotFound => Ok(()),
-        Err(error) => Err(GitError::Message(format!(
-            "无法确认引用后端，未读取本地 Reflog：{error}"
-        ))),
+        Err(error) => Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_DETERMINE_THE_REFERENCE_BACKEND_LOCAL_REFLOG_WAS_NOT_READ, &[("error", &format!("{}", error))]))),
     }
 }
 
 fn check_cancelled(cancelled: &AtomicBool) -> Result<()> {
     if cancelled.load(Ordering::Relaxed) {
-        Err(GitError::Message("Reflog 读取已取消".into()))
+        Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::REFLOG_READING_CANCELLED, &[])))
     } else {
         Ok(())
     }
@@ -249,8 +242,8 @@ fn current_branch(repo: &Repository) -> Result<Option<String>> {
     }
     let target = head
         .symbolic_target()
-        .map_err(|error| GitError::Message(format!("HEAD 的符号引用名不可读：{error}")))?
-        .ok_or_else(|| GitError::Message("HEAD 缺少符号引用目标".into()))?;
+        .map_err(|error| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_READ_THE_HEAD_SYMBOLIC_REFERENCE_NAME, &[("error", &format!("{}", error))])))?
+        .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::HEAD_HAS_NO_SYMBOLIC_REFERENCE_TARGET, &[])))?;
     let Some(name) = target.strip_prefix("refs/heads/") else {
         return Ok(None);
     };
@@ -268,10 +261,10 @@ fn local_branches(repo: &Repository, cancelled: Option<&AtomicBool>) -> Result<V
         let full_name = branch
             .get()
             .name()
-            .map_err(|error| GitError::Message(format!("本地分支引用名不可读：{error}")))?;
+            .map_err(|error| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_READ_THE_LOCAL_BRANCH_REFERENCE_NAME, &[("error", &format!("{}", error))])))?;
         let name = full_name
             .strip_prefix("refs/heads/")
-            .ok_or_else(|| GitError::Message(format!("不是本地分支引用：{full_name}")))?;
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::NOT_A_LOCAL_BRANCH_REFERENCE, &[("full_name", &format!("{}", full_name))])))?;
         if branch_ref(name)? != full_name {
             return Err(GitError::InvalidBranchName(name.into()));
         }
@@ -307,14 +300,14 @@ fn select_sources(
         ReflogScope::CurrentBranch => match current_branch(repo)? {
             Some(name) => Ok(vec![branch(&name)?]),
             None => {
-                diagnostics.push("当前 HEAD 未指向本地分支，没有当前分支日志来源".into());
+                diagnostics.push(crate::ui_i18n::text(domain_ui_resources::HEAD_DOES_NOT_POINT_TO_A_LOCAL_BRANCH_THERE_IS_NO_CURRENT_BRANCH_REFLOG_SOURCE).into());
                 Ok(Vec::new())
             }
         },
         ReflogScope::LocalBranch(name) => {
             branch_ref(name)?;
             repo.find_branch(name, BranchType::Local)
-                .map_err(|error| GitError::Message(format!("无法读取本地分支 {name}：{error}")))?;
+                .map_err(|error| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_READ_LOCAL_BRANCH, &[("name", &format!("{}", name)), ("error", &format!("{}", error))])))?;
             Ok(vec![branch(name)?])
         }
         ReflogScope::All => {
@@ -336,17 +329,14 @@ fn observe_source(source: &LogSource) -> Result<Observation> {
     // 校验词法路径之外也核对现有文件的真实位置，阻止日志目录中的符号链接逃逸。
     let root = fs::canonicalize(&source.root)?;
     if !path.starts_with(&root) {
-        return Err(GitError::Message(format!(
-            "日志路径超出仓库目录，拒绝读取：{}",
-            source.ref_name
-        )));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::REFLOG_PATH_IS_OUTSIDE_THE_REPOSITORY_DIRECTORY_READING_REFUSED, &[("value0", &format!("{}", source.ref_name))])));
     }
     match fs::metadata(&path) {
         Ok(metadata) if metadata.is_file() => Ok(Observation::Ready {
             path,
             stamp: FileStamp::from_metadata(&metadata),
         }),
-        Ok(_) => Ok(Observation::Unavailable("日志路径不是普通文件".into())),
+        Ok(_) => Ok(Observation::Unavailable(crate::ui_i18n::text(domain_ui_resources::THE_REFLOG_PATH_IS_NOT_A_REGULAR_FILE).into())),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Observation::Missing),
         Err(error) => Ok(Observation::Unavailable(error.to_string())),
     }
@@ -374,10 +364,7 @@ fn read_snapshot_attempt(
         check_cancelled(cancelled)?;
         let failure = match before {
             Observation::Missing => {
-                diagnostics.push(format!(
-                    "{}：日志不存在，该来源未覆盖；只读服务未创建文件",
-                    source.ref_name
-                ));
+                diagnostics.push(crate::ui_i18n::format(domain_ui_resources::REFLOG_IS_MISSING_THIS_SOURCE_IS_NOT_COVERED_THE_READ_ONLY_SERVICE_DID_NOT_CREATE_ANY, &[("value0", &format!("{}", source.ref_name))]));
                 continue;
             }
             Observation::Unavailable(reason) => Some(reason.clone()),
@@ -403,7 +390,7 @@ fn read_snapshot_attempt(
             }
         };
         if let Some(reason) = failure {
-            let message = format!("{}：日志不可读，该来源未覆盖：{reason}", source.ref_name);
+            let message = crate::ui_i18n::format(domain_ui_resources::REFLOG_IS_UNREADABLE_THIS_SOURCE_IS_NOT_COVERED, &[("value0", &format!("{}", source.ref_name)), ("reason", &format!("{}", reason))]);
             if matches!(scope, ReflogScope::All) {
                 diagnostics.push(message);
             } else {
@@ -474,13 +461,13 @@ fn read_source(
         return Ok(None);
     }
     if before.len == 0 {
-        diagnostics.push(format!("{}：日志为空", source.ref_name));
+        diagnostics.push(crate::ui_i18n::format(domain_ui_resources::REFLOG_IS_EMPTY, &[("value0", &format!("{}", source.ref_name))]));
     }
     Ok(Some(entries))
 }
 
 fn raw_budget_error() -> GitError {
-    GitError::Message("Reflog 原始日志累计超过 64 MiB，未生成部分快照".into())
+    GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::RAW_REFLOG_DATA_EXCEEDS_64_MIB_NO_PARTIAL_SNAPSHOT_WAS_GENERATED, &[]))
 }
 
 fn read_records(
@@ -519,9 +506,7 @@ fn read_records(
             };
             if !overlong {
                 if content.len() > limits.line_bytes.saturating_sub(line.len()) {
-                    diagnostics.push(format!(
-                        "{ref_name} 第 {line_number} 行超过单行 256 KiB 上限，已跳过"
-                    ));
+                    diagnostics.push(crate::ui_i18n::format(domain_ui_resources::LINE_EXCEEDS_THE_256_KIB_LINE_LIMIT_SKIPPED, &[("ref_name", &format!("{}", ref_name)), ("line_number", &format!("{}", line_number))]));
                     line.clear();
                     overlong = true;
                 } else {
@@ -534,20 +519,14 @@ fn read_records(
                         Ok(entry) => {
                             budget.entries += 1;
                             if budget.entries > limits.entries {
-                                return Err(ReadFailure::Fatal(GitError::Message(
-                                    "Reflog 有效条目累计超过 200000 条，未生成部分快照".into(),
-                                )));
+                                return Err(ReadFailure::Fatal(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_REFLOG_EXCEEDS_200000_VALID_ENTRIES_NO_PARTIAL_SNAPSHOT_WAS_GENERATED, &[]))));
                             }
                             if entry.lossy {
-                                diagnostics.push(format!(
-                                    "{ref_name} 第 {line_number} 行含非 UTF-8 文本，已使用替换字符显示"
-                                ));
+                                diagnostics.push(crate::ui_i18n::format(domain_ui_resources::LINE_CONTAINS_NON_UTF_8_TEXT_DISPLAYED_WITH_REPLACEMENT_CHARACTERS, &[("ref_name", &format!("{}", ref_name)), ("line_number", &format!("{}", line_number))]));
                             }
                             entries.push(entry);
                         }
-                        Err(reason) => diagnostics.push(format!(
-                            "{ref_name} 第 {line_number} 行格式无效，已跳过：{reason}"
-                        )),
+                        Err(reason) => diagnostics.push(crate::ui_i18n::format(domain_ui_resources::LINE_HAS_AN_INVALID_FORMAT_SKIPPED, &[("ref_name", &format!("{}", ref_name)), ("line_number", &format!("{}", line_number)), ("reason", &format!("{}", reason))])),
                     }
                 }
                 line.clear();
@@ -558,9 +537,7 @@ fn read_records(
     }
     check_cancelled(cancelled).map_err(ReadFailure::Fatal)?;
     if !line.is_empty() || overlong {
-        diagnostics.push(format!(
-            "{ref_name} 第 {line_number} 行不完整（缺少行结束符），已跳过"
-        ));
+        diagnostics.push(crate::ui_i18n::format(domain_ui_resources::LINE_IS_INCOMPLETE_MISSING_LINE_ENDING_SKIPPED, &[("ref_name", &format!("{}", ref_name)), ("line_number", &format!("{}", line_number))]));
     }
     Ok(entries)
 }
@@ -575,28 +552,28 @@ fn parse_record(
         None => (line, &[][..]),
     };
     if header.len() < 83 || header.get(40) != Some(&b' ') || header.get(81) != Some(&b' ') {
-        return Err("缺少完整的两侧 OID");
+        return Err(crate::ui_i18n::text(domain_ui_resources::MISSING_FULL_OIDS_FOR_BOTH_SIDES));
     }
     let old_oid = parse_oid(&header[..40])?;
     let new_oid = parse_oid(&header[41..81])?;
     let mut actor_and_time = header[82..].rsplitn(3, |byte| *byte == b' ');
-    let timezone = actor_and_time.next().ok_or("缺少时区")?;
-    let timestamp = actor_and_time.next().ok_or("缺少时间戳")?;
-    let actor_and_email = actor_and_time.next().ok_or("缺少操作者")?;
+    let timezone = actor_and_time.next().ok_or(crate::ui_i18n::text(domain_ui_resources::MISSING_TIME_ZONE))?;
+    let timestamp = actor_and_time.next().ok_or(crate::ui_i18n::text(domain_ui_resources::MISSING_TIMESTAMP))?;
+    let actor_and_email = actor_and_time.next().ok_or(crate::ui_i18n::text(domain_ui_resources::MISSING_ACTOR))?;
     let timezone_offset = parse_timezone(timezone)?;
     let timestamp = std::str::from_utf8(timestamp)
         .ok()
         .and_then(|timestamp| timestamp.parse::<i64>().ok())
-        .ok_or("时间戳无效或超出范围")?;
+        .ok_or(crate::ui_i18n::text(domain_ui_resources::TIMESTAMP_IS_INVALID_OR_OUT_OF_RANGE))?;
     if actor_and_email.last() != Some(&b'>') {
-        return Err("操作者邮箱格式无效");
+        return Err(crate::ui_i18n::text(domain_ui_resources::INVALID_ACTOR_EMAIL_FORMAT));
     }
     let email_start = actor_and_email
         .iter()
         .rposition(|byte| *byte == b'<')
-        .ok_or("操作者邮箱格式无效")?;
+        .ok_or(crate::ui_i18n::text(domain_ui_resources::INVALID_ACTOR_EMAIL_FORMAT))?;
     if email_start == 0 || actor_and_email[email_start - 1] != b' ' {
-        return Err("操作者姓名与邮箱分隔无效");
+        return Err(crate::ui_i18n::text(domain_ui_resources::INVALID_SEPARATOR_BETWEEN_ACTOR_NAME_AND_EMAIL));
     }
     let actor = &actor_and_email[..email_start - 1];
     let actor_email = &actor_and_email[email_start + 1..actor_and_email.len() - 1];
@@ -619,12 +596,12 @@ fn parse_record(
 
 fn parse_oid(bytes: &[u8]) -> std::result::Result<String, &'static str> {
     if bytes.len() != 40 || !bytes.iter().all(u8::is_ascii_hexdigit) {
-        return Err("OID 必须是完整的 40 位十六进制值");
+        return Err(crate::ui_i18n::text(domain_ui_resources::OID_MUST_BE_A_FULL_40_DIGIT_HEXADECIMAL_VALUE));
     }
-    let text = std::str::from_utf8(bytes).map_err(|_| "OID 含非 ASCII 字节")?;
+    let text = std::str::from_utf8(bytes).map_err(|_| crate::ui_i18n::text(domain_ui_resources::OID_CONTAINS_NON_ASCII_BYTES))?;
     git2::Oid::from_str(text)
         .map(|oid| oid.to_string())
-        .map_err(|_| "OID 无效")
+        .map_err(|_| crate::ui_i18n::text(domain_ui_resources::INVALID_OID))
 }
 
 fn parse_timezone(bytes: &[u8]) -> std::result::Result<i32, &'static str> {
@@ -632,12 +609,12 @@ fn parse_timezone(bytes: &[u8]) -> std::result::Result<i32, &'static str> {
         || !matches!(bytes[0], b'+' | b'-')
         || !bytes[1..].iter().all(u8::is_ascii_digit)
     {
-        return Err("时区必须为 +/-HHMM");
+        return Err(crate::ui_i18n::text(domain_ui_resources::TIME_ZONE_MUST_BE_HHMM));
     }
     let hours = i32::from(bytes[1] - b'0') * 10 + i32::from(bytes[2] - b'0');
     let minutes = i32::from(bytes[3] - b'0') * 10 + i32::from(bytes[4] - b'0');
     if hours > 23 || minutes > 59 {
-        return Err("时区超出有效范围");
+        return Err(crate::ui_i18n::text(domain_ui_resources::TIME_ZONE_IS_OUT_OF_RANGE));
     }
     let offset = hours * 60 + minutes;
     Ok(if bytes[0] == b'-' { -offset } else { offset })

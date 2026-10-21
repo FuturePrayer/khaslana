@@ -1,5 +1,8 @@
 //! 设置中心的 Skill、MCP 与浏览器运行环境配置。
 
+#[path = "ui_resources/ai_extensions_view_messages.rs"]
+mod messages;
+
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use gpui::{Context, Div, FontWeight, SharedString, Window, div, prelude::*, px};
@@ -110,9 +113,9 @@ impl AiExtensionsUiState {
             skill_preview_request_id: 0,
             skill_picker_open: false,
             edit_mcp_name: None,
-            mcp_id: TextFieldState::new(cx, "例如 my-local-service"),
-            mcp_command: TextFieldState::new(cx, "例如 npx、uvx 或服务程序完整路径"),
-            mcp_args: TextFieldState::new(cx, "每行一个启动参数"),
+            mcp_id: TextFieldState::localized(cx, messages::EXAMPLE_MY_LOCAL_SERVICE),
+            mcp_command: TextFieldState::localized(cx, messages::EXAMPLE_NPX_UVX_OR_THE_FULL_SERVICE_EXECUTABLE_PATH),
+            mcp_args: TextFieldState::localized(cx, messages::ONE_STARTUP_ARGUMENT_PER_LINE),
             mcp_tools: Vec::new(),
             mcp_tools_expanded: false,
             mcp_auto_discover: true,
@@ -128,7 +131,7 @@ impl AiExtensionsUiState {
 
 fn guarded<T>(stage: &'static str, action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     catch_unwind(AssertUnwindSafe(action))
-        .unwrap_or_else(|payload| Err(format!("{stage}异常：{}", panic_message(payload))))
+        .unwrap_or_else(|payload| Err(khaslana::ui_i18n::format(messages::STAGE_FAILED_UNEXPECTEDLY_PAYLOAD, &[("stage", &(stage).to_string()), ("payload", &(panic_message(payload)).to_string())])))
 }
 
 fn primary_text(text: impl Into<SharedString>) -> Div {
@@ -143,8 +146,10 @@ fn meta_text(text: impl Into<SharedString>) -> Div {
 }
 
 fn error_text(text: impl Into<SharedString>) -> Div {
+    let text: SharedString = text.into();
+    let text = khaslana::ui_i18n::resolve(text.as_ref());
     div().text_size(px(ui_theme::TYPE_META))
-        .text_color(rgb(ui_theme::DESTRUCTIVE)).child(text.into())
+        .text_color(rgb(ui_theme::DESTRUCTIVE)).child(text)
 }
 
 fn settings_row(title: impl Into<SharedString>, description: impl Into<SharedString>) -> Div {
@@ -168,7 +173,7 @@ impl RepositoryView {
 
     fn load_ai_extensions(&mut self, inspect_runtime: bool) {
         let Some(data_dir) = khaslana::storage::active_data_dir() else {
-            self.ai_extensions.error = Some("无法定位应用数据目录".into());
+            self.ai_extensions.error = Some(khaslana::ui_i18n::encode(messages::CANNOT_LOCATE_THE_APPLICATION_DATA_DIRECTORY, &[]));
             return;
         };
         self.ai_extensions.load_request_id = self.ai_extensions.load_request_id.wrapping_add(1);
@@ -176,7 +181,7 @@ impl RepositoryView {
         self.ai_extensions.loading = true;
         let tx = self.tx.clone();
         self.tasks.spawn(TaskKind::External, move || {
-            let result = guarded("读取 AI 扩展设置", || {
+            let result = guarded(khaslana::ui_i18n::text(messages::READ_AI_EXTENSION_SETTINGS), || {
                 let skills = extensions::discover_skill_packages(&data_dir)
                     .map_err(|err| err.to_string())?;
                 let mcp = extensions::load_user_mcp_config(&data_dir)
@@ -217,12 +222,12 @@ impl RepositoryView {
     pub(crate) fn open_ai_skill_folder(&mut self, cx: &mut Context<Self>) {
         if !self.can_edit_ai_extensions() { return; }
         let Some(data_dir) = khaslana::storage::active_data_dir() else {
-            self.notify_error("无法定位应用数据目录", cx);
+            self.notify_error(khaslana::ui_i18n::text(messages::CANNOT_LOCATE_THE_APPLICATION_DATA_DIRECTORY), cx);
             return;
         };
         let folder = data_dir.join("workflow-skills");
         if let Err(error) = std::fs::create_dir_all(&folder).and_then(|()| open_directory(&folder)) {
-            self.notify_error(format!("打开 Skill 目录失败：{error}"), cx);
+            self.notify_error(khaslana::ui_i18n::format(messages::FAILED_TO_OPEN_THE_SKILL_FOLDER_ERROR, &[("error", &(error).to_string())]), cx);
         }
     }
 
@@ -246,8 +251,8 @@ impl RepositoryView {
         self.ai_extensions.skill_picker_open = true;
         let tx = self.tx.clone();
         self.tasks.spawn(TaskKind::External, move || {
-            let result = guarded("预览 Skill", || {
-                let folder = rfd::FileDialog::new().set_title("选择包含 SKILL.md 的文件夹")
+            let result = guarded(khaslana::ui_i18n::text(messages::PREVIEW_SKILL), || {
+                let folder = rfd::FileDialog::new().set_title(khaslana::ui_i18n::text(messages::SELECT_A_FOLDER_CONTAINING_SKILL_MD))
                     .pick_folder();
                 folder.map(|folder| extensions::preview_skill_folder(&folder)
                     .map_err(|err| err.to_string())).transpose()
@@ -277,14 +282,14 @@ impl RepositoryView {
             || self.active_dialog != Some(DialogState::AiSkillImport) { return; }
         let Some(preview) = self.ai_extensions.skill_preview.as_ref() else { return; };
         let Some(data_dir) = khaslana::storage::active_data_dir() else {
-            self.ai_extensions.error = Some("无法定位应用数据目录".into());
+            self.ai_extensions.error = Some(khaslana::ui_i18n::encode(messages::CANNOT_LOCATE_THE_APPLICATION_DATA_DIRECTORY, &[]));
             return;
         };
         let source = preview.source.clone();
         let expected_sha256 = preview.content_sha256.clone();
-        self.start_ai_extension_change("安装 Skill", move || {
+        self.start_ai_extension_change(khaslana::ui_i18n::text(messages::INSTALL_SKILL), move || {
             extensions::install_skill_folder(&data_dir, &source, &expected_sha256)
-                .map(|preview| format!("Skill {} 已安装", preview.name))
+                .map(|preview| khaslana::ui_i18n::format(messages::SKILL_NAME_INSTALLED, &[("name", &(preview.name).to_string())]))
                 .map_err(|err| err.to_string())
         });
     }
@@ -297,12 +302,12 @@ impl RepositoryView {
     pub(crate) fn remove_ai_skill(&mut self, name: String) {
         if !self.can_edit_ai_extensions() || self.ai_extensions.action_busy { return; }
         let Some(data_dir) = khaslana::storage::active_data_dir() else {
-            self.ai_extensions.error = Some("无法定位应用数据目录".into());
+            self.ai_extensions.error = Some(khaslana::ui_i18n::encode(messages::CANNOT_LOCATE_THE_APPLICATION_DATA_DIRECTORY, &[]));
             return;
         };
-        self.start_ai_extension_change("移除 Skill", move || {
+        self.start_ai_extension_change(khaslana::ui_i18n::text(messages::REMOVE_SKILL), move || {
             extensions::remove_skill_package(&data_dir, &name)
-                .map(|()| format!("Skill {name} 已移除"))
+                .map(|()| khaslana::ui_i18n::format(messages::SKILL_NAME_REMOVED, &[("name", &(name).to_string())]))
                 .map_err(|err| err.to_string())
         });
     }
@@ -351,7 +356,7 @@ impl RepositoryView {
         self.ai_extensions.error = None;
         let tx = self.tx.clone();
         self.tasks.spawn(TaskKind::External, move || {
-            let result = guarded("测试 MCP 服务", ||
+            let result = guarded(khaslana::ui_i18n::text(messages::TEST_MCP_SERVICE), ||
                 extensions::inspect_mcp_server_tools(&command, &args).map_err(|err| err.to_string()));
             send_ui_event(&tx, UiEvent::AiMcpToolsInspected { request_id, command, args, result });
         });
@@ -363,7 +368,7 @@ impl RepositoryView {
             || self.active_dialog != Some(DialogState::AiMcpForm) { return; }
         self.ai_extensions.mcp_testing = false;
         if command != self.ai_extensions.mcp_command.value.trim() || args != self.ai_mcp_args() {
-            self.ai_extensions.error = Some("启动命令或参数已更改，请重新测试连接".into());
+            self.ai_extensions.error = Some(khaslana::ui_i18n::encode(messages::THE_STARTUP_COMMAND_OR_ARGUMENTS_CHANGED_TEST_THE_CONNECTION_AGAIN, &[]));
             return;
         }
         match result {
@@ -381,7 +386,7 @@ impl RepositoryView {
         if !self.can_edit_ai_extensions() || self.ai_extensions.action_busy
             || self.ai_extensions.mcp_testing || self.active_dialog != Some(DialogState::AiMcpForm) { return; }
         let Some(data_dir) = khaslana::storage::active_data_dir() else {
-            self.ai_extensions.error = Some("无法定位应用数据目录".into());
+            self.ai_extensions.error = Some(khaslana::ui_i18n::encode(messages::CANNOT_LOCATE_THE_APPLICATION_DATA_DIRECTORY, &[]));
             return;
         };
         let name = self.ai_extensions.mcp_id.value.trim().to_owned();
@@ -407,9 +412,9 @@ impl RepositoryView {
             cached_tools,
         };
         let previous_name = self.ai_extensions.edit_mcp_name.clone();
-        self.start_ai_extension_change("保存 MCP 服务", move || {
+        self.start_ai_extension_change(khaslana::ui_i18n::text(messages::SAVE_MCP_SERVICE), move || {
             extensions::upsert_user_mcp_server(&data_dir, previous_name.as_deref(), &name, server)
-                .map(|()| format!("MCP 服务 {name} 已保存"))
+                .map(|()| khaslana::ui_i18n::format(messages::MCP_SERVICE_NAME_SAVED, &[("name", &(name).to_string())]))
                 .map_err(|err| err.to_string())
         });
     }
@@ -417,12 +422,12 @@ impl RepositoryView {
     pub(crate) fn remove_ai_mcp_server(&mut self, name: String) {
         if !self.can_edit_ai_extensions() || self.ai_extensions.action_busy { return; }
         let Some(data_dir) = khaslana::storage::active_data_dir() else {
-            self.ai_extensions.error = Some("无法定位应用数据目录".into());
+            self.ai_extensions.error = Some(khaslana::ui_i18n::encode(messages::CANNOT_LOCATE_THE_APPLICATION_DATA_DIRECTORY, &[]));
             return;
         };
-        self.start_ai_extension_change("移除 MCP 服务", move || {
+        self.start_ai_extension_change(khaslana::ui_i18n::text(messages::REMOVE_MCP_SERVICE), move || {
             extensions::remove_user_mcp_server(&data_dir, &name)
-                .map(|()| format!("MCP 服务 {name} 已移除"))
+                .map(|()| khaslana::ui_i18n::format(messages::MCP_SERVICE_NAME_REMOVED, &[("name", &(name).to_string())]))
                 .map_err(|err| err.to_string())
         });
     }
@@ -430,9 +435,9 @@ impl RepositoryView {
     pub(crate) fn set_ai_mcp_server_enabled(&mut self, name: String, enabled: bool) {
         if !self.can_edit_ai_extensions() || self.ai_extensions.action_busy { return; }
         let Some(data_dir) = khaslana::storage::active_data_dir() else { return; };
-        self.start_ai_extension_change("更新 MCP 服务状态", move || {
+        self.start_ai_extension_change(khaslana::ui_i18n::text(messages::UPDATE_MCP_SERVICE_STATUS), move || {
             extensions::set_user_mcp_server_enabled(&data_dir, &name, enabled)
-                .map(|()| format!("MCP 服务 {name} 已{}", if enabled { "启用" } else { "禁用" }))
+                .map(|()| khaslana::ui_i18n::format(if enabled { messages::MCP_ENABLED } else { messages::MCP_DISABLED }, &[("name", &name)]))
                 .map_err(|err| err.to_string())
         });
     }
@@ -487,13 +492,13 @@ impl RepositoryView {
         let preview = self.ai_extensions.skill_preview.as_ref();
         let busy = self.ai_extensions.action_busy;
         let picking = self.ai_extensions.skill_picker_open;
-        self.dialog_panel("安装本地 Skill", cx)
+        self.dialog_panel(khaslana::ui_i18n::text(messages::INSTALL_LOCAL_SKILL), cx)
             .w(px(570.0))
-            .child(meta_text("从文件夹读取 SKILL.md，确认内容后导入应用数据目录。"))
+            .child(meta_text(khaslana::ui_i18n::text(messages::READ_SKILL_MD_FROM_A_FOLDER_REVIEW_ITS_CONTENTS_THEN)))
             .child(h_flex().w_full().justify_between().gap_2().items_center()
                 .child(meta_text(preview.map(|item| item.source.display().to_string())
-                    .unwrap_or_else(|| "尚未选择文件夹".into())).flex_1().min_w(px(0.0)).truncate())
-                .child(self.button(if picking { "正在选择…" } else { "选择文件夹" }, !busy && !picking,
+                    .unwrap_or_else(|| khaslana::ui_i18n::text(messages::NO_FOLDER_SELECTED).into())).flex_1().min_w(px(0.0)).truncate())
+                .child(self.button(if picking { khaslana::ui_i18n::text(messages::SELECTING) } else { khaslana::ui_i18n::text(messages::SELECT_FOLDER) }, !busy && !picking,
                     |this, _, _| this.pick_ai_skill_folder(), cx)))
             .when_some(preview, |this, preview| {
                 this.child(v_flex().w_full().gap_2().p_3()
@@ -501,15 +506,15 @@ impl RepositoryView {
                     .border_color(rgb(ui_theme::BORDER_MUTED))
                     .child(primary_text(&preview.name))
                     .child(meta_text(&preview.description))
-                    .child(meta_text(format!("文件：{}", preview.files.join(" · ")))))
+                    .child(meta_text(khaslana::ui_i18n::format(messages::FILES_FILES, &[("files", &(preview.files.join(" · ")).to_string())]))))
             })
             .when_some(self.ai_extensions.error.as_ref(), |this, error| {
                 this.child(error_text(error.clone()))
             })
-            .child(meta_text("导入后可查看和移除；运行 Skill 时仍需确认工具权限。"))
+            .child(meta_text(khaslana::ui_i18n::text(messages::IMPORTED_SKILLS_CAN_BE_VIEWED_AND_REMOVED_RUNNING_A_SKILL)))
             .child(dialog_actions()
-                .child(self.button("取消", !busy, |this, _, _| this.close_dialog(), cx))
-                .child(self.primary_button("确认安装", preview.is_some() && !busy && !picking,
+                .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !busy, |this, _, _| this.close_dialog(), cx))
+                .child(self.primary_button(khaslana::ui_i18n::text(messages::CONFIRM_INSTALLATION), preview.is_some() && !busy && !picking,
                     |this, _, _| this.install_ai_skill(), cx)))
     }
 
@@ -520,16 +525,16 @@ impl RepositoryView {
             .map(|(_, description)| description.clone()).unwrap_or_default();
         let folder = khaslana::storage::active_data_dir()
             .map(|path| path.join("workflow-skills").join(name).display().to_string())
-            .unwrap_or_else(|| "无法定位应用数据目录".into());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::CANNOT_LOCATE_THE_APPLICATION_DATA_DIRECTORY).into());
         let name_for_remove = name.to_owned();
-        self.dialog_panel("Skill 详情", cx).w(px(560.0))
+        self.dialog_panel(khaslana::ui_i18n::text(messages::SKILL_DETAILS), cx).w(px(560.0))
             .child(primary_text(name.to_owned()))
             .child(meta_text(description))
             .child(meta_text(folder))
-            .child(meta_text("工作流调用前会展示所需 MCP 工具并请求确认。"))
+            .child(meta_text(khaslana::ui_i18n::text(messages::REQUIRED_MCP_TOOLS_ARE_SHOWN_FOR_APPROVAL_BEFORE_THE_WORKFLOW)))
             .child(dialog_actions()
-                .child(self.button("关闭", true, |this, _, _| this.close_dialog(), cx))
-                .child(self.danger_button("移除 Skill", !self.ai_extensions.action_busy,
+                .child(self.button(khaslana::ui_i18n::text(messages::CLOSE), true, |this, _, _| this.close_dialog(), cx))
+                .child(self.danger_button(khaslana::ui_i18n::text(messages::REMOVE_SKILL), !self.ai_extensions.action_busy,
                     move |this, _, cx| {
                         this.active_dialog = Some(DialogState::AiSkillRemove {
                             name: name_for_remove.clone() });
@@ -540,16 +545,16 @@ impl RepositoryView {
     pub(crate) fn render_ai_skill_remove_dialog(&self, name: &str,
         cx: &mut Context<Self>) -> impl IntoElement {
         let name_for_remove = name.to_owned();
-        self.dialog_panel("移除 Skill", cx)
-            .child(primary_text(format!("确定移除 {name}？")))
-            .child(meta_text("将删除应用数据目录中的该 Skill 文件夹。"))
+        self.dialog_panel(khaslana::ui_i18n::text(messages::REMOVE_SKILL), cx)
+            .child(primary_text(khaslana::ui_i18n::format(messages::REMOVE_NAME, &[("name", &(name).to_string())])))
+            .child(meta_text(khaslana::ui_i18n::text(messages::THIS_DELETES_THE_SKILL_FOLDER_FROM_THE_APPLICATION_DATA_DIRECTORY)))
             .when_some(self.ai_extensions.error.as_ref(), |this, error| {
                 this.child(error_text(error.clone()))
             })
             .child(dialog_actions()
-                .child(self.button("取消", !self.ai_extensions.action_busy,
+                .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.ai_extensions.action_busy,
                     |this, _, _| this.close_dialog(), cx))
-                .child(self.danger_button("确认移除", !self.ai_extensions.action_busy,
+                .child(self.danger_button(khaslana::ui_i18n::text(messages::CONFIRM_REMOVAL), !self.ai_extensions.action_busy,
                     move |this, _, _| this.remove_ai_skill(name_for_remove.clone()), cx)))
     }
 
@@ -566,22 +571,22 @@ impl RepositoryView {
         let (panel_width, panel_height) = dialog_panel_size(window, 590.0, 620.0);
         let handle = self.scroll_handle("ai-mcp-form-scroll");
         let mut body = v_flex().w_full().gap_2()
-            .child(meta_text("填写命令和参数即可保存；首次使用时连接。测试连接只读取工具列表。"))
-            .child(primary_text("服务 ID"))
+            .child(meta_text(khaslana::ui_i18n::text(messages::ENTER_A_COMMAND_AND_ARGUMENTS_TO_SAVE_THE_SERVICE_CONNECTS)))
+            .child(primary_text(khaslana::ui_i18n::text(messages::SERVICE_ID)))
             .child(self.input(FieldId::AiMcpServerId, false, window, cx))
-            .child(primary_text("启动命令"))
+            .child(primary_text(khaslana::ui_i18n::text(messages::STARTUP_COMMAND)))
             .child(self.input(FieldId::AiMcpCommand, false, window, cx))
-            .child(meta_text("可直接填写 npx，无需添加 .cmd；每个参数单独一行，无需加引号。"))
-            .child(primary_text("启动参数（每行一个）"))
+            .child(meta_text(khaslana::ui_i18n::text(messages::YOU_CAN_ENTER_NPX_DIRECTLY_WITHOUT_CMD_PUT_EACH_ARGUMENT)))
+            .child(primary_text(khaslana::ui_i18n::text(messages::STARTUP_ARGUMENTS_ONE_PER_LINE)))
             .child(self.input(FieldId::AiMcpArgs, false, window, cx))
             .child(h_flex().w_full().justify_between().items_center()
-                .child(meta_text(if verified { "本次连接测试成功" } else { "尚未验证当前配置，可直接保存" }))
-                .child(self.button("测试连接", !busy && !testing,
+                .child(meta_text(if verified { khaslana::ui_i18n::text(messages::CONNECTION_TEST_SUCCEEDED) } else { khaslana::ui_i18n::text(messages::THIS_CONFIGURATION_HAS_NOT_BEEN_VERIFIED_YOU_CAN_STILL_SAVE) }))
+                .child(self.button(khaslana::ui_i18n::text(messages::TEST_CONNECTION), !busy && !testing,
                     |this, _, _| this.test_ai_mcp_form(), cx)));
-        if testing { body = body.child(meta_text("正在连接 MCP 服务并读取工具列表…")); }
+        if testing { body = body.child(meta_text(khaslana::ui_i18n::text(messages::CONNECTING_TO_THE_MCP_SERVICE_AND_READING_ITS_TOOL_LIST))); }
         let form_request_id = self.ai_extensions.mcp_test_request_id;
         body = body.child(h_flex().w_full().items_center().justify_between().gap_2()
-            .child(meta_text("自动发现工具（运行前仍需授权）"))
+            .child(meta_text(khaslana::ui_i18n::text(messages::AUTOMATICALLY_DISCOVER_TOOLS_APPROVAL_IS_STILL_REQUIRED_BEFORE_RUNNING)))
             .child(self.toggle_switch("ai-mcp-auto-discover", self.ai_extensions.mcp_auto_discover,
                 busy || testing, move |this, checked, _, _| {
                     if this.active_dialog == Some(DialogState::AiMcpForm)
@@ -590,7 +595,7 @@ impl RepositoryView {
                     }
                 }, cx)));
         let mut tools = v_flex().w_full().gap_2()
-            .child(meta_text("可关闭不需要的工具；读写类型用于运行前的提示，未知工具默认按写入处理。"));
+            .child(meta_text(khaslana::ui_i18n::text(messages::DISABLE_TOOLS_YOU_DO_NOT_NEED_READ_WRITE_TYPES_ARE)));
         for (index, tool) in self.ai_extensions.mcp_tools.iter().enumerate() {
             let access_view = cx.entity();
             let form_request_id = self.ai_extensions.mcp_test_request_id;
@@ -609,7 +614,7 @@ impl RepositoryView {
                     .child(primary_text(tool.name.clone()).truncate()))
                 .child(Button::new(format!("ai-mcp-access-{index}")).small()
                     .disabled(busy || testing)
-                    .label(if tool.access == WorkflowToolAccess::Read { "读取" } else { "写入" })
+                    .label(if tool.access == WorkflowToolAccess::Read { khaslana::ui_i18n::text(messages::READ) } else { khaslana::ui_i18n::text(messages::WRITE) })
                     .on_click(move |_, _, cx| {
                         access_view.update(cx, |this, cx| {
                             if this.active_dialog == Some(DialogState::AiMcpForm)
@@ -629,10 +634,9 @@ impl RepositoryView {
             let form_request_id = self.ai_extensions.mcp_test_request_id;
             body = body.child(Collapsible::new().w_full().gap_2().open(expanded)
                 .child(h_flex().w_full().items_center().justify_between().gap_2()
-                    .child(meta_text(format!("工具记录 {} 个 · 白名单 {enabled_count} 个",
-                        self.ai_extensions.mcp_tools.len())))
+                    .child(meta_text(khaslana::ui_i18n::format(messages::MCP_TOOLS_TOOLS_RECORDED_ENABLED_COUNT_ALLOWED, &[("mcp_tools", &(self.ai_extensions.mcp_tools.len()).to_string()), ("enabled_count", &(enabled_count).to_string())])))
                     .child(settings_command_button("ai-mcp-tools-advanced",
-                        if expanded { "收起高级配置" } else { "高级配置（可选）" },
+                        if expanded { khaslana::ui_i18n::text(messages::COLLAPSE_ADVANCED_OPTIONS) } else { khaslana::ui_i18n::text(messages::ADVANCED_OPTIONS_OPTIONAL) },
                         SettingsButtonTone::Secondary, true, cx)
                         .icon(if expanded { IconName::ChevronUp } else { IconName::ChevronDown })
                         .on_click(move |_, _, cx| {
@@ -646,23 +650,23 @@ impl RepositoryView {
                         })))
                 .content(tools));
             if !self.ai_extensions.mcp_auto_discover && !selected_tools {
-                body = body.child(error_text("请至少启用一个工具后保存服务"));
+                body = body.child(error_text(khaslana::ui_i18n::text(messages::ENABLE_AT_LEAST_ONE_TOOL_BEFORE_SAVING_THE_SERVICE)));
             }
         }
         if let Some(error) = &self.ai_extensions.error {
             body = body.child(error_text(error.clone()));
         }
-        body = body.child(meta_text("自动发现的未知工具按写入请求授权；关闭自动发现后只允许白名单工具。"));
+        body = body.child(meta_text(khaslana::ui_i18n::text(messages::UNKNOWN_DISCOVERED_TOOLS_REQUEST_WRITE_ACCESS_WITH_DISCOVERY_OFF_ONLY)));
         let viewport = div().id("ai-mcp-form-viewport").size_full().min_h(px(0.0))
             .overflow_y_scroll().track_scroll(&handle).child(body.flex_none());
-        self.dialog_panel(if editing { "编辑 MCP 服务" } else { "添加 MCP 服务" }, cx)
+        self.dialog_panel(if editing { khaslana::ui_i18n::text(messages::EDIT_MCP_SERVICE) } else { khaslana::ui_i18n::text(messages::ADD_MCP_SERVICE) }, cx)
             .w(panel_width).h(panel_height).overflow_hidden()
             .child(scrollable_frame_when("ai-mcp-form-scroll", ScrollbarMode::Vertical,
                 viewport.into_any_element(), handle, true, cx))
             .child(dialog_actions().flex_none().bg(rgb(ui_theme::WB_PANEL))
-                .child(self.button("取消", !busy && !testing,
+                .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !busy && !testing,
                     |this, _, _| this.close_dialog(), cx))
-                .child(self.primary_button("保存服务", !busy && !testing
+                .child(self.primary_button(khaslana::ui_i18n::text(messages::SAVE_SERVICE), !busy && !testing
                     && !self.ai_extensions.mcp_id.value.trim().is_empty()
                     && !self.ai_extensions.mcp_command.value.trim().is_empty()
                     && (self.ai_extensions.mcp_auto_discover || selected_tools),
@@ -672,16 +676,16 @@ impl RepositoryView {
     pub(crate) fn render_ai_mcp_remove_dialog(&self, name: &str,
         cx: &mut Context<Self>) -> impl IntoElement {
         let name_for_remove = name.to_owned();
-        self.dialog_panel("移除 MCP 服务", cx)
-            .child(primary_text(format!("确定移除 {name}？")))
-            .child(meta_text("工作流中引用此服务的步骤将无法再运行。"))
+        self.dialog_panel(khaslana::ui_i18n::text(messages::REMOVE_MCP_SERVICE), cx)
+            .child(primary_text(khaslana::ui_i18n::format(messages::REMOVE_NAME, &[("name", &(name).to_string())])))
+            .child(meta_text(khaslana::ui_i18n::text(messages::WORKFLOW_STEPS_REFERENCING_THIS_SERVICE_WILL_NO_LONGER_RUN)))
             .when_some(self.ai_extensions.error.as_ref(), |this, error| {
                 this.child(error_text(error.clone()))
             })
             .child(dialog_actions()
-                .child(self.button("取消", !self.ai_extensions.action_busy,
+                .child(self.button(khaslana::ui_i18n::text(messages::CANCEL), !self.ai_extensions.action_busy,
                     |this, _, _| this.close_dialog(), cx))
-                .child(self.danger_button("确认移除", !self.ai_extensions.action_busy,
+                .child(self.danger_button(khaslana::ui_i18n::text(messages::CONFIRM_REMOVAL), !self.ai_extensions.action_busy,
                     move |this, _, _| this.remove_ai_mcp_server(name_for_remove.clone()), cx)))
     }
 
@@ -689,19 +693,19 @@ impl RepositoryView {
         cx: &mut Context<Self>) -> impl IntoElement {
         let ready = self.ai_extensions.runtime.as_ref()
             .is_some_and(|runtime| runtime.mcp_ready);
-        let mut panel = self.dialog_panel("内置 browser.edge 服务", cx).w(px(520.0))
-            .child(meta_text(if ready { "运行组件已就绪" } else {
-                "运行组件尚未安装，可在运行环境页下载并启用"
+        let mut panel = self.dialog_panel(khaslana::ui_i18n::text(messages::BUILT_IN_BROWSER_EDGE_SERVICE), cx).w(px(520.0))
+            .child(meta_text(if ready { khaslana::ui_i18n::text(messages::RUNTIME_COMPONENTS_ARE_READY) } else {
+                khaslana::ui_i18n::text(messages::RUNTIME_COMPONENTS_ARE_NOT_INSTALLED_DOWNLOAD_AND_ENABLE_THEM_ON)
             }))
-            .child(meta_text("客户端管理的 Microsoft Edge MCP；工作流调用前会逐次确认。"));
+            .child(meta_text(khaslana::ui_i18n::text(messages::CLIENT_MANAGED_MICROSOFT_EDGE_MCP_APPROVAL_IS_REQUESTED_BEFORE_EACH)));
         for (name, tool) in extensions::builtin_browser_server().tools {
             let access = match tool.access {
-                WorkflowToolAccess::Read => "读取",
-                WorkflowToolAccess::Write => "写入",
+                WorkflowToolAccess::Read => khaslana::ui_i18n::text(messages::READ),
+                WorkflowToolAccess::Write => khaslana::ui_i18n::text(messages::WRITE),
             };
             panel = panel.child(settings_row(name, access));
         }
         panel.child(dialog_actions()
-            .child(self.button("关闭", true, |this, _, _| this.close_dialog(), cx)))
+            .child(self.button(khaslana::ui_i18n::text(messages::CLOSE), true, |this, _, _| this.close_dialog(), cx)))
     }
 }

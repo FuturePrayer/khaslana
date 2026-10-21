@@ -1,3 +1,4 @@
+use crate::types::domain_ui_resources;
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -245,7 +246,7 @@ impl MemoryCredentialStore {
     fn insert_secret(&self, record: &CredentialRecord, credential: &GitCredential) -> Result<()> {
         self.secrets
             .lock()
-            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_CACHE_IS_IN_AN_INVALID_STATE, &[])))?
             .insert(record.id.clone(), credential.secret_for_keyring());
         Ok(())
     }
@@ -265,7 +266,7 @@ impl CredentialStore for MemoryCredentialStore {
         let records = self
             .index
             .lock()
-            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_CACHE_IS_IN_AN_INVALID_STATE, &[])))?
             .clone();
         let rejected = rejected_record_ids.iter().cloned().collect::<BTreeSet<_>>();
         let Some(record) = select_matching_record(&records, request, &rejected) else {
@@ -274,7 +275,7 @@ impl CredentialStore for MemoryCredentialStore {
         let secret = self
             .secrets
             .lock()
-            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_CACHE_IS_IN_AN_INVALID_STATE, &[])))?
             .get(&record.id)
             .cloned();
         let Some(secret) = secret else {
@@ -290,7 +291,7 @@ impl CredentialStore for MemoryCredentialStore {
         let mut index = self
             .index
             .lock()
-            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?;
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_CACHE_IS_IN_AN_INVALID_STATE, &[])))?;
         if let Some(existing) = index.iter_mut().find(|candidate| candidate.id == record.id) {
             *existing = updated.clone();
         }
@@ -312,9 +313,9 @@ impl CredentialStore for MemoryCredentialStore {
         let mut index = self
             .index
             .lock()
-            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?;
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_CACHE_IS_IN_AN_INVALID_STATE, &[])))?;
         let metadata = remote_metadata(&request.url)
-            .ok_or_else(|| GitError::Credential("无法解析远端地址，不能保存凭据".to_string()))?;
+            .ok_or_else(|| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_PARSE_THE_REMOTE_URL_CREDENTIALS_CANNOT_BE_SAVED, &[])))?;
         let now = next_record_timestamp(&index);
         let display_name = credential.display_name().and_then(normalize_display_name);
         let record = if let Some(existing) = index.iter_mut().find(|record| {
@@ -357,7 +358,7 @@ impl CredentialStore for MemoryCredentialStore {
         let ids = self
             .index
             .lock()
-            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_CACHE_IS_IN_AN_INVALID_STATE, &[])))?
             .iter()
             .filter(|record| {
                 normalize_remote_url(&record.remote_url) == normalize_remote_url(&request.url)
@@ -374,11 +375,11 @@ impl CredentialStore for MemoryCredentialStore {
     fn delete_record(&self, record_id: &str) -> Result<()> {
         self.index
             .lock()
-            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_CACHE_IS_IN_AN_INVALID_STATE, &[])))?
             .retain(|record| record.id != record_id);
         self.secrets
             .lock()
-            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_CACHE_IS_IN_AN_INVALID_STATE, &[])))?
             .remove(record_id);
         Ok(())
     }
@@ -387,7 +388,7 @@ impl CredentialStore for MemoryCredentialStore {
         let mut records = self
             .index
             .lock()
-            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_CACHE_IS_IN_AN_INVALID_STATE, &[])))?
             .clone();
         sort_records(&mut records);
         Ok(records)
@@ -397,7 +398,7 @@ impl CredentialStore for MemoryCredentialStore {
         let record = self
             .index
             .lock()
-            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_CACHE_IS_IN_AN_INVALID_STATE, &[])))?
             .iter()
             .find(|record| record.id == record_id)
             .cloned();
@@ -407,7 +408,7 @@ impl CredentialStore for MemoryCredentialStore {
         let secret = self
             .secrets
             .lock()
-            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_CACHE_IS_IN_AN_INVALID_STATE, &[])))?
             .get(record_id)
             .cloned();
         Ok(secret.and_then(|secret| GitCredential::from_record(&record, secret)))
@@ -417,15 +418,15 @@ impl CredentialStore for MemoryCredentialStore {
         let exists = self
             .index
             .lock()
-            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_CACHE_IS_IN_AN_INVALID_STATE, &[])))?
             .iter()
             .any(|record| record.id == record_id);
         if !exists {
-            return Err(GitError::Credential("凭据记录不存在".to_string()));
+            return Err(GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_RECORD_DOES_NOT_EXIST, &[])));
         }
         self.secrets
             .lock()
-            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_CACHE_IS_IN_AN_INVALID_STATE, &[])))?
             .insert(record_id.to_string(), secret.to_string());
         Ok(())
     }
@@ -434,7 +435,7 @@ impl CredentialStore for MemoryCredentialStore {
         let mut index = self
             .index
             .lock()
-            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?;
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_CACHE_IS_IN_AN_INVALID_STATE, &[])))?;
         let now = next_record_timestamp(&index);
         let Some(record) = index.iter_mut().find(|record| record.id == record_id) else {
             return Ok(None);
@@ -450,14 +451,14 @@ impl CredentialStore for MemoryCredentialStore {
         remote_url: &str,
     ) -> Result<CredentialRecord> {
         let metadata = remote_metadata(remote_url)
-            .ok_or_else(|| GitError::Credential("无法解析远端地址，不能绑定凭据".to_string()))?;
+            .ok_or_else(|| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_PARSE_THE_REMOTE_URL_CREDENTIALS_CANNOT_BE_BOUND, &[])))?;
         let mut index = self
             .index
             .lock()
-            .map_err(|_| GitError::Credential("凭据缓存状态异常".to_string()))?;
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_CACHE_IS_IN_AN_INVALID_STATE, &[])))?;
         let now = next_record_timestamp(&index);
         let Some(record) = index.iter_mut().find(|record| record.id == record_id) else {
-            return Err(GitError::Credential("凭据记录不存在".into()));
+            return Err(GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_RECORD_DOES_NOT_EXIST, &[])));
         };
         record.remote_url = remote_url.to_string();
         record.host = metadata.host_key;
@@ -515,15 +516,13 @@ impl KeyringCredentialStore {
         let mut initialized = self
             .initialized
             .lock()
-            .map_err(|_| GitError::Credential("系统凭据管理器初始化状态异常".into()))?;
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_SYSTEM_CREDENTIAL_MANAGER_INITIALIZATION_STATE_IS_INVALID, &[])))?;
         if !*initialized {
             // keyring 4.1：平台原生凭据库由 v1 API 一次性初始化并注册为
             // keyring-core 默认库；store_status() 触发初始化并返回可用性。
             // 不可用时报错，禁止任何明文回退。
             if let Err(err) = keyring::Entry::store_status() {
-                return Err(GitError::Credential(format!(
-                    "系统凭据管理器不可用：{err:?}"
-                )));
+                return Err(GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_SYSTEM_CREDENTIAL_MANAGER_IS_UNAVAILABLE, &[("err", &format!("{:?}", err))])));
             }
             *initialized = true;
         }
@@ -542,7 +541,7 @@ impl KeyringCredentialStore {
 
     fn entry_for_record(record_id: &str, username: &str) -> Result<keyring_core::Entry> {
         keyring_core::Entry::new(&new_keyring_service(record_id), username)
-            .map_err(|err| GitError::Credential(format!("系统凭据条目创建失败：{err:?}")))
+            .map_err(|err| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CREATE_A_SYSTEM_CREDENTIAL_ENTRY, &[("err", &format!("{:?}", err))])))
     }
 
     fn old_user(request: &CredentialRequest) -> String {
@@ -560,11 +559,11 @@ impl KeyringCredentialStore {
         self.ensure_store()?;
         let user = Self::old_user(request);
         let entry = keyring_core::Entry::new(&Self::old_service(request), &user)
-            .map_err(|err| GitError::Credential(format!("系统凭据条目创建失败：{err:?}")))?;
+            .map_err(|err| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CREATE_A_SYSTEM_CREDENTIAL_ENTRY, &[("err", &format!("{:?}", err))])))?;
         let secret = match entry.get_password() {
             Ok(secret) => secret,
             Err(keyring_core::Error::NoEntry) => return Ok(None),
-            Err(err) => return Err(GitError::Credential(format!("系统凭据读取失败：{err:?}"))),
+            Err(err) => return Err(GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_SYSTEM_CREDENTIALS, &[("err", &format!("{:?}", err))]))),
         };
 
         let Some(mut credential) = GitCredential::from_old_storage(
@@ -585,7 +584,7 @@ impl KeyringCredentialStore {
         let _index_guard = self
             .index_lock
             .lock()
-            .map_err(|_| GitError::Credential("凭据索引锁状态异常".to_string()))?;
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_INDEX_LOCK_IS_IN_AN_INVALID_STATE, &[])))?;
         let mut index = self.load_index()?;
         let now = next_record_timestamp(&index.records);
         let touched = index
@@ -629,7 +628,7 @@ impl CredentialStore for KeyringCredentialStore {
                 self.delete_record(&record.id)?;
                 return Ok(None);
             }
-            Err(err) => return Err(GitError::Credential(format!("系统凭据读取失败：{err:?}"))),
+            Err(err) => return Err(GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_SYSTEM_CREDENTIALS, &[("err", &format!("{:?}", err))]))),
         };
         let Some(credential) = GitCredential::from_record(&record, secret) else {
             return Ok(None);
@@ -651,9 +650,9 @@ impl CredentialStore for KeyringCredentialStore {
         let _index_guard = self
             .index_lock
             .lock()
-            .map_err(|_| GitError::Credential("凭据索引锁状态异常".to_string()))?;
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_INDEX_LOCK_IS_IN_AN_INVALID_STATE, &[])))?;
         let metadata = remote_metadata(&request.url)
-            .ok_or_else(|| GitError::Credential("无法解析远端地址，不能保存凭据".to_string()))?;
+            .ok_or_else(|| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_PARSE_THE_REMOTE_URL_CREDENTIALS_CANNOT_BE_SAVED, &[])))?;
         let mut index = self.load_index()?;
         let now = now_seconds();
         let display_name = credential.display_name().and_then(normalize_display_name);
@@ -692,7 +691,7 @@ impl CredentialStore for KeyringCredentialStore {
         let entry = Self::entry_for_record(&record.id, credential.username())?;
         entry
             .set_password(&credential.secret_for_keyring())
-            .map_err(|err| GitError::Credential(format!("系统凭据写入失败：{err:?}")))?;
+            .map_err(|err| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_WRITE_SYSTEM_CREDENTIALS, &[("err", &format!("{:?}", err))])))?;
         if let Err(err) = self.save_index(&index) {
             // 索引写失败时回滚刚写入的 keyring 条目，避免产生 UI 不可见、
             // 也无法删除的孤儿 secret。
@@ -719,10 +718,10 @@ impl CredentialStore for KeyringCredentialStore {
 
         self.ensure_store()?;
         let entry = keyring_core::Entry::new(&Self::old_service(request), username)
-            .map_err(|err| GitError::Credential(format!("系统凭据条目创建失败：{err:?}")))?;
+            .map_err(|err| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CREATE_A_SYSTEM_CREDENTIAL_ENTRY, &[("err", &format!("{:?}", err))])))?;
         match entry.delete_credential() {
             Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
-            Err(err) => Err(GitError::Credential(format!("系统凭据删除失败：{err:?}"))),
+            Err(err) => Err(GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_DELETE_SYSTEM_CREDENTIALS, &[("err", &format!("{:?}", err))]))),
         }
     }
 
@@ -731,7 +730,7 @@ impl CredentialStore for KeyringCredentialStore {
         let _index_guard = self
             .index_lock
             .lock()
-            .map_err(|_| GitError::Credential("凭据索引锁状态异常".to_string()))?;
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_INDEX_LOCK_IS_IN_AN_INVALID_STATE, &[])))?;
         let mut index = self.load_index()?;
         let removed = index
             .records
@@ -748,7 +747,7 @@ impl CredentialStore for KeyringCredentialStore {
         match entry.delete_credential() {
             Ok(()) | Err(keyring_core::Error::NoEntry) => {}
             Err(err) => {
-                return Err(GitError::Credential(format!("系统凭据删除失败：{err:?}")));
+                return Err(GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_DELETE_SYSTEM_CREDENTIALS, &[("err", &format!("{:?}", err))])));
             }
         }
         // Gitee 自动续期材料随记录一并清理（best-effort，失败不阻断删除）。
@@ -778,7 +777,7 @@ impl CredentialStore for KeyringCredentialStore {
         match entry.get_password() {
             Ok(secret) => Ok(GitCredential::from_record(&record, secret)),
             Err(keyring_core::Error::NoEntry) => Ok(None),
-            Err(err) => Err(GitError::Credential(format!("系统凭据读取失败：{err:?}"))),
+            Err(err) => Err(GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_SYSTEM_CREDENTIALS, &[("err", &format!("{:?}", err))]))),
         }
     }
 
@@ -787,19 +786,19 @@ impl CredentialStore for KeyringCredentialStore {
         let _index_guard = self
             .index_lock
             .lock()
-            .map_err(|_| GitError::Credential("凭据索引锁状态异常".to_string()))?;
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_INDEX_LOCK_IS_IN_AN_INVALID_STATE, &[])))?;
         let index = self.load_index()?;
         let Some(record) = index
             .records
             .into_iter()
             .find(|record| record.id == record_id)
         else {
-            return Err(GitError::Credential("凭据记录不存在".to_string()));
+            return Err(GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_RECORD_DOES_NOT_EXIST, &[])));
         };
         let entry = Self::entry_for_record(record_id, &record.username)?;
         entry
             .set_password(secret)
-            .map_err(|err| GitError::Credential(format!("系统凭据更新失败：{err:?}")))
+            .map_err(|err| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_UPDATE_SYSTEM_CREDENTIALS, &[("err", &format!("{:?}", err))])))
     }
 
     fn touch_record(&self, record_id: &str) -> Result<Option<CredentialRecord>> {
@@ -815,9 +814,9 @@ impl CredentialStore for KeyringCredentialStore {
         let _index_guard = self
             .index_lock
             .lock()
-            .map_err(|_| GitError::Credential("凭据索引锁状态异常".to_string()))?;
+            .map_err(|_| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_INDEX_LOCK_IS_IN_AN_INVALID_STATE, &[])))?;
         let metadata = remote_metadata(remote_url)
-            .ok_or_else(|| GitError::Credential("无法解析远端地址，不能绑定凭据".to_string()))?;
+            .ok_or_else(|| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_PARSE_THE_REMOTE_URL_CREDENTIALS_CANNOT_BE_BOUND, &[])))?;
         let mut index = self.load_index()?;
         let now = next_record_timestamp(&index.records);
         let Some(record) = index
@@ -825,7 +824,7 @@ impl CredentialStore for KeyringCredentialStore {
             .iter_mut()
             .find(|record| record.id == record_id)
         else {
-            return Err(GitError::Credential("凭据记录不存在".into()));
+            return Err(GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CREDENTIAL_RECORD_DOES_NOT_EXIST, &[])));
         };
         record.remote_url = remote_url.to_string();
         record.host = metadata.host_key;
@@ -887,7 +886,7 @@ pub fn test_credential_connection(
 ) -> Result<()> {
     let credential = store
         .credential_for_record(&record.id)?
-        .ok_or_else(|| GitError::Credential("系统凭据管理器中未找到该凭据密文".to_string()))?;
+        .ok_or_else(|| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_ENCRYPTED_CREDENTIAL_WAS_NOT_FOUND_IN_THE_SYSTEM_CREDENTIAL_MANAGER, &[])))?;
     let request = CredentialRequest {
         url: record.remote_url.clone(),
         username_from_url: ssh_username_from_remote_url(&record.remote_url)
@@ -956,7 +955,7 @@ fn credential_for_connection_test(
     // 用户名协商不消耗认证尝试；密钥/密码拒绝后仍只允许一次实际尝试。
     if request.allowed_types != CredentialType::USERNAME {
         if *credential_attempted {
-            return Err(git2::Error::from_str("SSH/HTTPS 凭据已尝试，远端拒绝认证"));
+            return Err(git2::Error::from_str(crate::ui_i18n::text(domain_ui_resources::SSH_HTTPS_CREDENTIALS_WERE_ALREADY_TRIED_THE_REMOTE_REJECTED_AUTHENTICATION)));
         }
         *credential_attempted = true;
     }
@@ -965,35 +964,34 @@ fn credential_for_connection_test(
 
 fn ssh_credential_test_result(libgit2_error: GitError, system_result: Result<()>) -> Result<()> {
     // 实际推拉仍走 libgit2；系统 Git 的成功只能用于诊断，不能掩盖内置后端失败。
-    Err(GitError::Credential(match system_result {
-        Ok(()) => format!(
-            "内置 Git 测试失败：{libgit2_error}；系统 Git/OpenSSH 复核成功，但应用内推送和拉取仍无法使用此连接"
-        ),
-        Err(system_error) => format!(
-            "libgit2 测试失败：{libgit2_error}；系统 Git/OpenSSH 复核失败：{system_error}"
-        ),
+    Err(GitError::LocalizedCredential(match system_result {
+        Ok(()) => crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::BUILT_IN_GIT_TEST_FAILED_THE_SYSTEM_GIT_OPENSSH_CHECK_SUCCEEDED_BUT_IN_APP_PUSH_AND_P, &[("libgit2_error", &format!("{}", libgit2_error))]),
+        Err(system_error) => crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::LIBGIT2_TEST_FAILED_SYSTEM_GIT_OPENSSH_CHECK_FAILED, &[("libgit2_error", &format!("{}", libgit2_error)), ("system_error", &format!("{}", system_error))]),
     }))
 }
 
 fn test_ssh_credential_with_system_git(url: &str, credential: &GitCredential) -> Result<()> {
     let ssh_command = git_ssh_command_for_credential(credential)
-        .ok_or_else(|| GitError::Credential("所选记录不是 SSH 凭据".to_string()))?;
+        .ok_or_else(|| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_SELECTED_RECORD_IS_NOT_AN_SSH_CREDENTIAL, &[])))?;
     let output = Command::new("git")
         .args(["ls-remote", "--exit-code", url, "HEAD"])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "Never")
         .env("GIT_SSH_COMMAND", ssh_command)
         .output()
-        .map_err(|error| GitError::Credential(format!("无法启动系统 Git：{error}")))?;
+        .map_err(|error| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_START_SYSTEM_GIT, &[("error", &format!("{}", error))])))?;
     if output.status.success() {
         return Ok(());
     }
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Err(GitError::Credential(if stderr.is_empty() {
-        format!("系统 Git 返回状态 {}", output.status)
+    if stderr.is_empty() {
+        Err(GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(
+            domain_ui_resources::SYSTEM_GIT_EXITED_WITH_STATUS,
+            &[("value0", &output.status.to_string())],
+        )))
     } else {
-        stderr
-    }))
+        Err(GitError::Credential(stderr))
+    }
 }
 
 fn git_ssh_command_for_credential(credential: &GitCredential) -> Option<String> {
@@ -1054,7 +1052,7 @@ pub(crate) fn to_git_credential(
             } else if request.allowed_types.contains(CredentialType::SSH_KEY) {
                 Cred::ssh_key_from_agent(&username)
             } else {
-                Err(git2::Error::from_str("远端不接受 SSH 密钥凭据"))
+                Err(git2::Error::from_str(crate::ui_i18n::text(domain_ui_resources::THE_REMOTE_DOES_NOT_ACCEPT_SSH_KEY_CREDENTIALS)))
             }
         }
     }
@@ -1154,8 +1152,8 @@ pub fn credential_record_label(record: &CredentialRecord) -> String {
         return name;
     }
     let scope = match record.scope {
-        CredentialScope::RemoteUrl => "仅此远端",
-        CredentialScope::Host => "同站点",
+        CredentialScope::RemoteUrl => crate::ui_i18n::text(domain_ui_resources::THIS_REMOTE_ONLY),
+        CredentialScope::Host => crate::ui_i18n::text(domain_ui_resources::SAME_HOST),
     };
     let kind = match record.kind {
         StoredCredentialKind::HttpsUserPass => "HTTPS",
@@ -1166,15 +1164,15 @@ pub fn credential_record_label(record: &CredentialRecord) -> String {
 
 pub fn credential_scope_label(scope: CredentialScope) -> &'static str {
     match scope {
-        CredentialScope::RemoteUrl => "仅此远端",
-        CredentialScope::Host => "同站点",
+        CredentialScope::RemoteUrl => crate::ui_i18n::text(domain_ui_resources::THIS_REMOTE_ONLY),
+        CredentialScope::Host => crate::ui_i18n::text(domain_ui_resources::SAME_HOST),
     }
 }
 
 pub fn credential_kind_label(kind: StoredCredentialKind) -> &'static str {
     match kind {
-        StoredCredentialKind::HttpsUserPass => "HTTPS 用户名/PAT",
-        StoredCredentialKind::SshKey => "SSH 私钥",
+        StoredCredentialKind::HttpsUserPass => crate::ui_i18n::text(domain_ui_resources::HTTPS_USERNAME_PAT),
+        StoredCredentialKind::SshKey => crate::ui_i18n::text(domain_ui_resources::SSH_PRIVATE_KEY),
     }
 }
 
@@ -1329,7 +1327,7 @@ fn gitee_refresh_keyring_service(record_id: &str) -> String {
 
 fn gitee_refresh_entry(record_id: &str) -> Result<keyring_core::Entry> {
     keyring_core::Entry::new(&gitee_refresh_keyring_service(record_id), "refresh")
-        .map_err(|err| GitError::Credential(format!("Gitee 续期条目创建失败：{err:?}")))
+        .map_err(|err| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CREATE_A_GITEE_REFRESH_ENTRY, &[("err", &format!("{:?}", err))])))
 }
 
 /// 保存/覆盖某凭据记录的 Gitee 续期材料。
@@ -1343,10 +1341,10 @@ pub fn save_gitee_refresh_payload(
         expires_at,
     };
     let json = serde_json::to_string(&payload)
-        .map_err(|err| GitError::Credential(format!("Gitee 续期材料序列化失败：{err}")))?;
+        .map_err(|err| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_SERIALIZE_GITEE_REFRESH_DATA, &[("err", &format!("{}", err))])))?;
     gitee_refresh_entry(record_id)?
         .set_password(&json)
-        .map_err(|err| GitError::Credential(format!("Gitee 续期材料保存失败：{err:?}")))
+        .map_err(|err| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_SAVE_GITEE_REFRESH_DATA, &[("err", &format!("{:?}", err))])))
 }
 
 /// 读取某凭据记录的 Gitee 续期材料；无条目或载荷损坏返回 None（损坏时顺带清理）。

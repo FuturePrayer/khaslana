@@ -1,4 +1,7 @@
 //! V2 文档式工作流视图。沿用模态生命周期与字段路由，在页面内承接焦点隔离。
+#[path = "document_resources.rs"]
+mod deep_messages;
+
 use super::*;
 use gpui_kit::base::FocusTrapElement;
 use crate::ui::components::{floating_panel, settings_command_button, SettingsButtonTone};
@@ -27,8 +30,8 @@ pub(super) fn variable_rail_visible(width: f32) -> bool { width >= 1100.0 }
 
 pub(super) fn filter_document_actions(query: &str) -> Vec<(&'static str, &'static str, &'static str)> {
     let query = query.trim().to_lowercase();
-    [("skill.run", "AI Skill", "使用本地安装的 Skill 执行任务"),
-        ("js.run", "JavaScript", "转换输入、组合变量，按需调用工具")]
+    [("skill.run", "AI Skill", khaslana::ui_i18n::text(deep_messages::RUN_A_TASK_USING_AN_INSTALLED_SKILL)),
+        ("js.run", "JavaScript", khaslana::ui_i18n::text(deep_messages::TRANSFORM_INPUTS_COMBINE_VARIABLES_AND_CALL_TOOLS_AS_NEEDED))]
         .into_iter().filter(|(uses, label, description)| query.is_empty()
             || format!("{uses} {label} {description}").to_lowercase().contains(&query)).collect()
 }
@@ -61,8 +64,8 @@ pub(super) fn duplicate_step_data(steps: &[WorkflowEditorStepData], index: usize
 
 pub(super) fn edit_tool_selection(source: &str, server: &str, tool: &str, selected: bool) -> Result<String, String> {
     let mut value: serde_json::Value = if source.trim().is_empty() { serde_json::json!([]) }
-        else { json5::from_str(source).map_err(|error| format!("工具列表格式错误：{error}"))? };
-    let array = value.as_array_mut().ok_or("允许的工具必须是数组")?;
+        else { json5::from_str(source).map_err(|error| khaslana::ui_i18n::encode(deep_messages::INVALID_TOOL_LIST, &[("error", &(error).to_string())]))? };
+    let array = value.as_array_mut().ok_or_else(|| khaslana::ui_i18n::encode(deep_messages::ALLOWED_TOOLS_MUST_BE_AN_ARRAY, &[]))?;
     array.retain(|item| !(item.get("server").and_then(serde_json::Value::as_str) == Some(server)
         && item.get("tool").and_then(serde_json::Value::as_str) == Some(tool)));
     if selected { array.push(serde_json::json!({"server":server,"tool":tool})); }
@@ -184,88 +187,88 @@ impl RepositoryView {
         let Some(editor) = self.workflow_editor.as_ref() else { return div().into_any_element(); };
         let wide = variable_rail_visible(f32::from(window.viewport_size().width));
         let branch = self.snapshot.as_ref().and_then(|snapshot| snapshot.branches.iter().find(|branch| branch.is_head))
-            .map(|branch| branch.name.clone()).unwrap_or_else(|| "未打开仓库".into());
+            .map(|branch| branch.name.clone()).unwrap_or_else(|| khaslana::ui_i18n::text(deep_messages::NO_REPOSITORY_OPEN).into());
         let scroll_handle = self.scroll_handle("workflow-v2-document");
         let mut document = column().flex_1().min_w_0();
         if editor.document_metadata_open {
-            document = document.child(card().child(text("模板设置"))
+            document = document.child(card().child(text(khaslana::ui_i18n::text(deep_messages::TEMPLATE_SETTINGS)))
                 .child(column()
-                .child(self.document_field(WorkflowEditorFieldId::Name, "模板名称", window, cx).flex_1())
-                .child(self.document_field(WorkflowEditorFieldId::FileName, "保存文件名", window, cx)))
-                .child(self.toggle_row("workflow-v2-clean", "运行前要求工作区干净", editor.data.require_clean_worktree,
+                .child(self.document_field(WorkflowEditorFieldId::Name, khaslana::ui_i18n::text(deep_messages::TEMPLATE_NAME), window, cx).flex_1())
+                .child(self.document_field(WorkflowEditorFieldId::FileName, khaslana::ui_i18n::text(deep_messages::FILE_NAME), window, cx)))
+                .child(self.toggle_row("workflow-v2-clean", khaslana::ui_i18n::text(deep_messages::REQUIRE_A_CLEAN_WORKING_TREE_BEFORE_RUNNING), editor.data.require_clean_worktree,
                     |this, _, _| { if let Some(editor) = this.workflow_editor.as_mut() { editor.data.require_clean_worktree = !editor.data.require_clean_worktree; } }, cx)));
         }
         if editor.document_ai_open {
-            document = document.child(card().child(text("描述工作流需求"))
+            document = document.child(card().child(text(khaslana::ui_i18n::text(deep_messages::DESCRIBE_YOUR_WORKFLOW)))
                 .child(self.document_input(WorkflowEditorFieldId::AiDescription, window, cx))
-                .child(hint("AI 生成后请逐项检查，再保存模板。"))
-                .child(self.document_command("workflow-v2-ai-generate", if editor.ai_loading { "生成中…" } else { "生成模板" }, true, !editor.ai_loading && self.ai_settings.is_usable(), cx)
-                    .tooltip(if self.ai_settings.is_usable() { "基于当前草稿生成或调整步骤" } else { "请先在设置中心配置并启用 AI" })
+                .child(hint(khaslana::ui_i18n::text(deep_messages::REVIEW_EACH_AI_GENERATED_ITEM_BEFORE_SAVING_THE_TEMPLATE)))
+                .child(self.document_command("workflow-v2-ai-generate", if editor.ai_loading { khaslana::ui_i18n::text(deep_messages::GENERATING) } else { khaslana::ui_i18n::text(deep_messages::GENERATE_TEMPLATE) }, true, !editor.ai_loading && self.ai_settings.is_usable(), cx)
+                    .tooltip(if self.ai_settings.is_usable() { khaslana::ui_i18n::text(deep_messages::GENERATE_OR_UPDATE_STEPS_BASED_ON_THE_CURRENT_DRAFT) } else { khaslana::ui_i18n::text(deep_messages::CONFIGURE_AND_ENABLE_AI_IN_SETTINGS_FIRST) })
                     .on_click(cx.listener(|this, _, _, cx| this.generate_workflow_template_with_ai(cx)))));
         }
         let mut inputs = card().child(div().flex().flex_wrap().items_center().justify_between().gap_2()
-            .child(div().flex().flex_wrap().items_center().gap_4().child(text("工作流输入").font_weight(gpui::FontWeight::SEMIBOLD))
-                .child(hint("在运行时提供这些输入值，用于后续步骤引用")))
-            .child(self.document_command("workflow-v2-input-add", "添加输入", false, true, cx)
+            .child(div().flex().flex_wrap().items_center().gap_4().child(text(khaslana::ui_i18n::text(deep_messages::WORKFLOW_INPUTS)).font_weight(gpui::FontWeight::SEMIBOLD))
+                .child(hint(khaslana::ui_i18n::text(deep_messages::PROVIDE_THESE_VALUES_AT_RUN_TIME_FOR_LATER_STEPS_TO_REFERENCE))))
+            .child(self.document_command("workflow-v2-input-add", khaslana::ui_i18n::text(deep_messages::ADD_INPUT), false, true, cx)
                 .icon(icon(IconName::Plus, ui_theme::CONTENT_SECONDARY))
                 .on_click(cx.listener(|this, _, _, cx| { this.workflow_editor_add_input_row(); cx.notify(); }))));
-        if editor.data.inputs.is_empty() { inputs = inputs.child(hint("添加运行前填写的参数，在步骤中使用 ${变量名} 引用。")); }
+        if editor.data.inputs.is_empty() { inputs = inputs.child(hint(khaslana::ui_i18n::text(deep_messages::ADD_PARAMETERS_TO_FILL_IN_BEFORE_RUNNING_REFERENCE_THEM_AS_IN_STEPS))); }
         for (index, row) in editor.data.inputs.iter().enumerate() {
             inputs = inputs.child(column().gap_3().pt_3()
                 .when(index > 0, |group| group.border_t_1().border_color(rgb(ui_theme::BORDER_MUTED)))
                 .child(div().flex().flex_wrap().items_start().min_w_0().gap_3()
-                    .child(column().flex_1().min_w(px(160.0)).gap_1().child(hint("变量名"))
+                    .child(column().flex_1().min_w(px(160.0)).gap_1().child(hint(khaslana::ui_i18n::text(deep_messages::VARIABLE_NAME)))
                         .child(self.document_input(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Key }, window, cx)))
-                    .child(column().w(px(140.0)).flex_none().gap_1().child(hint("输入类型"))
+                    .child(column().w(px(140.0)).flex_none().gap_1().child(hint(khaslana::ui_i18n::text(deep_messages::INPUT_TYPE)))
                         .child(self.render_workflow_editor_input_type(index)))
                     .child(div().flex().items_center().gap_2().h(px(36.0)).mt(px(24.0)).flex_none()
                         .child(self.toggle_switch(format!("workflow-v2-input-required-{index}"), row.required, false,
                             move |this, next, _, _| { if let Some(row) = this.workflow_editor.as_mut().and_then(|editor| editor.data.inputs.get_mut(index)) { row.required = next; } }, cx))
-                        .child(hint("必填")))
-                    .child(div().mt(px(28.0)).flex_none().child(icon_button(format!("workflow-v2-input-remove-{index}"), "删除输入", IconName::Trash, true)
+                        .child(hint(khaslana::ui_i18n::text(deep_messages::REQUIRED))))
+                    .child(div().mt(px(28.0)).flex_none().child(icon_button(format!("workflow-v2-input-remove-{index}"), khaslana::ui_i18n::text(deep_messages::DELETE_INPUT), IconName::Trash, true)
                         .icon(icon(IconName::Trash, ui_theme::DESTRUCTIVE))
                         .on_click(cx.listener(move |this, _, _, cx| { this.workflow_editor_remove_input_row(index); cx.notify(); })))))
-                .child(column().gap_1().child(hint("默认值（可选）"))
+                .child(column().gap_1().child(hint(khaslana::ui_i18n::text(deep_messages::DEFAULT_VALUE_OPTIONAL)))
                     .child(self.document_input(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Default }, window, cx))
-                    .when(row.kind == WorkflowInputKind::Select, |field| field.child(hint("填写选项的实际值；留空时运行前保持未选择。")))
-                    .when(row.kind == WorkflowInputKind::Date, |field| field.child(hint("使用 YYYY-MM-DD，也可使用 ${date:%Y-%m-%d}。"))))
+                    .when(row.kind == WorkflowInputKind::Select, |field| field.child(hint(khaslana::ui_i18n::text(deep_messages::ENTER_THE_ACTUAL_OPTION_VALUE_LEAVE_BLANK_TO_KEEP_IT_UNSELECTED_BEFORE))))
+                    .when(row.kind == WorkflowInputKind::Date, |field| field.child(hint(khaslana::ui_i18n::text(deep_messages::USE_YYYY_MM_DD_OR)))))
                 .child(self.render_workflow_editor_options(index, window, cx))
                 .when(!editor.document_details_open && !row.description.is_empty(), |group| group.child(hint(row.description.clone())))
                 .when(editor.document_details_open, |group| group
-                    .child(self.document_field(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Label }, "运行时显示名称", window, cx))
-                    .child(self.document_field(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Description }, "说明", window, cx))));
+                    .child(self.document_field(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Label }, khaslana::ui_i18n::text(deep_messages::RUN_TIME_DISPLAY_NAME), window, cx))
+                    .child(self.document_field(WorkflowEditorFieldId::InputPart { index, part: WorkflowInputPart::Description }, khaslana::ui_i18n::text(deep_messages::DESCRIPTION), window, cx))));
         }
         document = document.child(inputs)
-            .child(self.document_command("workflow-v2-input-details", if editor.document_details_open { "收起变量设置" } else { "输入说明与自定义变量" }, false, true, cx)
+            .child(self.document_command("workflow-v2-input-details", if editor.document_details_open { khaslana::ui_i18n::text(deep_messages::COLLAPSE_VARIABLE_SETTINGS) } else { khaslana::ui_i18n::text(deep_messages::INPUT_DESCRIPTIONS_AND_CUSTOM_VARIABLES) }, false, true, cx)
                 .on_click(cx.listener(|this, _, _, cx| { if let Some(editor) = this.workflow_editor.as_mut() { editor.document_details_open = !editor.document_details_open; } cx.notify(); })));
         if editor.document_details_open {
-            let mut vars = card().child(text("自定义变量"));
+            let mut vars = card().child(text(khaslana::ui_i18n::text(deep_messages::CUSTOM_VARIABLES)));
             for index in 0..editor.data.vars.len() { vars = vars.child(self.render_workflow_var_card(index, window, cx)); }
-            document = document.child(vars.child(self.document_command("workflow-v2-var-add", "添加变量", false, true, cx)
+            document = document.child(vars.child(self.document_command("workflow-v2-var-add", khaslana::ui_i18n::text(deep_messages::ADD_VARIABLE), false, true, cx)
                 .on_click(cx.listener(|this, _, _, cx| { this.workflow_editor_add_var_row(); cx.notify(); }))));
         }
         {
             for index in 0..editor.data.steps.len() { document = document.child(self.render_document_step(index, window, cx)); }
             if editor.data.steps.is_empty() {
-                document = document.child(card().child(text("从一个步骤开始"))
-                    .child(hint("按顺序组合 Git 操作、Skill 与 JavaScript；需要时由步骤调用工具。"))
+                document = document.child(card().child(text(khaslana::ui_i18n::text(deep_messages::START_WITH_A_STEP)))
+                    .child(hint(khaslana::ui_i18n::text(deep_messages::COMBINE_GIT_ACTIONS_SKILLS_AND_JAVASCRIPT_IN_ORDER_STEPS_CAN_CALL_TOOLS)))
                     .children(WORKFLOW_EDITOR_PRESETS.iter().map(|preset| {
                         let preset = *preset;
                         self.document_command(format!("workflow-v2-preset-{}", preset.title()), preset.title(), false, true, cx)
                             .on_click(cx.listener(move |this, _, _, cx| { this.apply_workflow_editor_preset(preset, cx); cx.notify(); }))
                     }).collect::<Vec<_>>()));
             }
-            document = document.child(self.document_command("workflow-v2-step-add", "添加步骤", false, true, cx)
+            document = document.child(self.document_command("workflow-v2-step-add", khaslana::ui_i18n::text(deep_messages::ADD_STEP), false, true, cx)
                 .icon(icon(IconName::Plus, ui_theme::PRIMARY)).w_full().h(px(40.0))
                 .text_color(rgb(ui_theme::PRIMARY)).border_color(rgb(ui_theme::WORKFLOW_OUTLINE)).border_dashed()
                 .on_click(cx.listener(|this, _, _, cx| { this.workflow_editor_open_step_picker(); cx.notify(); })));
         }
         document = document.child(div().flex().items_center().gap_2().child(icon(IconName::Info, ui_theme::WORKFLOW_META))
-            .child(hint("运行前校验输入和工具范围；自定义 MCP 需确认本次授权")));
+            .child(hint(khaslana::ui_i18n::text(deep_messages::INPUTS_AND_TOOL_SCOPE_ARE_CHECKED_BEFORE_RUNNING_CUSTOM_MCP_REQUIRES_AUTHORIZATION))));
         if editor.document_preview_open {
             if let Ok(definition) = build_workflow_definition(&editor.data) {
-                document = document.child(card().child(text("模板检查通过"))
-                    .child(hint("以下是保存内容；实际执行预览在保存后的运行页生成。"))
+                document = document.child(card().child(text(khaslana::ui_i18n::text(deep_messages::TEMPLATE_VALIDATION_PASSED)))
+                    .child(hint(khaslana::ui_i18n::text(deep_messages::THE_SAVED_CONTENT_IS_SHOWN_BELOW_AN_EXECUTION_PREVIEW_IS_GENERATED_ON)))
                     .child(text(serde_json::to_string_pretty(&definition).unwrap_or_default())
                         .font_family("Consolas").text_size(px(13.0)).line_height(px(20.0))));
             }
@@ -277,29 +280,29 @@ impl RepositoryView {
             .child(gpui::canvas(|_, _, _| (), move |bounds, _, _, _| document_bounds.set(Some(bounds)))
                 .absolute().top_0().left_0().right_0().bottom_0())
             .child(column().flex_none().p_4().gap_2()
-                .child(hint("工作流 / 编辑工作流"))
+                .child(hint(khaslana::ui_i18n::text(deep_messages::WORKFLOW_EDIT_WORKFLOW)))
                 .child(div().flex().flex_wrap().items_center().gap_2()
                     .child(div().flex().items_center().gap_3().flex_1().min_w_0()
-                        .child(text(if editor.name_field.value.trim().is_empty() { "新建工作流".to_string() } else { editor.name_field.value.clone() })
+                        .child(text(if editor.name_field.value.trim().is_empty() { khaslana::ui_i18n::text(deep_messages::NEW_WORKFLOW).to_string() } else { editor.name_field.value.clone() })
                             .text_size(px(if wide { 26.0 } else { ui_theme::TYPE_PAGE_TITLE })).font_weight(gpui::FontWeight::BOLD).truncate()).child(badge("V2")))
                     .child(div().flex().items_center().gap_1().p_1().rounded(px(ui_theme::RADIUS_SM)).bg(rgb(ui_theme::WORKFLOW_SURFACE))
-                        .child(settings_command_button("workflow-v2-edit-mode", "编辑", SettingsButtonTone::SelectedTab, true, cx)
-                            .min_w(px(0.0)).icon(icon(IconName::Pencil, ui_theme::PRIMARY)).tooltip("当前正在编辑工作流"))
-                        .child(settings_command_button("workflow-v2-run-mode", "运行", SettingsButtonTone::Quiet, !editor.ai_loading, cx)
+                        .child(settings_command_button("workflow-v2-edit-mode", khaslana::ui_i18n::text(deep_messages::EDIT), SettingsButtonTone::SelectedTab, true, cx)
+                            .min_w(px(0.0)).icon(icon(IconName::Pencil, ui_theme::PRIMARY)).tooltip(khaslana::ui_i18n::text(deep_messages::CURRENTLY_EDITING_THE_WORKFLOW)))
+                        .child(settings_command_button("workflow-v2-run-mode", khaslana::ui_i18n::text(deep_messages::RUN), SettingsButtonTone::Quiet, !editor.ai_loading, cx)
                             .min_w(px(0.0)).icon(icon(IconName::Play, ui_theme::CONTENT_SECONDARY))
-                            .tooltip("保存草稿并前往运行页；自定义 MCP 在执行前确认授权")
+                            .tooltip(khaslana::ui_i18n::text(deep_messages::SAVE_THE_DRAFT_AND_OPEN_THE_RUN_PAGE_CUSTOM_MCP_REQUIRES_AUTHORIZATION))
                             .on_click(cx.listener(|this, _, _, cx| this.save_workflow_editor(cx)))))
-                    .child(self.document_command("workflow-v2-save", "保存工作流", true, !editor.ai_loading, cx).icon(icon(IconName::Save, ui_theme::PRIMARY_FOREGROUND))
+                    .child(self.document_command("workflow-v2-save", khaslana::ui_i18n::text(deep_messages::SAVE_WORKFLOW), true, !editor.ai_loading, cx).icon(icon(IconName::Save, ui_theme::PRIMARY_FOREGROUND))
                         .on_click(cx.listener(|this, _, _, cx| this.save_workflow_editor(cx))))
-                    .child(self.document_command("workflow-v2-check", "检查模板", false, !editor.ai_loading, cx).icon(icon(IconName::FileCheck, ui_theme::CONTENT_PRIMARY))
+                    .child(self.document_command("workflow-v2-check", khaslana::ui_i18n::text(deep_messages::VALIDATE_TEMPLATE), false, !editor.ai_loading, cx).icon(icon(IconName::FileCheck, ui_theme::CONTENT_PRIMARY))
                         .on_click(cx.listener(|this, _, _, cx| { this.workflow_document_check(); cx.notify(); })))
-                    .child(self.document_command("workflow-v2-ai", "AI 生成", false, true, cx).icon(icon(IconName::Sparkles, ui_theme::PRIMARY)).on_click(cx.listener(|this, _, _, cx| {
+                    .child(self.document_command("workflow-v2-ai", khaslana::ui_i18n::text(deep_messages::GENERATE_WITH_AI), false, true, cx).icon(icon(IconName::Sparkles, ui_theme::PRIMARY)).on_click(cx.listener(|this, _, _, cx| {
                         if let Some(editor) = this.workflow_editor.as_mut() { editor.document_ai_open = !editor.document_ai_open; } cx.notify(); })))
-                    .child(icon_button("workflow-v2-settings", "模板名称与运行设置", IconName::Settings2, !editor.ai_loading).on_click(cx.listener(|this, _, _, cx| {
+                    .child(icon_button("workflow-v2-settings", khaslana::ui_i18n::text(deep_messages::TEMPLATE_NAME_AND_RUN_SETTINGS), IconName::Settings2, !editor.ai_loading).on_click(cx.listener(|this, _, _, cx| {
                         if let Some(editor) = this.workflow_editor.as_mut() { editor.document_metadata_open = !editor.document_metadata_open; } cx.notify(); })))
-                    .child(icon_button("workflow-v2-close", "关闭编辑器", IconName::X, true).on_click(cx.listener(|this, _, _, cx| { this.close_workflow_editor(); cx.notify(); }))))
+                    .child(icon_button("workflow-v2-close", khaslana::ui_i18n::text(deep_messages::CLOSE_EDITOR), IconName::X, true).on_click(cx.listener(|this, _, _, cx| { this.close_workflow_editor(); cx.notify(); }))))
                 .child(div().flex().items_center().gap_2().child(icon(IconName::GitBranch, ui_theme::PRIMARY))
-                    .child(hint("当前分支：")).child(text(branch))))
+                    .child(hint(khaslana::ui_i18n::text(deep_messages::CURRENT_BRANCH))).child(text(branch))))
             .when_some(editor.data.error.clone(), |panel, error| panel.child(div().mx_4().mb_3().p_3()
                 .rounded(px(ui_theme::RADIUS_SM)).bg(rgb(ui_theme::FEEDBACK_ERROR_BG))
                 .child(text(error).text_color(rgb(ui_theme::FEEDBACK_ERROR_TEXT)))))
@@ -336,7 +339,7 @@ impl RepositoryView {
         let mut header = div().flex().items_center().min_w_0().gap_2().p_3()
             .when(expanded, |header| header.bg(rgb(ui_theme::WORKFLOW_SURFACE)))
             .child(Button::new(format!("workflow-v2-expand-{index}")).ghost().compact().flex_1().min_w(px(0.0)).h(px(32.0)).px_0().py_0()
-                .accessibility_label(format!("{}步骤 {}", if expanded { "收起" } else { "展开" }, index + 1))
+                .accessibility_label(khaslana::ui_i18n::format(if expanded { deep_messages::COLLAPSE_STEP_NUMBER } else { deep_messages::EXPAND_STEP_NUMBER }, &[("index", &(index + 1).to_string())]))
                 .child(div().flex().items_center().justify_start().w_full().min_w_0().gap_3()
                     .child(div().flex().items_center().justify_center().w(px(32.0)).h(px(32.0)).flex_none().rounded_full()
                         .bg(rgb(ui_theme::PRIMARY_SUBTLE)).text_color(rgb(ui_theme::PRIMARY)).child(format!("{:02}", index + 1)))
@@ -347,13 +350,13 @@ impl RepositoryView {
                     if let Some(editor) = this.workflow_editor.as_mut() { editor.data.selected_step = if expanded { usize::MAX } else { index }; } cx.notify();
                 })));
         if expanded {
-            for (action, label, glyph, available) in [("up", "上移", IconName::ArrowUp, index > 0), ("down", "下移", IconName::ArrowDown, index + 1 < editor.data.steps.len()), ("copy", "复制", IconName::Copy, true), ("delete", "删除", IconName::Trash, true)] {
-                header = header.child(icon_button(format!("workflow-v2-{action}-{index}"), if available { label } else if action == "up" { "已是第一个步骤" } else { "已是最后一个步骤" }, glyph, enabled && available)
+            for (action, label, glyph, available) in [("up", khaslana::ui_i18n::text(deep_messages::MOVE_UP), IconName::ArrowUp, index > 0), ("down", khaslana::ui_i18n::text(deep_messages::MOVE_DOWN), IconName::ArrowDown, index + 1 < editor.data.steps.len()), ("copy", khaslana::ui_i18n::text(deep_messages::COPY), IconName::Copy, true), ("delete", khaslana::ui_i18n::text(deep_messages::DELETE), IconName::Trash, true)] {
+                header = header.child(icon_button(format!("workflow-v2-{action}-{index}"), if available { label } else if action == "up" { khaslana::ui_i18n::text(deep_messages::ALREADY_THE_FIRST_STEP) } else { khaslana::ui_i18n::text(deep_messages::ALREADY_THE_LAST_STEP) }, glyph, enabled && available)
                     .when(action == "delete", |button| button.icon(icon(glyph, ui_theme::DESTRUCTIVE)))
                     .on_click(cx.listener(move |this, _, _, cx| { this.document_step_action(index, action); cx.notify(); })));
             }
             if step.kind == WorkflowStepKind::Invoke {
-                header = header.child(icon_button(format!("workflow-v2-advanced-{index}"), "高级配置", IconName::Settings2, enabled)
+                header = header.child(icon_button(format!("workflow-v2-advanced-{index}"), khaslana::ui_i18n::text(deep_messages::ADVANCED_SETTINGS), IconName::Settings2, enabled)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(editor) = this.workflow_editor.as_mut() { editor.document_advanced_step = if editor.document_advanced_step == Some(index) { None } else { Some(index) }; } cx.notify();
                     })));
@@ -361,14 +364,14 @@ impl RepositoryView {
         } else {
             let entity = cx.entity();
             let count = editor.data.steps.len();
-            header = header.child(icon_button(format!("workflow-v2-more-{index}"), "步骤操作", IconName::Ellipsis, enabled)
+            header = header.child(icon_button(format!("workflow-v2-more-{index}"), khaslana::ui_i18n::text(deep_messages::STEP_ACTIONS), IconName::Ellipsis, enabled)
                 .dropdown_menu(move |mut menu, window, _| {
-                    for (action, label, available) in [("up", "上移", index > 0), ("down", "下移", index + 1 < count), ("copy", "复制", true), ("delete", "删除", true)] {
+                    for (action, label, available) in [("up", khaslana::ui_i18n::text(deep_messages::MOVE_UP), index > 0), ("down", khaslana::ui_i18n::text(deep_messages::MOVE_DOWN), index + 1 < count), ("copy", khaslana::ui_i18n::text(deep_messages::COPY), true), ("delete", khaslana::ui_i18n::text(deep_messages::DELETE), true)] {
                         if available { menu = menu.item(PopupMenuItem::new(label).on_click(window.listener_for(&entity, move |this, _, _, cx| { this.document_step_action(index, action); cx.notify(); }))); }
                     } menu
                 }));
         }
-        header = header.child(icon_button(format!("workflow-v2-chevron-{index}"), if expanded { "收起步骤" } else { "展开步骤" }, if expanded { IconName::ChevronUp } else { IconName::ChevronDown }, true)
+        header = header.child(icon_button(format!("workflow-v2-chevron-{index}"), if expanded { khaslana::ui_i18n::text(deep_messages::COLLAPSE_STEP) } else { khaslana::ui_i18n::text(deep_messages::EXPAND_STEP) }, if expanded { IconName::ChevronUp } else { IconName::ChevronDown }, true)
             .on_click(cx.listener(move |this, _, _, cx| { if let Some(editor) = this.workflow_editor.as_mut() { editor.data.selected_step = if expanded { usize::MAX } else { index }; } cx.notify(); })));
         let mut panel = card().p_0().gap_0().border_color(rgb(if expanded { ui_theme::INPUT_BORDER_FOCUSED } else { ui_theme::BORDER_MUTED })).child(header);
         if !expanded {
@@ -388,9 +391,9 @@ impl RepositoryView {
             let width = self.document_menu_width(format!("kind-{index}"));
             let measured = width.clone();
             body = body.child(div().flex().items_center().gap_3()
-                .child(text("操作类型").w(px(108.0)).flex_none())
+                .child(text(khaslana::ui_i18n::text(deep_messages::ACTION_TYPE)).w(px(108.0)).flex_none())
                 .child(measure_menu_field(div().flex_1().min_w_0().h(px(36.0)).child(
-                    menu_button(format!("workflow-v2-kind-{index}"), step.kind.display_name(), enabled).accessibility_label("更改 Git 操作类型")
+                    menu_button(format!("workflow-v2-kind-{index}"), step.kind.display_name(), enabled).accessibility_label(khaslana::ui_i18n::text(deep_messages::CHANGE_GIT_ACTION_TYPE))
                 .dropdown_menu(move |mut menu, window, _| {
                     menu = fit_menu(menu, &width, window).scrollable(true).max_h(px(240.0));
                     for kind in WorkflowStepKind::all() { menu = menu.item(PopupMenuItem::new(kind.display_name()).checked(kind == current_kind).on_click(window.listener_for(&entity, move |this, _, _, cx| { this.workflow_editor_set_step_kind(index, kind); cx.notify(); }))); } menu
@@ -406,14 +409,14 @@ impl RepositoryView {
             body = body.child(self.document_tools(index, cx));
         }
         if step.invoke.value(WorkflowStepSlot::Uses) == "mcp.call" {
-            body = body.child(hint("这是旧模板的兼容步骤。新建流程请使用 Skill 或 JavaScript，在步骤内按需调用 MCP 工具。"));
+            body = body.child(hint(khaslana::ui_i18n::text(deep_messages::THIS_IS_A_COMPATIBILITY_STEP_FROM_A_LEGACY_TEMPLATE_FOR_NEW_WORKFLOWS)));
         }
         if editor.document_advanced_step == Some(index) || step.invoke.parameters().is_empty() {
             for slot in [WorkflowStepSlot::StepId, WorkflowStepSlot::Uses, WorkflowStepSlot::Arguments] { body = body.child(self.document_field(WorkflowEditorFieldId::StepParam { step: index, slot }, slot.label(), window, cx)); }
             if step.invoke.parameters().iter().any(|(slot, _, _)| *slot == WorkflowStepSlot::Tools) {
-                body = body.child(self.document_field(WorkflowEditorFieldId::StepParam { step: index, slot: WorkflowStepSlot::Tools }, "工具完整参数", window, cx));
+                body = body.child(self.document_field(WorkflowEditorFieldId::StepParam { step: index, slot: WorkflowStepSlot::Tools }, khaslana::ui_i18n::text(deep_messages::FULL_TOOL_ARGUMENTS), window, cx));
             }
-            body = body.child(hint("高级参数保留 browserGuard 等额外配置；表单字段优先写入。未知动作保留完整 with 对象。"));
+            body = body.child(hint(khaslana::ui_i18n::text(deep_messages::ADVANCED_ARGUMENTS_PRESERVE_EXTRA_SETTINGS_SUCH_AS_BROWSERGUARD_FORM_FIELDS_TAKE_PRECEDENCE)));
         }
         panel = panel.child(body);
         panel.into_any_element()
@@ -426,9 +429,9 @@ impl RepositoryView {
     fn render_document_step_picker(&self, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let editor = self.workflow_editor.as_ref().expect("编辑器状态缺失");
         let query = editor.picker_search_field.value.trim().to_lowercase();
-        let mut picker = card().child(div().flex().justify_between().child(text("添加步骤").font_weight(gpui::FontWeight::SEMIBOLD))
-            .child(icon_button("workflow-v2-picker-close", "返回步骤", IconName::X, true).on_click(cx.listener(|this, _, _, cx| { this.workflow_editor_close_step_picker(); cx.notify(); }))))
-            .child(hint("选择下一步要做的操作；MCP 工具由 Skill 或 JavaScript 按需调用"))
+        let mut picker = card().child(div().flex().justify_between().child(text(khaslana::ui_i18n::text(deep_messages::ADD_STEP)).font_weight(gpui::FontWeight::SEMIBOLD))
+            .child(icon_button("workflow-v2-picker-close", khaslana::ui_i18n::text(deep_messages::BACK_TO_STEPS), IconName::X, true).on_click(cx.listener(|this, _, _, cx| { this.workflow_editor_close_step_picker(); cx.notify(); }))))
+            .child(hint(khaslana::ui_i18n::text(deep_messages::CHOOSE_THE_NEXT_ACTION_SKILL_OR_JAVASCRIPT_CALLS_MCP_TOOLS_AS_NEEDED)))
             .child(self.document_input(WorkflowEditorFieldId::PickerSearch, window, cx));
         for (uses, label, description) in filter_document_actions(&query) {
             picker = picker.child(self.document_command(format!("workflow-v2-picker-{uses}"), label, false, true, cx)
@@ -436,7 +439,7 @@ impl RepositoryView {
                 .child(hint(description))
                 .on_click(cx.listener(move |this, _, _, cx| { this.workflow_document_add_action(uses); cx.notify(); })));
         }
-        picker = picker.child(text("Git 操作"));
+        picker = picker.child(text(khaslana::ui_i18n::text(deep_messages::GIT_ACTIONS)));
         for kind in filter_workflow_step_kinds(&query) {
             picker = picker.child(self.document_command(format!("workflow-v2-picker-{}", kind.op_name()), kind.display_name(), false, true, cx)
                 .h_auto().py_3().justify_start().icon(icon(IconName::GitBranch, ui_theme::WORKFLOW_META)).child(hint(kind.description()))
@@ -447,18 +450,18 @@ impl RepositoryView {
 
     fn render_document_variables(&self, cx: &Context<Self>) -> gpui::Div {
         let editor = self.workflow_editor.as_ref().expect("编辑器状态缺失");
-        let mut rail = card().child(text("可用变量").font_weight(gpui::FontWeight::SEMIBOLD))
-            .child(hint("在输入框或任务描述中使用 ${变量名} 插入变量；输出按步骤顺序解析。"));
+        let mut rail = card().child(text(khaslana::ui_i18n::text(deep_messages::AVAILABLE_VARIABLES)).font_weight(gpui::FontWeight::SEMIBOLD))
+            .child(hint(khaslana::ui_i18n::text(deep_messages::USE_IN_FIELDS_OR_TASK_DESCRIPTIONS_OUTPUTS_ARE_RESOLVED_IN_STEP_ORDER)));
         for (index, row) in editor.data.inputs.iter().enumerate() {
             if !row.key.trim().is_empty() { rail = rail.child(self.document_variable_card(format!("input-{index}"), format!("${{{}}}", row.key), row.description.clone(), Some(row.default_value.clone()), cx)); }
         }
-        for (index, row) in editor.data.vars.iter().enumerate() { rail = rail.child(self.document_variable_card(format!("custom-{index}"), format!("${{{}}}", row.key), "自定义变量".into(), None, cx)); }
+        for (index, row) in editor.data.vars.iter().enumerate() { rail = rail.child(self.document_variable_card(format!("custom-{index}"), format!("${{{}}}", row.key), khaslana::ui_i18n::text(deep_messages::CUSTOM_VARIABLES).into(), None, cx)); }
         for (index, step) in editor.data.steps.iter().enumerate() {
             if index >= editor.data.selected_step { break; }
             let output = if step.kind == WorkflowStepKind::Invoke { step.invoke.value(WorkflowStepSlot::SaveAs) } else if step.kind == WorkflowStepKind::FilterBranches { &step.output } else { "" };
-            if !output.is_empty() { rail = rail.child(self.document_variable_card(format!("output-{index}-{output}"), format!("${{out.{output}}}"), format!("步骤 {} 的输出", index + 1), None, cx)); }
+            if !output.is_empty() { rail = rail.child(self.document_variable_card(format!("output-{index}-{output}"), format!("${{out.{output}}}"), khaslana::ui_i18n::format(deep_messages::OUTPUT_OF_STEP, &[("value0", &(index + 1).to_string())]), None, cx)); }
         }
-        rail.child(self.document_variable_card("run-source-branch".into(), "${run.sourceBranch}".into(), "运行时的来源分支名".into(), None, cx))
-            .child(self.document_variable_card("git-current-branch".into(), "${git.currentBranch}".into(), "执行到当前步骤时的分支".into(), None, cx))
+        rail.child(self.document_variable_card("run-source-branch".into(), "${run.sourceBranch}".into(), khaslana::ui_i18n::text(deep_messages::SOURCE_BRANCH_NAME_AT_RUN_TIME).into(), None, cx))
+            .child(self.document_variable_card("git-current-branch".into(), "${git.currentBranch}".into(), khaslana::ui_i18n::text(deep_messages::BRANCH_AT_THE_CURRENT_STEP).into(), None, cx))
     }
 }

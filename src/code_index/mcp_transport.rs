@@ -1,5 +1,6 @@
 //! 有界 stdio 传输；换行 JSON 与兼容的 Content-Length 帧逐帧识别。
 
+use crate::types::domain_ui_resources;
 use std::io::{self, BufRead, Read, Write};
 use serde_json::Value;
 use super::{McpServer, MAX_FRAME_BYTES, jsonrpc_error};
@@ -18,7 +19,7 @@ fn invalid(message: &str) -> io::Error {
 fn bounded_line(reader: &mut impl BufRead, limit: usize) -> io::Result<Option<Vec<u8>>> {
     let mut bytes = Vec::new();
     let count = reader.take(limit as u64 + 1).read_until(b'\n', &mut bytes)?;
-    if count > limit { return Err(invalid("MCP 帧或头部超过字节上限")); }
+    if count > limit { return Err(invalid(crate::ui_i18n::text(domain_ui_resources::MCP_FRAME_OR_HEADER_EXCEEDS_THE_BYTE_LIMIT))); }
     Ok((count > 0).then_some(bytes))
 }
 
@@ -30,18 +31,18 @@ fn read_frame(reader: &mut impl BufRead) -> io::Result<Option<Frame>> {
             return Ok(Some(Frame { bytes: line, content_length: false }));
         }
         // 长度无效时关闭连接，不把无法确定边界的正文误当下一条请求。
-        let header = std::str::from_utf8(&line).map_err(|_| invalid("MCP 头部不是 UTF-8"))?;
-        let length: usize = header[15..].trim().parse().map_err(|_| invalid("Content-Length 无效"))?;
-        if length > MAX_FRAME_BYTES { return Err(invalid("MCP 正文超过字节上限")); }
+        let header = std::str::from_utf8(&line).map_err(|_| invalid(crate::ui_i18n::text(domain_ui_resources::MCP_HEADER_IS_NOT_UTF_8)))?;
+        let length: usize = header[15..].trim().parse().map_err(|_| invalid(crate::ui_i18n::text(domain_ui_resources::INVALID_CONTENT_LENGTH)))?;
+        if length > MAX_FRAME_BYTES { return Err(invalid(crate::ui_i18n::text(domain_ui_resources::MCP_BODY_EXCEEDS_THE_BYTE_LIMIT))); }
         let mut header_bytes = line.len();
         loop {
-            let budget = MAX_HEADER_BYTES.checked_sub(header_bytes).ok_or_else(|| invalid("MCP 头部超过字节上限"))?;
+            let budget = MAX_HEADER_BYTES.checked_sub(header_bytes).ok_or_else(|| invalid(crate::ui_i18n::text(domain_ui_resources::MCP_HEADER_EXCEEDS_THE_BYTE_LIMIT)))?;
             let line = bounded_line(reader, budget)?.ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?;
             header_bytes += line.len();
-            let header = std::str::from_utf8(&line).map_err(|_| invalid("MCP 头部不是 UTF-8"))?;
+            let header = std::str::from_utf8(&line).map_err(|_| invalid(crate::ui_i18n::text(domain_ui_resources::MCP_HEADER_IS_NOT_UTF_8)))?;
             if header.trim().is_empty() { break; }
-            let (name, _) = header.split_once(':').ok_or_else(|| invalid("MCP 头部格式无效"))?;
-            if name.trim().eq_ignore_ascii_case("content-length") { return Err(invalid("重复的 Content-Length")); }
+            let (name, _) = header.split_once(':').ok_or_else(|| invalid(crate::ui_i18n::text(domain_ui_resources::INVALID_MCP_HEADER_FORMAT)))?;
+            if name.trim().eq_ignore_ascii_case("content-length") { return Err(invalid(crate::ui_i18n::text(domain_ui_resources::DUPLICATE_CONTENT_LENGTH))); }
         }
         let mut bytes = vec![0; length];
         reader.read_exact(&mut bytes)?;
@@ -53,14 +54,14 @@ fn read_frame(reader: &mut impl BufRead) -> io::Result<Option<Frame>> {
 pub(super) fn serve(server: &McpServer, reader: &mut impl BufRead, writer: &mut impl Write) -> io::Result<()> {
     while let Some(frame) = read_frame(reader)? {
         let response = match std::str::from_utf8(&frame.bytes) {
-            Err(_) => Some(jsonrpc_error(&Value::Null, -32700, "Parse error: 消息必须是 UTF-8")),
+            Err(_) => Some(jsonrpc_error(&Value::Null, -32700, crate::ui_i18n::text(domain_ui_resources::PARSE_ERROR_MESSAGE_MUST_BE_UTF_8))),
             Ok(line) => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| server.handle_message(line))) {
                 Ok(response) => response,
                 Err(_) => {
                     eprintln!("[khaslana-mcp] 消息处理异常");
                     // 合法通知即使异常也不产生响应；请求保留原始 id。
                     serde_json::from_str::<Value>(line).ok().and_then(|value| value.get("id").cloned())
-                        .map(|id| jsonrpc_error(&id, -32603, "Internal error: 工具调用异常"))
+                        .map(|id| jsonrpc_error(&id, -32603, crate::ui_i18n::text(domain_ui_resources::INTERNAL_ERROR_TOOL_CALL_FAILED)))
                 }
             },
         };

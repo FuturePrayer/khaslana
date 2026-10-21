@@ -3,6 +3,7 @@
 //! 负责更新清单解析、版本比较、下载、SHA-256 校验和 staging 解压。
 //! 不涉及 UI 状态和交互，由 `main.rs` 通过后台任务调用。
 
+use crate::types::domain_ui_resources;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read as _, Write as _};
@@ -69,12 +70,22 @@ pub fn current_version() -> Version {
         .unwrap_or(Version::new(0, 0, 0))
 }
 
-/// 当前版本的发布渠道标识（按 semver 预发布段推断，供「关于」页显示）。
+/// 发布渠道身份不依赖界面语言，避免译文改变徽标状态或更新策略。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateChannel {
+    Stable,
+    Beta,
+}
+
+pub fn current_update_channel() -> UpdateChannel {
+    if current_version().pre.is_empty() { UpdateChannel::Stable } else { UpdateChannel::Beta }
+}
+
+/// 兼容现有展示调用；业务判断使用 `current_update_channel`。
 pub fn current_channel() -> &'static str {
-    if current_version().pre.is_empty() {
-        "正式版"
-    } else {
-        "测试版"
+    match current_update_channel() {
+        UpdateChannel::Stable => crate::ui_i18n::text(domain_ui_resources::STABLE),
+        UpdateChannel::Beta => crate::ui_i18n::text(domain_ui_resources::BETA),
     }
 }
 
@@ -153,23 +164,20 @@ pub fn evaluate_manifest(
 ) -> Result<UpdateCheckResult> {
     // 清单格式校验
     if manifest.schema != 1 {
-        return Err(GitError::Message(format!(
-            "不支持的更新清单格式（schema={}），当前仅支持 schema=1",
-            manifest.schema
-        )));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::UNSUPPORTED_UPDATE_MANIFEST_FORMAT_SCHEMA_ONLY_SCHEMA_1_IS_SUPPORTED, &[("value0", &format!("{}", manifest.schema))])));
     }
 
     // 平台校验
     let asset = manifest.platforms.get("windows-x86_64").cloned();
     let asset = asset.ok_or_else(|| {
-        GitError::Message("当前平台不支持自动更新（缺少 windows-x86_64 下载项）".to_string())
+        GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::AUTOMATIC_UPDATES_ARE_NOT_SUPPORTED_ON_THIS_PLATFORM_MISSING_WINDOWS_X86_64_DOWNLOAD, &[]))
     })?;
 
     // 版本比较
     let remote_version: Version = manifest
         .version
         .parse()
-        .map_err(|err| GitError::Message(format!("更新清单版本号格式错误：{err}")))?;
+        .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INVALID_VERSION_IN_THE_UPDATE_MANIFEST, &[("err", &format!("{}", err))])))?;
 
     if !include_beta && !remote_version.pre.is_empty() {
         return Ok(UpdateCheckResult::UpToDate);
@@ -183,7 +191,7 @@ pub fn evaluate_manifest(
     if let Some(skipped) = skipped_version {
         let skipped: Version = skipped
             .parse()
-            .map_err(|err| GitError::Message(format!("已跳过版本号格式错误：{err}")))?;
+            .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INVALID_SKIPPED_VERSION, &[("err", &format!("{}", err))])))?;
         if remote_version == skipped {
             return Ok(UpdateCheckResult::SkippedVersion);
         }
@@ -245,7 +253,7 @@ pub fn download_update(
         }
     }
 
-    Err(last_err.unwrap_or_else(|| GitError::Message("下载更新包失败：无可用源".to_string())))
+    Err(last_err.unwrap_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_DOWNLOAD_THE_UPDATE_PACKAGE_NO_AVAILABLE_SOURCES, &[]))))
 }
 
 /// 独立校验文件的 SHA-256 摘要。
@@ -284,12 +292,12 @@ pub fn prepare_staging(zip_path: &Path, version: &str, config_dir: &Path) -> Res
 
     // 解压 zip
     let mut archive = zip::ZipArchive::new(fs::File::open(zip_path)?)
-        .map_err(|err| GitError::Message(format!("更新包解压失败：{err}")))?;
+        .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_EXTRACT_THE_UPDATE_PACKAGE, &[("err", &format!("{}", err))])))?;
 
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
-            .map_err(|err| GitError::Message(format!("更新包读取条目失败：{err}")))?;
+            .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_AN_UPDATE_PACKAGE_ENTRY, &[("err", &format!("{}", err))])))?;
         let entry_name = entry.name().to_string();
 
         // 安全检查：跳过绝对路径、路径遍历，以及 Windows 盘符/反斜杠条目
@@ -323,12 +331,10 @@ pub fn prepare_staging(zip_path: &Path, version: &str, config_dir: &Path) -> Res
     let updater_path = staging_dir.join("khaslana_updater.exe");
 
     if !exe_path.exists() {
-        return Err(GitError::Message("更新包缺少 khaslana.exe".to_string()));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_UPDATE_PACKAGE_IS_MISSING_KHASLANA_EXE, &[])));
     }
     if !updater_path.exists() {
-        return Err(GitError::Message(
-            "更新包缺少 khaslana_updater.exe".to_string(),
-        ));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_UPDATE_PACKAGE_IS_MISSING_KHASLANA_UPDATER_EXE, &[])));
     }
 
     Ok(staging_dir)
@@ -351,22 +357,18 @@ fn fetch_manifest(
             Ok(mut response) => match response.body_mut().read_json::<UpdateManifest>() {
                 Ok(manifest) => return Ok(manifest),
                 Err(err) => {
-                    last_err = Some(GitError::Message(format!(
-                        "更新清单解析失败（{source}）：{err}"
-                    )));
+                    last_err = Some(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_PARSE_THE_UPDATE_MANIFEST, &[("source", &format!("{}", source)), ("err", &format!("{}", err))])));
                     continue;
                 }
             },
             Err(err) => {
-                last_err = Some(GitError::Message(format!(
-                    "更新清单下载失败（{source}）：{err}"
-                )));
+                last_err = Some(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_DOWNLOAD_THE_UPDATE_MANIFEST, &[("source", &format!("{}", source)), ("err", &format!("{}", err))])));
                 continue;
             }
         }
     }
 
-    Err(last_err.unwrap_or_else(|| GitError::Message("无法获取更新清单".to_string())))
+    Err(last_err.unwrap_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_FETCH_THE_UPDATE_MANIFEST, &[]))))
 }
 
 /// 构建带代理和超时的 ureq Agent。
@@ -383,7 +385,7 @@ fn build_agent(proxy_url: Option<String>, timeout_secs: u64) -> Result<ureq::Age
     {
         Some(url) => Some(
             ureq::Proxy::new(url)
-                .map_err(|err| GitError::Message(format!("代理配置无效，已取消更新请求：{err}")))?,
+                .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INVALID_PROXY_CONFIGURATION_UPDATE_REQUEST_CANCELLED, &[("err", &format!("{}", err))])))?,
         ),
         None => None,
     };
@@ -417,7 +419,7 @@ fn download_file(
     let response = agent?
         .get(url)
         .call()
-        .map_err(|err| GitError::Message(format!("下载更新包失败（{url}）：{err}")))?;
+        .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_DOWNLOAD_THE_UPDATE_PACKAGE, &[("url", &format!("{}", url)), ("err", &format!("{}", err))])))?;
 
     // 尝试从 Content-Length 获取总大小，并施加体积上限。
     let content_length = response
@@ -427,9 +429,7 @@ fn download_file(
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(total_size);
     if content_length > MAX_DOWNLOAD_BYTES {
-        return Err(GitError::Message(format!(
-            "更新包体积异常（{content_length} 字节，上限 {MAX_DOWNLOAD_BYTES}），已取消下载"
-        )));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::INVALID_UPDATE_PACKAGE_SIZE_BYTES_LIMIT_DOWNLOAD_CANCELLED, &[("content_length", &format!("{}", content_length)), ("MAX_DOWNLOAD_BYTES", &format!("{}", MAX_DOWNLOAD_BYTES))])));
     }
 
     let mut file = fs::File::create(dest)?;
@@ -452,9 +452,7 @@ fn download_file(
         downloaded += n as u64;
         // 服务器未提供或谎报 Content-Length 时按实际字节数兜底截断。
         if downloaded > MAX_DOWNLOAD_BYTES {
-            return Err(GitError::Message(format!(
-                "更新包下载超出体积上限（{MAX_DOWNLOAD_BYTES} 字节），已取消"
-            )));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::UPDATE_PACKAGE_DOWNLOAD_EXCEEDED_THE_SIZE_LIMIT_BYTES_CANCELLED, &[("MAX_DOWNLOAD_BYTES", &format!("{}", MAX_DOWNLOAD_BYTES))])));
         }
         progress_counter += 1;
         if progress_counter >= PROGRESS_REPORT_INTERVAL {

@@ -1,3 +1,6 @@
+#[path = "ui_resources/sidebar_view_messages.rs"]
+mod messages;
+
 use std::sync::Arc;
 
 use crate::ui::theme::{rgb, rgba};
@@ -162,9 +165,9 @@ fn sidebar_remote_manage_disabled_reason(repo_available: bool, busy: bool) -> Op
     if sidebar_remote_manage_enabled(repo_available, busy) {
         None
     } else if busy {
-        Some("当前操作进行中，请稍候")
+        Some(khaslana::ui_i18n::text(messages::AN_OPERATION_IS_IN_PROGRESS_PLEASE_WAIT))
     } else {
-        Some("请先打开仓库")
+        Some(khaslana::ui_i18n::text(messages::OPEN_A_REPOSITORY_FIRST))
     }
 }
 
@@ -503,14 +506,14 @@ impl RepositoryView {
                 .map(|stash| self.stash_row(stash, cx).into_any_element())
                 .unwrap_or_else(|| placeholder_row("").into_any_element()),
             SidebarNavItem::EmptyLocalBranches => {
-                placeholder_row("没有匹配的本地分支").into_any_element()
+                placeholder_row(khaslana::ui_i18n::text(messages::NO_MATCHING_LOCAL_BRANCHES)).into_any_element()
             }
             SidebarNavItem::EmptyRemoteBranches => {
-                placeholder_row("没有匹配的远端分支").into_any_element()
+                placeholder_row(khaslana::ui_i18n::text(messages::NO_MATCHING_REMOTE_BRANCHES)).into_any_element()
             }
-            SidebarNavItem::LoadingRemotes => placeholder_row("远端加载中...").into_any_element(),
+            SidebarNavItem::LoadingRemotes => placeholder_row(khaslana::ui_i18n::text(messages::LOADING_REMOTES)).into_any_element(),
             SidebarNavItem::LoadingRemoteBranches => {
-                placeholder_row("远端分支加载中...").into_any_element()
+                placeholder_row(khaslana::ui_i18n::text(messages::LOADING_REMOTE_BRANCHES)).into_any_element()
             }
         };
         // uniform_list 以第一个 item 测量全表高度，所有导航元素必须共享固定槽位。
@@ -665,11 +668,11 @@ impl RepositoryView {
     ) -> impl IntoElement {
         // 全部分组可折叠；本地分支是唯一默认展开的分组（SidebarSectionState::default）。
         let (title, is_collapsible) = match section {
-            SidebarSection::LocalBranches => ("本地分支", true),
-            SidebarSection::Remotes => ("远端", true),
-            SidebarSection::RemoteBranches => ("远端分支", true),
-            SidebarSection::Tags => ("标签", true),
-            SidebarSection::Stashes => ("贮藏", true),
+            SidebarSection::LocalBranches => (khaslana::ui_i18n::text(messages::LOCAL_BRANCHES), true),
+            SidebarSection::Remotes => (khaslana::ui_i18n::text(messages::REMOTES), true),
+            SidebarSection::RemoteBranches => (khaslana::ui_i18n::text(messages::REMOTE_BRANCHES), true),
+            SidebarSection::Tags => (khaslana::ui_i18n::text(messages::TAGS), true),
+            SidebarSection::Stashes => (khaslana::ui_i18n::text(messages::STASHES), true),
         };
         let expanded = self.sidebar_sections.is_expanded(section);
         let enabled = self.repo_path.is_some() && !self.busy;
@@ -793,7 +796,7 @@ impl RepositoryView {
                                 cx.notify();
                             }
                         }))
-                        .child("管理")
+                        .child(khaslana::ui_i18n::text(messages::MANAGE))
                         .into_any_element(),
                 )
             }
@@ -952,7 +955,7 @@ impl RepositoryView {
                 self,
                 "remote-menu",
                 "refresh",
-                "刷新",
+                khaslana::ui_i18n::text(messages::REFRESH),
                 !self.busy,
                 {
                     let remote = menu.remote.clone();
@@ -964,7 +967,7 @@ impl RepositoryView {
                 self,
                 "remote-menu",
                 "copy-name",
-                "复制远端名",
+                khaslana::ui_i18n::text(messages::COPY_REMOTE_NAME),
                 !self.busy,
                 {
                     let remote = menu.remote.clone();
@@ -1174,12 +1177,7 @@ impl RepositoryView {
 
         // 本地分支悬停时显示 upstream 和同步数量，便于确认推送/拉取目标。
         let row = if let Some(up) = upstream.filter(|_| is_local) {
-            let upstream_label = format!(
-                "→{} · 待推送 {} · 待拉取 {}",
-                strip_remote_prefix(&up),
-                ahead,
-                behind
-            );
+            let upstream_label = khaslana::ui_i18n::format(messages::UP_PUSH_AHEAD_PULL_BEHIND, &[("up", &(strip_remote_prefix(&up)).to_string()), ("ahead", &(ahead).to_string()), ("behind", &(behind).to_string())]);
             row.tooltip(move |_window, cx| tooltip_text(upstream_label.clone(), cx))
         } else {
             row
@@ -1259,7 +1257,7 @@ impl RepositoryView {
                 self,
                 "branch-menu",
                 "workflows",
-                "运行工作流…",
+                khaslana::ui_i18n::text(messages::RUN_WORKFLOW),
                 !self.busy
                     && self.workflow_templates.iter().any(|template| template.error.is_none()),
                 |this, cx| {
@@ -1282,7 +1280,7 @@ impl RepositoryView {
                 self,
                 "branch-menu",
                 "copy-name",
-                "复制分支名",
+                khaslana::ui_i18n::text(messages::COPY_BRANCH_NAME),
                 !self.busy,
                 {
                     let branch = menu.branch.clone();
@@ -1296,7 +1294,7 @@ impl RepositoryView {
                     self,
                     "branch-menu",
                     "copy-checkout-command",
-                    "复制 checkout 命令",
+                    khaslana::ui_i18n::text(messages::COPY_CHECKOUT_COMMAND),
                     !self.busy,
                     {
                         let branch = branch.clone();
@@ -1310,7 +1308,7 @@ impl RepositoryView {
                 self,
                 "branch-menu",
                 "checkout",
-                "切换到此分支",
+                khaslana::ui_i18n::text(messages::SWITCH_TO_THIS_BRANCH),
                 !self.busy && !merge_in_progress,
                 {
                     let branch = menu.branch.clone();
@@ -1322,7 +1320,7 @@ impl RepositoryView {
                 self,
                 "branch-menu",
                 "pull",
-                "拉取此分支更新",
+                khaslana::ui_i18n::text(messages::PULL_BRANCH_UPDATES),
                 !self.busy && !merge_in_progress,
                 {
                     let branch = menu.branch.clone();
@@ -1334,7 +1332,7 @@ impl RepositoryView {
                 self,
                 "branch-menu",
                 "merge",
-                "合并到当前分支",
+                khaslana::ui_i18n::text(messages::MERGE_INTO_CURRENT_BRANCH),
                 !self.busy && !merge_in_progress,
                 {
                     let branch = menu.branch.clone();
@@ -1346,7 +1344,7 @@ impl RepositoryView {
                 self,
                 "branch-menu",
                 "rebase",
-                "变基到当前分支",
+                khaslana::ui_i18n::text(messages::REBASE_ONTO_CURRENT_BRANCH),
                 !self.busy && !merge_in_progress,
                 {
                     let branch = menu.branch.clone();
@@ -1358,7 +1356,7 @@ impl RepositoryView {
                 self,
                 "branch-menu",
                 "fetch-checkout",
-                "拉取到本地并切换",
+                khaslana::ui_i18n::text(messages::FETCH_LOCALLY_AND_CHECKOUT),
                 !self.busy && !merge_in_progress,
                 {
                     let branch = menu.branch.clone();
@@ -1371,7 +1369,7 @@ impl RepositoryView {
                 self,
                 "branch-menu",
                 "set-upstream",
-                "设置/修改 upstream...",
+                khaslana::ui_i18n::text(messages::SET_CHANGE_UPSTREAM),
                 !self.busy,
                 {
                     let branch = menu.branch.clone();
@@ -1383,7 +1381,7 @@ impl RepositoryView {
                 self,
                 "branch-menu",
                 "rename",
-                "重命名...",
+                khaslana::ui_i18n::text(messages::RENAME),
                 !self.busy,
                 {
                     let branch = menu.branch.clone();
@@ -1395,7 +1393,7 @@ impl RepositoryView {
                 self,
                 "branch-menu",
                 "browse-branch",
-                "浏览此分支",
+                khaslana::ui_i18n::text(messages::BROWSE_THIS_BRANCH),
                 !self.busy,
                 {
                     let branch = menu.branch.clone();
@@ -1408,7 +1406,7 @@ impl RepositoryView {
                 self,
                 "branch-menu",
                 "compare-with-current",
-                "与当前分支比较",
+                khaslana::ui_i18n::text(messages::COMPARE_WITH_CURRENT_BRANCH),
                 !self.busy,
                 {
                     let branch = menu.branch.clone();
@@ -1422,7 +1420,7 @@ impl RepositoryView {
                 self,
                 "branch-menu",
                 "delete-branch",
-                "删除分支",
+                khaslana::ui_i18n::text(messages::DELETE_BRANCH),
                 !self.busy,
                 {
                     let branch = menu.branch.clone();
@@ -1434,7 +1432,7 @@ impl RepositoryView {
                 self,
                 "branch-menu",
                 "delete-remote-branch",
-                "删除远端分支",
+                khaslana::ui_i18n::text(messages::DELETE_REMOTE_BRANCH),
                 !self.busy,
                 {
                     let branch = menu.branch.clone();
@@ -1462,9 +1460,9 @@ impl RepositoryView {
                 let branch = menu.branch.clone();
                 let kind = menu.kind.clone();
                 let origin = if crate::workflow_view::is_managed_workflow_template_path(&path) {
-                    "远端"
+                    khaslana::ui_i18n::text(messages::REMOTES)
                 } else {
-                    "本地"
+                    khaslana::ui_i18n::text(messages::LOCAL)
                 };
                 context_menu_item_with_context(
                     self,
@@ -1506,7 +1504,7 @@ impl RepositoryView {
                 self,
                 "branch-workflow-menu",
                 "back",
-                "← 返回分支菜单",
+                khaslana::ui_i18n::text(messages::BACK_TO_BRANCH_MENU),
                 true,
                 |this, cx| {
                     if let Some(menu) = this.branch_context_menu.as_mut() {
@@ -1533,11 +1531,11 @@ impl RepositoryView {
     }
 
     fn pull_local_branch_update(&mut self, branch: String) {
-        if !self.ensure_no_merge_in_progress("拉取分支") {
+        if !self.ensure_no_merge_in_progress(khaslana::ui_i18n::text(messages::PULL_BRANCH)) {
             return;
         }
         self.branch_context_menu = None;
-        self.with_repo_blocking("分支拉取完成", move |service, repo| {
+        self.with_repo_blocking(crate::operation_ui_resources::BRANCH_PULLED, move |service, repo| {
             service.pull_local_branch(repo, &BranchName::new(branch))
         });
     }

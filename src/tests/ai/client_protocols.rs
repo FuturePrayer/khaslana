@@ -1,4 +1,45 @@
 use super::*;
+
+#[test]
+fn owned_protocol_errors_are_bilingual_and_provider_details_are_verbatim() {
+    use crate::language::Language;
+    let provider = "供应商原文 keep English ${do_not_translate}";
+    let error = protocol_error(&json!({"type":"invalid_request_error","message":provider}));
+    assert!(!error.retryable());
+    for language in [Language::ZhCn, Language::En] {
+        let display = error.display_in(language);
+        assert!(display.contains(provider));
+        assert_eq!(display.starts_with("AI response error:"), language == Language::En);
+    }
+    let error = error.into_git_error();
+    assert!(matches!(error, GitError::Localized(_)));
+    assert!(error.display_in(Language::En).contains(provider));
+    let responses = parse_turn(AiApiType::Responses, &json!({"status":"completed"}), 123).unwrap_err();
+    assert!(responses.display_in(Language::En).contains("missing output"));
+    assert!(responses.display_in(Language::ZhCn).contains("缺少 output"));
+    let anthropic = parse_turn(AiApiType::AnthropicMessages, &json!({"stop_reason":"end_turn"}), 123).unwrap_err();
+    assert!(anthropic.display_in(Language::En).contains("missing content"));
+    assert!(anthropic.display_in(Language::ZhCn).contains("缺少 content"));
+    let sse_error = sse::read(std::io::Cursor::new(""), AiApiType::ChatCompletions, 123, &mut |_| {}, &|| false).unwrap_err();
+    assert!(sse_error.display_in(Language::En).contains("no end marker"));
+    assert!(sse_error.display_in(Language::ZhCn).contains("未收到结束标记"));
+}
+
+#[test]
+fn truncation_and_empty_errors_retain_message_identity_and_retry_policy() {
+    use crate::language::Language;
+    let limited = agent_stream_truncation_message(true, Some("length"), 123).unwrap();
+    assert_eq!(limited.retry_ceiling(), 1);
+    assert!(limited.display_in(Language::En).contains("123"));
+    assert!(limited.display_in(Language::ZhCn).contains("123"));
+    let interrupted = agent_stream_truncation_message(false, Some("stop"), 123).unwrap();
+    assert_eq!(interrupted.retry_ceiling(), AGENT_STREAM_MAX_RETRIES);
+    let plain = plain_stream_truncation_error(true, Some("length"), 123).unwrap();
+    assert!(plain.message_key().is_some());
+    assert!(plain.display_in(Language::En).contains("incomplete"));
+    assert!(agent_turn_empty_error(0, false).display_in(Language::En).contains("no valid chunks"));
+    assert!(agent_turn_empty_error(1, true).display_in(Language::En).contains("only reasoning"));
+}
 use std::io::{Read, Write};
 use std::net::TcpListener;
 

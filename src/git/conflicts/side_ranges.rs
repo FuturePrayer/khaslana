@@ -1,3 +1,4 @@
+use crate::types::domain_ui_resources;
 use git2::{DiffOptions, Patch};
 
 use crate::{ConflictBlock, GitError, Result};
@@ -47,11 +48,11 @@ pub(super) fn map_side_ranges(
                 .or_else(|| (line == offsets.len() - 1 && offsets[line] == projected.len()).then_some(original.len()))
         };
         let mapped_start = boundary(start_line)
-            .ok_or_else(|| GitError::Message("无法定位原始版本中的冲突块".into()))?;
+            .ok_or_else(|| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_LOCATE_THE_CONFLICT_BLOCK_IN_THE_ORIGINAL_VERSION, &[])))?;
         let mapped_end = mapped_start + end.saturating_sub(start);
         let expected = projected.get(start..end);
         if original.get(mapped_start..mapped_end) != expected {
-            return Err(GitError::Message("原始版本与冲突块内容不匹配，请刷新仓库".into()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_ORIGINAL_VERSION_DOES_NOT_MATCH_THE_CONFLICT_BLOCK_REFRESH_THE_REPOSITORY, &[])));
         }
         if ours {
             block.ours_start = mapped_start;

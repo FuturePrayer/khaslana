@@ -1,6 +1,9 @@
 //! 冲突工作台专用的单文档编辑组件。
 //! UTF-16 输入桥接与 ShapedLine 绘制适配自 Zed GPUI examples/input.rs（Apache-2.0）。
 //! 来源与许可见本目录 THIRD_PARTY.md；候选映射、合并事务和虚拟绘制为本项目实现。
+#[path = "../ui_resources/conflicts_native_editor_messages.rs"]
+mod messages;
+
 use std::{ops::Range, sync::Arc};
 use gpui::{prelude::*, App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ShapedLine, TextRun, UTF16Selection, Window, canvas, div, fill, point, px, size};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
@@ -271,33 +274,33 @@ impl NativeEditor {
         let b=&self.document.view.blocks[block];
         let expanded=self.document.expanded.contains(&block);
         let pending=b.status==ConflictBlockStatus::Unresolved;
-        let status=if b.has_manual_edits {"已手动微调 · 待确认"} else if pending {"待处理 · 未采纳"} else {"已处理"};
+        let status=if b.has_manual_edits {khaslana::ui_i18n::text(messages::MANUALLY_ADJUSTED_CONFIRMATION_NEEDED)} else if pending {khaslana::ui_i18n::text(messages::PENDING_NOT_ACCEPTED)} else {khaslana::ui_i18n::text(messages::RESOLVED)};
         let mut actions=div().flex().items_center().gap_1();
         if expanded {
-            for (label,resolution) in [("保留当前",Resolution::Ours),("保留传入",Resolution::Theirs)] {
-                actions=actions.child(workbench_command_button(format!("keep-{block}-{label}"),label,false,!self.readonly,cx).debug_selector(move || format!("keep-{block}-{label}")).h(px(26.0)).px_2().text_size(px(11.0))
+            for (label,resolution) in [(khaslana::ui_i18n::text(messages::KEEP_CURRENT),Resolution::Ours),(khaslana::ui_i18n::text(messages::KEEP_INCOMING),Resolution::Theirs)] {
+                actions=actions.child(workbench_command_button(format!("keep-{block}-{resolution:?}"),label,false,!self.readonly,cx).debug_selector(move || format!("keep-{block}-{resolution:?}")).h(px(26.0)).px_2().text_size(px(11.0))
                     .on_click(cx.listener(move |this,_,_,cx| {if this.readonly || this.marked.is_some() {return;} this.active_block=Some(block);this.preserve_top(|doc|doc.accept(block,resolution));this.publish(cx);})));
             }
             let entity=cx.entity().downgrade();
-            actions=actions.child(workbench_command_button(format!("both-{block}"),"全部保留",false,!self.readonly,cx).h(px(26.0)).px_2().text_size(px(11.0)).dropdown_caret(true)
+            actions=actions.child(workbench_command_button(format!("both-{block}"),khaslana::ui_i18n::text(messages::KEEP_BOTH),false,!self.readonly,cx).h(px(26.0)).px_2().text_size(px(11.0)).dropdown_caret(true)
                 .dropdown_menu(move |menu,_,_| {
                     let a=entity.clone();let b=entity.clone();
-                    menu.item(PopupMenuItem::new("当前在前，传入在后").on_click(move |_,_,cx| {let _=a.update(cx,|this,cx| {if !this.readonly && this.marked.is_none() {this.active_block=Some(block);this.preserve_top(|d|d.accept(block,Resolution::BothOursFirst));this.publish(cx);}});}))
-                        .item(PopupMenuItem::new("传入在前，当前在后").on_click(move |_,_,cx| {let _=b.update(cx,|this,cx| {if !this.readonly && this.marked.is_none() {this.active_block=Some(block);this.preserve_top(|d|d.accept(block,Resolution::BothTheirsFirst));this.publish(cx);}});}))
+                    menu.item(PopupMenuItem::new(khaslana::ui_i18n::text(messages::CURRENT_FIRST_INCOMING_SECOND)).on_click(move |_,_,cx| {let _=a.update(cx,|this,cx| {if !this.readonly && this.marked.is_none() {this.active_block=Some(block);this.preserve_top(|d|d.accept(block,Resolution::BothOursFirst));this.publish(cx);}});}))
+                        .item(PopupMenuItem::new(khaslana::ui_i18n::text(messages::INCOMING_FIRST_CURRENT_SECOND)).on_click(move |_,_,cx| {let _=b.update(cx,|this,cx| {if !this.readonly && this.marked.is_none() {this.active_block=Some(block);this.preserve_top(|d|d.accept(block,Resolution::BothTheirsFirst));this.publish(cx);}});}))
                 }));
-            actions=actions.child(workbench_command_button(format!("base-{block}"),"重置祖先",false,!self.readonly && b.base.is_some(),cx).h(px(26.0)).px_2().text_size(px(11.0)).tooltip(if b.base.is_some() {"恢复此块共同祖先，重新处理"} else {"此块没有共同祖先"})
+            actions=actions.child(workbench_command_button(format!("base-{block}"),khaslana::ui_i18n::text(messages::RESET_TO_BASE),false,!self.readonly && b.base.is_some(),cx).h(px(26.0)).px_2().text_size(px(11.0)).tooltip(if b.base.is_some() {khaslana::ui_i18n::text(messages::RESTORE_THIS_BLOCK_S_COMMON_ANCESTOR_AND_RESOLVE_AGAIN)} else {khaslana::ui_i18n::text(messages::THIS_BLOCK_HAS_NO_COMMON_ANCESTOR)})
                 .on_click(cx.listener(move |this,_,_,cx| {if !this.readonly && this.marked.is_none() {this.active_block=Some(block);this.preserve_top(|d|d.reset(block));this.publish(cx);}})));
             if b.has_manual_edits {
-                actions=actions.child(workbench_command_button(format!("confirm-{block}"),"确认结果",false,!self.readonly,cx).h(px(26.0)).px_2().text_size(px(11.0))
+                actions=actions.child(workbench_command_button(format!("confirm-{block}"),khaslana::ui_i18n::text(messages::CONFIRM_RESULT),false,!self.readonly,cx).h(px(26.0)).px_2().text_size(px(11.0))
                     .on_click(cx.listener(move |this,_,_,cx| {if this.readonly || this.marked.is_some() {return;}this.preserve_top(|d| {d.view.blocks[block].status=ConflictBlockStatus::Merged;d.expanded.remove(&block);d.rebuild();d.record();});this.publish(cx);})));
             }
         } else {
-            actions=actions.child(workbench_command_button(format!("expand-{block}"),"展开候选 · 重新选择",false,true,cx).h(px(26.0)).px_2().text_size(px(11.0))
+            actions=actions.child(workbench_command_button(format!("expand-{block}"),khaslana::ui_i18n::text(messages::EXPAND_CANDIDATES_CHOOSE_AGAIN),false,true,cx).h(px(26.0)).px_2().text_size(px(11.0))
                 .on_click(cx.listener(move |this,_,_,cx| {this.preserve_top(|d|{d.expanded.insert(block);d.rebuild();});cx.notify();})));
         }
         div().flex().when(narrow,|d|d.flex_col().items_start()).when(!narrow,|d|d.items_center()).justify_between().size_full().px_2().gap_1()
             .bg(rgb(if pending {theme::CONFLICT_PENDING_BG} else {theme::CONFLICT_RESOLVED_BG}))
-            .child(div().text_size(px(11.0)).text_color(rgb(theme::CONTENT_SECONDARY)).child(format!("冲突 {} · {status}",block+1)))
+            .child(div().text_size(px(11.0)).text_color(rgb(theme::CONTENT_SECONDARY)).child(khaslana::ui_i18n::format(messages::CONFLICT_BLOCK_STATUS, &[("block", &(block+1).to_string()), ("status", &(status).to_string())])))
             .child(actions).into_any_element()
     }
 
@@ -354,12 +357,12 @@ impl NativeEditor {
                     let index=if ours {0} else {2};
                     let (block,side,line)=(*block,*side,*line);
                     let mut button=workbench_command_button(format!("line-{block}-{index}-{line}"),"+",false,!self.readonly,cx).h(px(20.0)).min_h(px(20.0)).w(px(22.0)).px_0().text_size(px(12.0))
-                        .accessibility_label(format!("采纳{}第 {} 行",if ours {"当前"} else {"传入"},line+1)).tooltip("采纳此行到对应结果行；仍需确认整个块")
+                        .accessibility_label(khaslana::ui_i18n::format(if ours { messages::ACCEPT_CURRENT_LINE } else { messages::ACCEPT_INCOMING_LINE }, &[("line", &(line+1).to_string())])).tooltip(khaslana::ui_i18n::text(messages::ACCEPT_THIS_LINE_INTO_THE_CORRESPONDING_RESULT_LINE_THE_ENTIRE))
                         .on_click(cx.listener(move |this,_,_,cx| {if !this.readonly && this.marked.is_none() {this.active_block=Some(block);this.preserve_top(|d|d.adopt_line(block,side,line));this.publish(cx);}})).into_any_element();
                     button.prepaint_as_root(point(bounds.left()+px(64.0),y+px(2.0)),size(px(22.0),px(20.0)).into(),window,cx);controls.push(button);
                     (text,None,Some(format!("◀ {}{}",if ours {"O"} else {"T"},line+1)),if ours {theme::CONFLICT_OURS_BG} else {theme::CONFLICT_THEIRS_BG},if ours {theme::CONFLICT_OURS_ACCENT} else {theme::CONFLICT_THEIRS_ACCENT},word_changes(base.trim_end_matches(['\r','\n']),text.trim_end_matches(['\r','\n'])),self.syntax[index].as_ref().and_then(|s|s.lines.get(source_line)))
                 },
-                Row::Label(_,side) => (match side {Some(Side::Ours)=>"当前版本 · 只读候选",Some(Side::Theirs)=>"传入版本 · 只读候选",None=>"当前结果 · 可直接编辑"},None,None,
+                Row::Label(_,side) => (match side {Some(Side::Ours)=>khaslana::ui_i18n::text(messages::CURRENT_VERSION_READ_ONLY_CANDIDATE),Some(Side::Theirs)=>khaslana::ui_i18n::text(messages::INCOMING_VERSION_READ_ONLY_CANDIDATE),None=>khaslana::ui_i18n::text(messages::CURRENT_RESULT_DIRECTLY_EDITABLE)},None,None,
                     match side {Some(Side::Ours)=>theme::CONFLICT_OURS_BG,Some(Side::Theirs)=>theme::CONFLICT_THEIRS_BG,None=>theme::CONFLICT_PENDING_BG},theme::CONTENT_SECONDARY,Vec::new(),None),
                 Row::Header(_)=>unreachable!(),
             };
@@ -448,7 +451,7 @@ impl NativeEditor {
 impl Render for NativeEditor {
     fn render(&mut self,_: &mut Window,cx: &mut Context<Self>) -> impl IntoElement {
         let entity=cx.entity();let painter=entity.clone();
-        div().id("conflict-single-document").role(gpui::Role::MultilineTextInput).aria_label("合并结果，可编辑；当前与传入候选只读").flex_1().size_full().min_w(px(0.0)).min_h(px(0.0)).overflow_hidden()
+        div().id("conflict-single-document").role(gpui::Role::MultilineTextInput).aria_label(khaslana::ui_i18n::text(messages::EDITOR_ACCESSIBILITY)).flex_1().size_full().min_w(px(0.0)).min_h(px(0.0)).overflow_hidden()
             .key_context("ConflictEditor").track_focus(&self.focus).font_family("Consolas").text_size(px(13.0)).bg(rgb(theme::CONFLICT_EDITOR_BG))
             .on_key_down(cx.listener(Self::key)).on_mouse_down(MouseButton::Left,cx.listener(Self::click))
             .on_mouse_move(cx.listener(Self::drag)).on_mouse_up(MouseButton::Left,cx.listener(|this,_,_,_| {this.selecting=false;this.dragging_bar=None;}))

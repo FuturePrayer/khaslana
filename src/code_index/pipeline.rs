@@ -9,6 +9,7 @@
 //! 否则全量。增量 = mtime+size 三分类 → 入边快照 → 按文件清除 → 重解析变更
 //! 文件 → 重解析受名字变化影响的调用文件 → 重链接快照边 → 按文件增量落盘。
 
+use crate::types::domain_ui_resources;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -51,10 +52,15 @@ impl PipelineOptions {
     }
 
     fn report(&mut self, phase: IndexPhase, done: usize, total: usize) {
-        let message = match phase {
-            IndexPhase::Discover => format!("发现 {total} 个文件"),
-            _ => format!("{} {}/{}", phase.display(), done, total),
+        let args = [("done", done.to_string()), ("total", total.to_string())];
+        let args: Vec<_> = args.iter().map(|(key, value)| (*key, value.as_str())).collect();
+        let resource = match phase {
+            IndexPhase::Discover => domain_ui_resources::DISCOVERED_FILES,
+            IndexPhase::Parse => domain_ui_resources::INDEX_PROGRESS_PARSE,
+            IndexPhase::Resolve => domain_ui_resources::INDEX_PROGRESS_RESOLVE,
+            IndexPhase::Write => domain_ui_resources::INDEX_PROGRESS_WRITE,
         };
+        let message = crate::ui_i18n::encode(resource, &args);
         (self.progress)(IndexProgress {
             phase,
             done,
@@ -96,7 +102,7 @@ pub fn run_index(
     let _guard = match lock.try_lock() {
         Ok(guard) => guard,
         Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-        Err(std::sync::TryLockError::WouldBlock) => return Err(super::err("该仓库正在索引，请等待当前任务完成")),
+        Err(std::sync::TryLockError::WouldBlock) => return Err(crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_REPOSITORY_IS_BEING_INDEXED_WAIT_FOR_THE_CURRENT_TASK_TO_FINISH, &[]))),
     };
     if options.cancelled() { return Ok(RunOutcome::Cancelled); }
     let _process_guard = super::jobs::database_process_lock(db_path)?;
@@ -543,7 +549,7 @@ fn run_extraction_pass(
             batch.par_iter().map_init(Extractor::new, |extractor, file| {
                 (!cancel.load(Ordering::Relaxed)).then(|| parse_one(file, extractor))
             }).filter_map(|output| output).collect::<Vec<_>>()
-        }))).map_err(|_| super::err("索引解析线程异常，已保留旧索引"))?;
+        }))).map_err(|_| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_INDEX_PARSER_THREAD_FAILED_THE_PREVIOUS_INDEX_WAS_RETAINED, &[])))?;
         done += parsed.len();
         parsed.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
         merge(parsed);
@@ -579,7 +585,7 @@ pub(super) fn parse_content(file: &DiscoveredFile, bytes: &[u8], extractor: &mut
     };
     if bytes.len() as u64 > super::PARSE_MAX_BYTES {
         output.coverage.status = "excluded".into();
-        output.coverage.reason = "超过单文件解析上限".into();
+        output.coverage.reason = "parse_size_limit".into();
         return output;
     }
     let Some(lang) = lang_of_rel_path(&file.rel_path) else {
@@ -589,7 +595,7 @@ pub(super) fn parse_content(file: &DiscoveredFile, bytes: &[u8], extractor: &mut
     let sniff_len = bytes.len().min(8192);
     if bytes[..sniff_len].contains(&0) {
         output.coverage.status = "excluded".into();
-        output.coverage.reason = "二进制文件".into();
+        output.coverage.reason = "binary_file".into();
         return output;
     }
     output.line_count = byte_line_count(&bytes);
@@ -601,15 +607,15 @@ pub(super) fn parse_content(file: &DiscoveredFile, bytes: &[u8], extractor: &mut
             output.coverage.call_sites = result.calls.len();
             output.result = Some(result);
         }
-        Ok(None) => { output.coverage.status = "parse_failed".into(); output.coverage.reason = "解析器未返回语法树".into(); }
+        Ok(None) => { output.coverage.status = "parse_failed".into(); output.coverage.reason = "no_syntax_tree".into(); }
         Err(error) => { output.coverage.status = "parse_failed".into(); output.coverage.reason = error.to_string(); }
     }
     output
 }
 
 fn initial_coverage(file: &DiscoveredFile) -> super::coverage::FileCoverage {
-    let (status, reason) = if file.size > super::PARSE_MAX_BYTES { ("excluded", "超过单文件解析上限") }
-        else if lang_of_rel_path(&file.rel_path).is_none() { ("unsupported", "当前语言不支持符号解析") }
+    let (status, reason) = if file.size > super::PARSE_MAX_BYTES { ("excluded", "parse_size_limit") }
+        else if lang_of_rel_path(&file.rel_path).is_none() { ("unsupported", "unsupported_language") }
         else { ("indexed", "") };
     super::coverage::FileCoverage::new(&file.rel_path, status, reason)
 }

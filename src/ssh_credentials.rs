@@ -1,3 +1,4 @@
+use khaslana::types::domain_ui_resources;
 use std::{
     collections::BTreeSet,
     fs,
@@ -36,7 +37,7 @@ pub(crate) struct SshCredentialDiscoveryState {
 
 /// 只读取公钥注释、私钥文件头和 SSH 配置路径，不读取或保存私钥正文。
 pub(crate) fn discover_local_ssh_credentials() -> Result<SshDiscoveryResult, String> {
-    let user_dirs = UserDirs::new().ok_or_else(|| "无法定位当前用户主目录".to_string())?;
+    let user_dirs = UserDirs::new().ok_or_else(|| khaslana::ui_i18n::text(domain_ui_resources::CANNOT_LOCATE_THE_CURRENT_USER_S_HOME_DIRECTORY).to_string())?;
     Ok(discover_local_ssh_credentials_in(user_dirs.home_dir()))
 }
 
@@ -146,10 +147,10 @@ fn looks_like_private_key(path: &Path) -> bool {
 
 pub(crate) fn validate_ssh_private_key_path(path: &Path) -> Result<(), String> {
     if !path.is_file() {
-        return Err("SSH 私钥文件不存在或不是普通文件".into());
+        return Err(khaslana::ui_i18n::text(domain_ui_resources::THE_SSH_PRIVATE_KEY_FILE_DOES_NOT_EXIST_OR_IS_NOT_A_REGULAR_FILE).into());
     }
     if !looks_like_private_key(path) {
-        return Err("所选文件不是可识别的 OpenSSH/PEM 私钥，请勿选择 .pub 公钥文件".into());
+        return Err(khaslana::ui_i18n::text(domain_ui_resources::THE_SELECTED_FILE_IS_NOT_A_RECOGNIZED_OPENSSH_PEM_PRIVATE_KEY_DO_NOT_SELECT_A_PUB_PUB).into());
     }
     Ok(())
 }
@@ -293,9 +294,9 @@ impl RepositoryView {
     ) -> impl IntoElement {
         let state = &self.ssh_credential_discovery;
         let detect_label = if state.loading {
-            "正在检测本机 SSH..."
+            khaslana::ui_i18n::text(domain_ui_resources::DETECTING_LOCAL_SSH_IDENTITIES)
         } else {
-            "检测本机 SSH"
+            khaslana::ui_i18n::text(domain_ui_resources::DETECT_LOCAL_SSH_IDENTITIES)
         };
         let mut panel = div()
             .flex()
@@ -309,25 +310,31 @@ impl RepositoryView {
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .justify_between()
+                    .flex_col()
+                    .items_start()
+                    .gap_2()
+                    .w_full()
+                    .min_w(px(0.0))
                     .child(
                         div()
                             .flex()
                             .flex_col()
+                            .w_full()
+                            .min_w(px(0.0))
+                            .whitespace_normal()
                             .gap_1()
                             .child(
                                 div()
                                     .text_size(px(12.0))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                                    .child("本机 SSH 身份"),
+                                    .child(khaslana::ui_i18n::text(domain_ui_resources::LOCAL_SSH_IDENTITIES)),
                             )
                             .child(
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                    .child("检测 ~/.ssh 私钥、SSH config 的 IdentityFile 和 Agent 已加载身份"),
+                                    .child(khaslana::ui_i18n::text(domain_ui_resources::FIND_PRIVATE_KEYS_IN_SSH_IDENTITYFILE_ENTRIES_IN_SSH_CONFIG_AND_IDENTITIES_LOADED_IN)),
                             ),
                     )
                     .child(self.button(
@@ -364,13 +371,14 @@ impl RepositoryView {
                             div()
                                 .flex_1()
                                 .min_w(px(0.0))
+                                .whitespace_normal()
                                 .text_size(px(12.0))
                                 .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                                .child(format!("SSH Agent · 已加载 {count} 个身份")),
+                                .child(khaslana::ui_i18n::format(domain_ui_resources::SSH_AGENT_IDENTITIES_LOADED, &[("count", &format!("{}", count))])),
                         )
                         .child(settings_command_button(
                             "ssh-discovery-use-agent",
-                            if self.credential_use_ssh_agent { "已选择 Agent" } else { "一键使用 Agent" },
+                            if self.credential_use_ssh_agent { khaslana::ui_i18n::text(domain_ui_resources::AGENT_SELECTED) } else { khaslana::ui_i18n::text(domain_ui_resources::USE_AGENT) },
                             if self.credential_use_ssh_agent { SettingsButtonTone::SelectedTab } else { SettingsButtonTone::Secondary },
                             !self.busy,
                             cx,
@@ -408,6 +416,7 @@ impl RepositoryView {
                                 .min_w(px(0.0))
                                 .flex()
                                 .flex_col()
+                                .whitespace_normal()
                                 .child(
                                     div()
                                         .text_size(px(12.0))
@@ -424,7 +433,7 @@ impl RepositoryView {
                         )
                         .child(settings_command_button(
                             format!("ssh-discovery-use-key-{}", path.display()),
-                            if selected { "已选择" } else { "一键使用" },
+                            if selected { khaslana::ui_i18n::text(domain_ui_resources::SELECTED) } else { khaslana::ui_i18n::text(domain_ui_resources::USE_IDENTITY) },
                             if selected { SettingsButtonTone::SelectedTab } else { SettingsButtonTone::Secondary },
                             !self.busy,
                             cx,
@@ -440,7 +449,7 @@ impl RepositoryView {
                     div()
                         .text_size(px(11.0))
                         .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                        .child("未发现可用身份，可使用下方“选择私钥文件”手动指定。"),
+                        .child(khaslana::ui_i18n::text(domain_ui_resources::NO_USABLE_IDENTITIES_FOUND_USE_SELECT_PRIVATE_KEY_FILE_BELOW_TO_SPECIFY_ONE_MANUALLY)),
                 );
             }
         }
@@ -450,7 +459,7 @@ impl RepositoryView {
                 div()
                     .text_size(px(11.0))
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                    .child("已填入下方表单；请确认适用远端和用户名，点击“保存”后生效。"),
+                    .child(khaslana::ui_i18n::text(domain_ui_resources::THE_FORM_BELOW_HAS_BEEN_FILLED_IN_CONFIRM_THE_REMOTE_AND_USERNAME_THEN_CLICK_SAVE_TO)),
             );
         }
 

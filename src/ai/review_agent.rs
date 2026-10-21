@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::GitService;
+use crate::language::{Language, TaskLanguages};
+use super::prompt::text as localized;
 use crate::ai::client::{AGENT_STREAM_MAX_RETRIES, AgentChatMessage, ChatClient, ToolSchema};
 use crate::ai::review::{AiReviewResult, AiReviewStep};
 use crate::git::CodeSearchMatch;
@@ -21,6 +23,12 @@ use crate::types::{
     BlameHunkInfo, BrowseCompareFile, CommitInfo, DiffEncodingChoice, DiffLineKind, FileDiff,
     GitError, HistoryScope, Result,
 };
+
+macro_rules! lfmt {
+    ($language:expr, $zh:literal, $en:literal $(, $arg:expr)* $(,)?) => {
+        match $language { Language::ZhCn => format!($zh $(, $arg)*), Language::En => format!($en $(, $arg)*) }
+    };
+}
 
 /// 最多带工具的请求轮数。带 tool_calls 的轮必有 ≥1 次调用，轮数 ≤ 调用数 + 1，
 /// 与 `MAX_TOOL_CALLS_TOTAL` 同值即永不先于调用线触顶（避免「每轮 1 次调用」
@@ -143,18 +151,29 @@ impl ToolBudget {
         }
     }
 
+    fn limit_reason_in(&self, language: Language) -> Option<&'static str> {
+        self.limit_reason().map(|reason| match reason {
+            "工具调用轮次上限" => localized(language, "工具调用轮次上限", "tool-round limit"),
+            "工具调用次数上限" => localized(language, "工具调用次数上限", "tool-call limit"),
+            _ => localized(language, "工具结果累计体积上限", "cumulative result-size limit"),
+        })
+    }
+
     pub fn note_result(&mut self, chars: usize) {
         self.result_chars = self.result_chars.saturating_add(chars);
     }
 }
 
 /// 按字符数截断工具结果，超出时追加中文标注。
-pub(crate) fn truncate_result_chars(text: &str, limit: usize) -> String {
+#[cfg(test)]
+pub(crate) fn truncate_result_chars(value: &str, limit: usize) -> String { truncate_result_chars_in(value, limit, Language::ZhCn) }
+
+fn truncate_result_chars_in(text: &str, limit: usize, language: Language) -> String {
     if text.chars().count() <= limit {
         return text.to_string();
     }
     let truncated: String = text.chars().take(limit).collect();
-    format!("{truncated}\n…（结果过长，已截断）")
+    lfmt!(language, "{truncated}\n…（结果过长，已截断）", "{truncated}\n… (result too long; truncated)")
 }
 
 /// read_lines 行窗口钳制：默认从 1 开始；窗口最宽 READ_LINES_MAX_LINES；
@@ -180,15 +199,20 @@ pub(crate) fn clamp_line_range(
 /// 会随变更文件数线性膨胀（200 个文件 ≈ 800K 字符），远超初始预算并撑爆
 /// 上下文。预算耗尽后的文件只进清单不附 diff，标注可用 read_diff 获取。
 /// 纯函数，便于单测。
+#[cfg(test)]
 pub(crate) fn assemble_initial_user_prompt(
     target_name: &str,
     entries: &[InitialDiffEntry],
 ) -> String {
+    assemble_initial_user_prompt_in(target_name, entries, Language::ZhCn)
+}
+
+fn assemble_initial_user_prompt_in(target_name: &str, entries: &[InitialDiffEntry], language: Language) -> String {
     let mut prompt = String::new();
-    prompt.push_str(&format!(
-        "目标分支：{target_name}（相对当前分支的三点比较，只包含目标分支领先引入的改动）\n\n"
+    prompt.push_str(&lfmt!(language,
+        "目标分支：{target_name}（相对当前分支的三点比较，只包含目标分支领先引入的改动）\n\n", "Target branch: {target_name} (three-dot comparison against current; target-only changes)\n\n"
     ));
-    prompt.push_str(&format!("变更文件（{} 个）：\n", entries.len()));
+    prompt.push_str(&lfmt!(language, "变更文件（{} 个）：\n", "Changed files ({}):\n", entries.len()));
     for entry in entries {
         prompt.push_str(&format!("- [{}] {}\n", entry.status_label, entry.path));
     }
@@ -200,12 +224,12 @@ pub(crate) fn assemble_initial_user_prompt(
     // 实际 prompt 略超预算线性膨胀。预算耗尽的文件降级为「仅清单 +
     // read_diff 引导」。
     let mut remaining_budget = INITIAL_DIFF_BUDGET_CHARS;
-    prompt.push_str("\n差异：\n");
+    prompt.push_str(localized(language, "\n差异：\n", "\nDiffs:\n"));
     for entry in entries {
         let header = format!("\n===== [{}] {} =====\n", entry.status_label, entry.path);
         prompt.push_str(&header);
         if entry.patch.is_empty() {
-            prompt.push_str("（无文本差异）\n");
+            prompt.push_str(localized(language, "（无文本差异）\n", "(No text diff)\n"));
             continue;
         }
         if !per_file_truncate {
@@ -217,12 +241,12 @@ pub(crate) fn assemble_initial_user_prompt(
         }
         remaining_budget = remaining_budget.saturating_sub(header.chars().count());
         if remaining_budget == 0 {
-            prompt.push_str("（差异未附：初始预算已用尽，请用 read_diff 获取）\n");
+            prompt.push_str(localized(language, "（差异未附：初始预算已用尽，请用 read_diff 获取）\n", "(Diff omitted: budget exhausted; use read_diff)\n"));
             continue;
         }
         let allowance = remaining_budget.min(INITIAL_PER_FILE_CHARS);
         let patch_chars = entry.patch.chars().count().min(allowance);
-        let emitted = truncate_result_chars(&entry.patch, patch_chars.max(1));
+        let emitted = truncate_result_chars_in(&entry.patch, patch_chars.max(1), language);
         remaining_budget = remaining_budget.saturating_sub(emitted.chars().count());
         prompt.push_str(&emitted);
         prompt.push('\n');
@@ -231,9 +255,11 @@ pub(crate) fn assemble_initial_user_prompt(
 }
 
 /// 把 FileDiff 转成 patch 风格文本，供 AI prompt 与 read_diff 工具共用。
-pub fn file_diff_to_patch_text(diff: &FileDiff) -> String {
+pub fn file_diff_to_patch_text(diff: &FileDiff) -> String { file_diff_to_patch_text_in(diff, Language::ZhCn) }
+
+fn file_diff_to_patch_text_in(diff: &FileDiff, language: Language) -> String {
     if diff.is_binary {
-        return format!("（{} 是二进制文件）\n", diff.path);
+        return lfmt!(language, "（{} 是二进制文件）\n", "({} is binary)\n", diff.path);
     }
     let mut text = String::new();
     for line in &diff.lines {
@@ -263,7 +289,10 @@ pub fn file_diff_to_patch_text(diff: &FileDiff) -> String {
 }
 
 /// 追溯块 → 「行段 → 归属」摘要文本。纯函数，便于单测。
-pub(crate) fn format_blame_hunks(hunks: &[BlameHunkInfo]) -> String {
+#[cfg(test)]
+pub(crate) fn format_blame_hunks(hunks: &[BlameHunkInfo]) -> String { format_blame_hunks_in(hunks, Language::ZhCn) }
+
+fn format_blame_hunks_in(hunks: &[BlameHunkInfo], language: Language) -> String {
     let mut text = String::new();
     for hunk in hunks {
         let end = hunk.start_line + hunk.line_count.saturating_sub(1);
@@ -271,14 +300,14 @@ pub(crate) fn format_blame_hunks(hunks: &[BlameHunkInfo]) -> String {
             Some(commit) => {
                 let date = chrono::DateTime::<chrono::Utc>::from_timestamp(commit.time, 0)
                     .map(|time| time.format("%Y-%m-%d").to_string())
-                    .unwrap_or_else(|| "时间未知".to_string());
+                    .unwrap_or_else(|| localized(language, "时间未知", "unknown time").to_string());
                 text.push_str(&format!(
                     "L{}-L{} {} {} {} {}\n",
                     hunk.start_line, end, commit.short_oid, commit.author, date, commit.summary
                 ));
             }
             None => {
-                text.push_str(&format!("L{}-L{} （工作区未提交）\n", hunk.start_line, end));
+                text.push_str(&lfmt!(language, "L{}-L{} （工作区未提交）\n", "L{}-L{} (uncommitted worktree)\n", hunk.start_line, end));
             }
         }
     }
@@ -286,12 +315,15 @@ pub(crate) fn format_blame_hunks(hunks: &[BlameHunkInfo]) -> String {
 }
 
 /// 文件历史条目 → 摘要文本。纯函数，便于单测。
-pub(crate) fn format_history_lines(commits: &[CommitInfo]) -> String {
+#[cfg(test)]
+pub(crate) fn format_history_lines(commits: &[CommitInfo]) -> String { format_history_lines_in(commits, Language::ZhCn) }
+
+fn format_history_lines_in(commits: &[CommitInfo], language: Language) -> String {
     let mut text = String::new();
     for commit in commits {
         let date = chrono::DateTime::<chrono::Utc>::from_timestamp(commit.time, 0)
             .map(|time| time.format("%Y-%m-%d").to_string())
-            .unwrap_or_else(|| "时间未知".to_string());
+            .unwrap_or_else(|| localized(language, "时间未知", "unknown time").to_string());
         text.push_str(&format!(
             "{} {} — {}, {}\n",
             commit.short_oid, commit.summary, commit.author, date
@@ -322,20 +354,34 @@ pub fn run_review_agent(
     is_cancelled: &std::sync::atomic::AtomicBool,
     on_event: &mut impl FnMut(AgentEvent),
 ) -> Result<Option<AiReviewResult>> {
+    run_review_agent_with_languages(input, service, client, is_cancelled, on_event, TaskLanguages::default())
+}
+
+/// 快照贯穿全部轮次与网络重试，不依赖进程 UI 语言。
+pub fn run_review_agent_with_languages(
+    input: &ReviewAgentInput,
+    service: &GitService,
+    client: &ChatClient,
+    is_cancelled: &std::sync::atomic::AtomicBool,
+    on_event: &mut impl FnMut(AgentEvent),
+    languages: TaskLanguages,
+) -> Result<Option<AiReviewResult>> {
     let repo = git2::Repository::open(&input.repo_path)?;
 
-    on_event(AgentEvent::Progress("正在准备评审上下文…".to_string()));
-    let entries = collect_initial_entries(service, &repo, input)?;
-    let user_prompt = assemble_initial_user_prompt(&input.target_display_name, &entries);
+    on_event(AgentEvent::Progress(localized(languages.output, "正在准备评审上下文…", "Preparing review context…").to_string()));
+    let entries = collect_initial_entries(service, &repo, input, languages.system)?;
+    let user_prompt = assemble_initial_user_prompt_in(&input.target_display_name, &entries, languages.system);
 
     let mut messages = vec![
-        AgentChatMessage::System(agent_system_prompt().to_string()),
+        AgentChatMessage::System(format!("{}
+
+{}", agent_system_prompt_in(languages.system), languages.output_instruction())),
         AgentChatMessage::User(user_prompt),
     ];
     let mut steps: Vec<AiReviewStep> = Vec::new();
     let mut budget = ToolBudget::default();
     let mut code_index = super::review_index::ReviewIndex::new(input.repo_path.clone(), input.target_commit_oid.clone());
-    let tools = tool_schemas();
+    let tools = tool_schemas_in(languages.system);
     // 强制收尾指令只注入一次（触顶后可能连续多轮收尾重试）。
     let mut finish_instruction_injected = false;
 
@@ -344,8 +390,8 @@ pub fn run_review_agent(
         if is_cancelled.load(std::sync::atomic::Ordering::Relaxed) {
             return Ok(None);
         }
-        on_event(AgentEvent::Progress(format!(
-            "第 {} 轮 · 已执行工具 {} 次",
+        on_event(AgentEvent::Progress(lfmt!(languages.output,
+            "第 {} 轮 · 已执行工具 {} 次", "Round {} · {} tool calls completed",
             budget.rounds + 1,
             budget.calls
         )));
@@ -354,9 +400,9 @@ pub fn run_review_agent(
         // 「没到工具调用次数上限却报限额错误」的误伤。
         let force_finish = budget.force_finish();
         if force_finish && !finish_instruction_injected {
-            messages.push(AgentChatMessage::User(format!(
-                "工具调用预算已用尽（已到{}），请立即基于已获得的信息输出最终评审，不要再调用工具。",
-                budget.limit_reason().unwrap_or("工具调用上限")
+            messages.push(AgentChatMessage::User(lfmt!(languages.system,
+                "工具调用预算已用尽（已到{}），请立即基于已获得的信息输出最终评审，不要再调用工具。", "Tool budget exhausted ({}). Give the final review now using existing evidence; do not call tools.",
+                budget.limit_reason_in(languages.system).unwrap_or(localized(languages.system, "工具调用上限", "tool-call limit"))
             )));
             finish_instruction_injected = true;
         }
@@ -373,8 +419,8 @@ pub fn run_review_agent(
                 if is_cancelled.load(std::sync::atomic::Ordering::Relaxed) {
                     return Ok(None);
                 }
-                on_event(AgentEvent::Progress(format!(
-                    "响应中断（{last_retry_reason}），正在重试第 {attempt}/{} 次…",
+                on_event(AgentEvent::Progress(lfmt!(languages.output,
+                    "响应中断（{last_retry_reason}），正在重试第 {attempt}/{} 次…", "Response interrupted ({last_retry_reason}); retry {attempt}/{}…",
                     AGENT_STREAM_MAX_RETRIES
                 )));
                 std::thread::sleep(std::time::Duration::from_secs(1u64 << (attempt - 1)));
@@ -408,13 +454,13 @@ pub fn run_review_agent(
                     // finish_reason=length 型截断基本确定性，只再试 1 次。
                     if !err.retryable() || attempt >= err.retry_ceiling() {
                         let message = if attempt > 0 {
-                            format!("{err}（已自动重试 {attempt} 次仍失败）")
+                            lfmt!(languages.output,"{}（已自动重试 {attempt} 次仍失败）", "{} (still failed after {attempt} automatic retries)", err.display_in(languages.output))
                         } else {
-                            err.to_string()
+                            err.display_in(languages.output)
                         };
                         return Err(GitError::Message(message));
                     }
-                    last_retry_reason = err.to_string();
+                    last_retry_reason = err.display_in(languages.output);
                 }
             }
         }
@@ -439,9 +485,9 @@ pub fn run_review_agent(
             if !turn.content.trim().is_empty() {
                 break turn;
             }
-            return Err(GitError::Message(format!(
-                "AI 评审已达{}后仍未输出结论，请重试或更换模型",
-                budget.limit_reason().unwrap_or("工具调用上限")
+            return Err(GitError::Message(lfmt!(languages.output,
+                "AI 评审已达{}后仍未输出结论，请重试或更换模型", "AI review reached {} without a conclusion. Retry or change models.",
+                budget.limit_reason_in(languages.system).unwrap_or(localized(languages.system, "工具调用上限", "tool-call limit"))
             )));
         }
 
@@ -461,14 +507,14 @@ pub fn run_review_agent(
             //（否则 119 + 一轮 10 个 = 129 次超额）。超限的调用不执行，
             // 但仍回填 tool 消息——OpenAI 协议要求每个 tool_call_id 配对。
             if budget.force_finish() {
-                let note = format!(
-                    "工具预算已用尽（已到{}），请直接输出最终评审。",
-                    budget.limit_reason().unwrap_or("工具调用上限")
+                let note = lfmt!(languages.system,
+                    "工具预算已用尽（已到{}），请直接输出最终评审。", "Tool budget exhausted ({}). Give the final review now.",
+                    budget.limit_reason_in(languages.system).unwrap_or(localized(languages.system, "工具调用上限", "tool-call limit"))
                 );
                 budget.note_result(note.chars().count());
                 steps.push(AiReviewStep::ToolCall {
                     name: call.name.clone(),
-                    args_summary: tool_args_summary(&call.name, &call.arguments),
+                    args_summary: tool_args_summary_in(&call.name, &call.arguments, languages.output),
                     result_excerpt: note.clone(),
                     error: true,
                 });
@@ -480,7 +526,7 @@ pub fn run_review_agent(
                 continue;
             }
             budget.calls += 1;
-            let (step, tool_message) = execute_tool(service, &repo, input, &call, &mut code_index, is_cancelled);
+            let (step, tool_message) = execute_tool(service, &repo, input, &call, &mut code_index, is_cancelled, languages);
             budget.note_result(tool_message.chars().count());
             steps.push(step);
             on_event(AgentEvent::Step(steps.last().cloned().unwrap()));
@@ -506,9 +552,9 @@ pub fn run_review_agent(
                 .as_deref()
                 .is_some_and(|reasoning| !reasoning.trim().is_empty())
             {
-                "AI 未返回评审正文（仅返回了思考过程），请重试或更换模型"
+                localized(languages.output, "AI 未返回评审正文（仅返回了思考过程），请重试或更换模型", "AI returned only reasoning without a review. Retry or change models.")
             } else {
-                "AI 返回的评审内容为空，请重试或检查模型配置"
+                localized(languages.output, "AI 返回的评审内容为空，请重试或检查模型配置", "AI returned an empty review. Retry or check model configuration.")
             }
             .into(),
         ));
@@ -524,7 +570,8 @@ pub fn run_review_agent(
 }
 
 /// agent 评审的 system prompt：评审规则 + 工具使用方式 + 输出格式。
-fn agent_system_prompt() -> &'static str {
+fn agent_system_prompt_in(language: Language) -> &'static str {
+    if language == Language::En { return REVIEW_SYSTEM_EN; }
     "你是一名资深代码评审专家，对目标分支相对当前分支的全部改动做 diff-first 评审。\n\
      工作方式：\n\
      - 初始输入包含变更文件清单与预算内的差异；被截断的文件可用 read_diff 获取完整差异。\n\
@@ -539,7 +586,7 @@ fn agent_system_prompt() -> &'static str {
      - 小改动若初始差异已足够评审，可以不调用任何工具直接输出结论。\n\
      - 工具调用有次数与体积上限，请克制使用：优先评审差异本身，只对真正需要核实的点深入。\n\
      - 全部调查完成后输出最终评审（之后的回复不再调用工具）。\n\
-     输出要求（最终回复，中文，Markdown）：\n\
+     输出要求（最终回复，按指定输出语言，Markdown）：\n\
      1. 按文件分组：每个文件一个 `### <路径>` 小节；跨文件的整体问题放最前的 `### 总体` 小节。\n\
      2. 小节内按“严重问题 / 建议 / 风险点”用列表组织，没有的组可省略。\n\
      3. 只评论实际改动与经工具核实过的代码，不要凭空假设未展示的代码。\n\
@@ -553,6 +600,7 @@ fn collect_initial_entries(
     service: &GitService,
     repo: &git2::Repository,
     input: &ReviewAgentInput,
+    language: Language,
 ) -> Result<Vec<InitialDiffEntry>> {
     let mut entries = Vec::with_capacity(input.compare_files.len());
     for file in &input.compare_files {
@@ -564,8 +612,8 @@ fn collect_initial_entries(
             false,
             DiffEncodingChoice::Auto,
         ) {
-            Ok(diff) => file_diff_to_patch_text(&diff),
-            Err(err) => format!("（差异加载失败：{err}）\n"),
+            Ok(diff) => file_diff_to_patch_text_in(&diff, language),
+            Err(err) => lfmt!(language, "（差异加载失败：{err}）\n", "(Failed to load diff: {err})\n"),
         };
         entries.push(InitialDiffEntry {
             path: file.path.clone(),
@@ -577,80 +625,80 @@ fn collect_initial_entries(
 }
 
 /// 内置工具定义（名称 / 中文描述 / 手写 JSON Schema）。
-fn tool_schemas() -> Vec<ToolSchema> {
+fn tool_schemas_in(language: Language) -> Vec<ToolSchema> {
     let mut tools = vec![
         ToolSchema {
             name: "read_lines",
-            description: "读取目标分支上某文件的指定行范围（1 基闭区间），返回带行号的文本。",
+            description: localized(language, "读取目标分支上某文件的指定行范围（1 基闭区间），返回带行号的文本。", "Read an inclusive 1-based line range of a target-branch file, with line numbers."),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "仓库相对路径" },
-                    "start": { "type": "integer", "description": "起始行（默认 1）" },
-                    "end": { "type": "integer", "description": "结束行（默认起始行 + 400）" }
+                    "path": { "type": "string", "description": localized(language, "仓库相对路径", "Repository-relative path") },
+                    "start": { "type": "integer", "description": localized(language, "起始行（默认 1）", "Start line (default 1)") },
+                    "end": { "type": "integer", "description": localized(language, "结束行（默认起始行 + 400）", "End line (default start + 400)") }
                 },
                 "required": ["path"]
             }),
         },
         ToolSchema {
             name: "read_diff",
-            description: "读取某个变更文件的完整差异（目标分支相对当前分支，三点比较）。",
+            description: localized(language, "读取某个变更文件的完整差异（目标分支相对当前分支，三点比较）。", "Read a changed file diff (target vs current, three-dot comparison)."),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "变更文件列表中的路径" }
+                    "path": { "type": "string", "description": localized(language, "变更文件列表中的路径", "Path from the changed-file list") }
                 },
                 "required": ["path"]
             }),
         },
         ToolSchema {
             name: "get_file_tree",
-            description: "列出目标分支某目录的直接子条目（不传 path 为仓库根）。",
+            description: localized(language, "列出目标分支某目录的直接子条目（不传 path 为仓库根）。", "List direct children of a target-branch directory (omit path for root)."),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "目录路径（默认根目录）" }
+                    "path": { "type": "string", "description": localized(language, "目录路径（默认根目录）", "Directory path (default root)") }
                 }
             }),
         },
         ToolSchema {
             name: "get_file_history",
-            description: "查看某文件最近的提交历史（全部引用范围，默认 20 条）。",
+            description: localized(language, "查看某文件最近的提交历史（全部引用范围，默认 20 条）。", "Read recent file history across all refs (default 20)."),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "仓库相对路径" },
-                    "limit": { "type": "integer", "description": "条数上限（默认 20，最大 20）" }
+                    "path": { "type": "string", "description": localized(language, "仓库相对路径", "Repository-relative path") },
+                    "limit": { "type": "integer", "description": localized(language, "条数上限（默认 20，最大 20）", "Count limit (default 20, maximum 20)") }
                 },
                 "required": ["path"]
             }),
         },
         ToolSchema {
             name: "get_blame",
-            description: "查看某文件每段行的归属提交（基于当前 HEAD 与工作区未提交改动）。",
+            description: localized(language, "查看某文件每段行的归属提交（基于当前 HEAD 与工作区未提交改动）。", "Read line attribution using current HEAD and uncommitted worktree changes."),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "仓库相对路径" }
+                    "path": { "type": "string", "description": localized(language, "仓库相对路径", "Repository-relative path") }
                 },
                 "required": ["path"]
             }),
         },
         ToolSchema {
             name: "search_code",
-            description: "在目标分支的代码里按子串或正则逐行搜索，返回文件、行号与命中行；可用目录前缀缩小范围。",
+            description: localized(language, "在目标分支的代码里按子串或正则逐行搜索，返回文件、行号与命中行；可用目录前缀缩小范围。", "Search target-branch code by substring or regex, returning paths, line numbers and matching lines. Narrow scope with a directory prefix."),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "搜索内容（子串或正则）" },
-                    "is_regex": { "type": "boolean", "description": "是否按正则解释（默认 false）" },
-                    "path_prefix": { "type": "string", "description": "可选目录前缀（如 src/），限定搜索范围" }
+                    "query": { "type": "string", "description": localized(language, "搜索内容（子串或正则）", "Search query (substring or regex)") },
+                    "is_regex": { "type": "boolean", "description": localized(language, "是否按正则解释（默认 false）", "Interpret as regex (default false)") },
+                    "path_prefix": { "type": "string", "description": localized(language, "可选目录前缀（如 src/），限定搜索范围", "Optional directory prefix (e.g. src/) to limit scope") }
                 },
                 "required": ["query"]
             }),
         },
     ];
-    tools.extend(super::review_index::tool_schemas());
+    tools.extend(super::review_index::tool_schemas_in(language));
     tools
 }
 
@@ -664,15 +712,17 @@ fn execute_tool(
     call: &crate::ai::client::AgentToolCall,
     index: &mut super::review_index::ReviewIndex,
     cancelled: &std::sync::atomic::AtomicBool,
+    languages: TaskLanguages,
 ) -> (AiReviewStep, String) {
-    let outcome = dispatch_tool(service, repo, input, &call.name, &call.arguments, index, cancelled);
+    let language = languages.system;
+    let outcome = dispatch_tool_in(service, repo, input, &call.name, &call.arguments, index, cancelled, language);
     let (result_excerpt, error) = match outcome {
         Ok(text) => (text, false),
-        Err(err) => (format!("工具执行失败：{err}"), true),
+        Err(err) => (lfmt!(language,"工具执行失败：{}", "Tool execution failed: {}", err.display_in(language)), true),
     };
     let step = AiReviewStep::ToolCall {
         name: call.name.clone(),
-        args_summary: tool_args_summary(&call.name, &call.arguments),
+        args_summary: tool_args_summary_in(&call.name, &call.arguments, languages.output),
         result_excerpt: result_excerpt.clone(),
         error,
     };
@@ -680,7 +730,13 @@ fn execute_tool(
 }
 
 /// 工具参数的一行摘要（时间线上展示）。
+#[cfg(test)]
 fn tool_args_summary(name: &str, arguments: &str) -> String {
+    tool_args_summary_in(name, arguments, Language::ZhCn)
+}
+
+/// 新轨迹使用任务输出语言；查询文本与已保存的历史摘要均不重译。
+fn tool_args_summary_in(name: &str, arguments: &str, output_language: Language) -> String {
     let value: serde_json::Value =
         serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null);
     let quote = |text: &str| {
@@ -719,7 +775,7 @@ fn tool_args_summary(name: &str, arguments: &str) -> String {
             "search_code {}{}",
             quote(value["query"].as_str().unwrap_or("")),
             if value["is_regex"].as_bool().unwrap_or(false) {
-                "（正则）"
+                localized(output_language, "（正则）", " (regex)")
             } else {
                 ""
             }
@@ -733,7 +789,7 @@ fn tool_args_summary(name: &str, arguments: &str) -> String {
 }
 
 /// 按工具名分发执行；参数 JSON 无效时返回中文错误。
-fn dispatch_tool(
+fn dispatch_tool_in(
     service: &GitService,
     repo: &git2::Repository,
     input: &ReviewAgentInput,
@@ -741,33 +797,34 @@ fn dispatch_tool(
     arguments: &str,
     index: &mut super::review_index::ReviewIndex,
     cancelled: &std::sync::atomic::AtomicBool,
+    language: Language,
 ) -> Result<String> {
-    let parse_error = |err: serde_json::Error| GitError::Message(format!("参数解析失败：{err}"));
+    let parse_error = |err: serde_json::Error| GitError::Message(lfmt!(language,"参数解析失败：{err}", "Failed to parse arguments: {err}"));
     match name {
-        "search_symbols" | "get_symbol_detail" | "trace_path" | "check_index_coverage" => index.dispatch(repo, name, arguments, cancelled),
+        "search_symbols" | "get_symbol_detail" | "trace_path" | "check_index_coverage" => index.dispatch_in(repo, name, arguments, cancelled, language),
         "read_lines" => {
             let args: ReadLinesArgs = serde_json::from_str(arguments).map_err(parse_error)?;
-            tool_read_lines(service, repo, input, &args)
+            tool_read_lines_in(service, repo, input, &args, language)
         }
         "read_diff" => {
             let args: PathOnlyArgs = serde_json::from_str(arguments).map_err(parse_error)?;
-            tool_read_diff(service, repo, input, &args.path)
+            tool_read_diff_in(service, repo, input, &args.path, language)
         }
         "get_file_tree" => {
             let args: FileTreeArgs = serde_json::from_str(arguments).map_err(parse_error)?;
-            tool_get_file_tree(service, repo, input, args.path.as_deref())
+            tool_get_file_tree_in(service, repo, input, args.path.as_deref(), language)
         }
         "get_file_history" => {
             let args: FileHistoryArgs = serde_json::from_str(arguments).map_err(parse_error)?;
-            tool_get_file_history(service, repo, &args.path, args.limit)
+            tool_get_file_history_in(service, repo, &args.path, args.limit, language)
         }
         "get_blame" => {
             let args: PathOnlyArgs = serde_json::from_str(arguments).map_err(parse_error)?;
-            tool_get_blame(service, repo, &args.path)
+            tool_get_blame_in(service, repo, &args.path, language)
         }
         "search_code" => {
             let args: SearchCodeArgs = serde_json::from_str(arguments).map_err(parse_error)?;
-            tool_search_code(
+            tool_search_code_in(
                 service,
                 repo,
                 input,
@@ -777,22 +834,18 @@ fn dispatch_tool(
                     .as_deref()
                     .map(str::trim)
                     .filter(|p| !p.is_empty()),
+                language,
             )
         }
-        other => Err(GitError::Message(format!("未知工具：{other}"))),
+        other => Err(GitError::Message(lfmt!(language,"未知工具：{other}", "Unknown tool: {other}"))),
     }
 }
 
 /// read_lines：读目标分支文件指定行范围（带行号输出）。
-fn tool_read_lines(
-    service: &GitService,
-    repo: &git2::Repository,
-    input: &ReviewAgentInput,
-    args: &ReadLinesArgs,
-) -> Result<String> {
+fn tool_read_lines_in(service: &GitService, repo: &git2::Repository, input: &ReviewAgentInput, args: &ReadLinesArgs, language: Language) -> Result<String> {
     let path = PathBuf::from(&args.path);
     if args.path.trim().is_empty() {
-        return Err(GitError::Message("缺少 path 参数".into()));
+        return Err(GitError::Message(localized(language, "缺少 path 参数", "Missing path argument").into()));
     }
     // 体积守卫：先读对象头，超过 1MB 不整体加载。
     if !blob_size_within(
@@ -801,9 +854,10 @@ fn tool_read_lines(
         &input.target_commit_oid,
         &path,
         READ_LINES_MAX_BYTES,
+        language,
     )? {
-        return Ok(format!(
-            "（{} 超过 1MB，超出读取上限，请用 read_diff 或缩小范围）",
+        return Ok(lfmt!(language,
+            "（{} 超过 1MB，超出读取上限，请用 read_diff 或缩小范围）", "({} exceeds the 1MB read limit; use read_diff or narrow scope)",
             args.path
         ));
     }
@@ -814,7 +868,7 @@ fn tool_read_lines(
         DiffEncodingChoice::Auto,
     )?;
     if content.is_binary {
-        return Ok(format!("（{} 是二进制文件，无法按行读取）", args.path));
+        return Ok(lfmt!(language,"（{} 是二进制文件，无法按行读取）", "({} is binary and cannot be read by line)", args.path));
     }
     let (start, end) = clamp_line_range(content.lines.len(), args.start, args.end);
     let mut text = String::new();
@@ -828,20 +882,15 @@ fn tool_read_lines(
         text.push_str(&format!("{:>5} | {}\n", index + 1, line));
     }
     if text.is_empty() {
-        text.push_str("（文件为空）\n");
+        text.push_str(localized(language, "（文件为空）\n", "(Empty file)\n"));
     }
-    Ok(truncate_result_chars(&text, MAX_TOOL_RESULT_CHARS))
+    Ok(truncate_result_chars_in(&text, MAX_TOOL_RESULT_CHARS, language))
 }
 
 /// read_diff：某变更文件的完整差异（超长截断）。
-fn tool_read_diff(
-    service: &GitService,
-    repo: &git2::Repository,
-    input: &ReviewAgentInput,
-    path: &str,
-) -> Result<String> {
+fn tool_read_diff_in(service: &GitService, repo: &git2::Repository, input: &ReviewAgentInput, path: &str, language: Language) -> Result<String> {
     if path.trim().is_empty() {
-        return Err(GitError::Message("缺少 path 参数".into()));
+        return Err(GitError::Message(localized(language, "缺少 path 参数", "Missing path argument").into()));
     }
     let old_path = input
         .compare_files
@@ -856,19 +905,15 @@ fn tool_read_diff(
         false,
         DiffEncodingChoice::Auto,
     )?;
-    Ok(truncate_result_chars(
-        &file_diff_to_patch_text(&diff),
+    Ok(truncate_result_chars_in(
+        &file_diff_to_patch_text_in(&diff, language),
         MAX_TOOL_RESULT_CHARS,
+        language,
     ))
 }
 
 /// get_file_tree：列目录直接子条目（上限 300 条）。
-fn tool_get_file_tree(
-    service: &GitService,
-    repo: &git2::Repository,
-    input: &ReviewAgentInput,
-    path: Option<&str>,
-) -> Result<String> {
+fn tool_get_file_tree_in(service: &GitService, repo: &git2::Repository, input: &ReviewAgentInput, path: Option<&str>, language: Language) -> Result<String> {
     let prefix = path
         .map(str::trim)
         .filter(|path| !path.is_empty())
@@ -881,7 +926,7 @@ fn tool_get_file_tree(
                 text.push_str(&format!("dir  {}/\n", entry.name));
             }
             crate::types::BrowseEntryKind::Submodule => {
-                text.push_str(&format!("sub  {} (子模块)\n", entry.name));
+                text.push_str(&lfmt!(language, "sub  {} (子模块)\n", "sub  {} (submodule)\n", entry.name));
             }
             crate::types::BrowseEntryKind::File => {
                 text.push_str(&format!("file {} ({} B)\n", entry.name, entry.size));
@@ -889,8 +934,8 @@ fn tool_get_file_tree(
         }
     }
     if entries.len() > FILE_TREE_MAX_ENTRIES {
-        text.push_str(&format!(
-            "…（共 {} 条，仅显示前 {} 条）\n",
+        text.push_str(&lfmt!(language,
+            "…（共 {} 条，仅显示前 {} 条）\n", "… ({} entries total; showing first {})\n",
             entries.len(),
             FILE_TREE_MAX_ENTRIES
         ));
@@ -899,53 +944,41 @@ fn tool_get_file_tree(
 }
 
 /// get_file_history：文件最近提交历史（钳 20 条）。
-fn tool_get_file_history(
-    service: &GitService,
-    repo: &git2::Repository,
-    path: &str,
-    limit: Option<usize>,
-) -> Result<String> {
+fn tool_get_file_history_in(service: &GitService, repo: &git2::Repository, path: &str, limit: Option<usize>, language: Language) -> Result<String> {
     if path.trim().is_empty() {
-        return Err(GitError::Message("缺少 path 参数".into()));
+        return Err(GitError::Message(localized(language, "缺少 path 参数", "Missing path argument").into()));
     }
     let limit = limit
         .unwrap_or(FILE_HISTORY_MAX_LIMIT)
         .clamp(1, FILE_HISTORY_MAX_LIMIT);
     let (commits, _) = service.file_history(repo, HistoryScope::AllRefs, path, 0, limit, None)?;
-    let mut text = format_history_lines(&commits);
+    let mut text = format_history_lines_in(&commits, language);
     if text.is_empty() {
-        text.push_str("（没有找到该文件的历史）\n");
+        text.push_str(localized(language, "（没有找到该文件的历史）\n", "(No file history found)\n"));
     }
-    Ok(truncate_result_chars(&text, MAX_TOOL_RESULT_CHARS))
+    Ok(truncate_result_chars_in(&text, MAX_TOOL_RESULT_CHARS, language))
 }
 
 /// get_blame：行段归属摘要（基于 HEAD + 工作区；target 版本追溯留作后续）。
-fn tool_get_blame(service: &GitService, repo: &git2::Repository, path: &str) -> Result<String> {
+fn tool_get_blame_in(service: &GitService, repo: &git2::Repository, path: &str, language: Language) -> Result<String> {
     if path.trim().is_empty() {
-        return Err(GitError::Message("缺少 path 参数".into()));
+        return Err(GitError::Message(localized(language, "缺少 path 参数", "Missing path argument").into()));
     }
     let view = service.blame_file(repo, Path::new(path), DiffEncodingChoice::Auto)?;
-    let mut text = format_blame_hunks(&view.hunks);
+    let mut text = format_blame_hunks_in(&view.hunks, language);
     if text.is_empty() {
-        text.push_str("（没有追溯信息）\n");
+        text.push_str(localized(language, "（没有追溯信息）\n", "(No attribution information)\n"));
     }
     // 基准说明：其它工具都读目标提交，blame 只有 HEAD + 工作区版本，
     // 行号/归属可能与评审对象对不上，明示模型避免据此下错结论。
-    let text = format!(
-        "（注意：以下追溯基于当前 HEAD 与工作区，不是目标分支版本，行号可能与目标分支不一致）\n{text}"
+    let text = lfmt!(language,
+        "（注意：以下追溯基于当前 HEAD 与工作区，不是目标分支版本，行号可能与目标分支不一致）\n{text}", "(Note: attribution is based on current HEAD and worktree, not the target branch; line numbers may differ.)\n{text}"
     );
-    Ok(truncate_result_chars(&text, MAX_TOOL_RESULT_CHARS))
+    Ok(truncate_result_chars_in(&text, MAX_TOOL_RESULT_CHARS, language))
 }
 
 /// search_code：目标分支代码搜索（上限 50 命中，可限定目录前缀）。
-fn tool_search_code(
-    service: &GitService,
-    repo: &git2::Repository,
-    input: &ReviewAgentInput,
-    query: &str,
-    is_regex: bool,
-    path_prefix: Option<&str>,
-) -> Result<String> {
+fn tool_search_code_in(service: &GitService, repo: &git2::Repository, input: &ReviewAgentInput, query: &str, is_regex: bool, path_prefix: Option<&str>, language: Language) -> Result<String> {
     let matches = service.search_code(
         repo,
         &input.target_commit_oid,
@@ -956,9 +989,9 @@ fn tool_search_code(
     )?;
     let mut text = format_search_hits(&matches);
     if text.is_empty() {
-        text.push_str("（没有命中）\n");
+        text.push_str(localized(language, "（没有命中）\n", "(No matches)\n"));
     }
-    Ok(truncate_result_chars(&text, MAX_TOOL_RESULT_CHARS))
+    Ok(truncate_result_chars_in(&text, MAX_TOOL_RESULT_CHARS, language))
 }
 
 /// 读 blob 对象头判断文件体积是否在限制内；路径不存在直接报错。
@@ -968,12 +1001,13 @@ fn blob_size_within(
     commit_oid: &str,
     path: &Path,
     limit: u64,
+    language: Language,
 ) -> Result<bool> {
     let commit = service.find_commit_by_oid(repo, commit_oid)?;
     let tree = commit.tree()?;
     let entry = tree
         .get_path(path)
-        .map_err(|_| GitError::Message(format!("文件不存在: {}", path.display())))?;
+        .map_err(|_| GitError::Message(lfmt!(language, "文件不存在: {}", "File does not exist: {}", path.display())))?;
     if let Ok(odb) = repo.odb()
         && let Ok((size, _)) = odb.read_header(entry.id())
         && size as u64 > limit
@@ -986,3 +1020,19 @@ fn blob_size_within(
 #[cfg(test)]
 #[path = "../tests/ai/review_agent.rs"]
 mod tests;
+
+const REVIEW_SYSTEM_EN: &str = "You are an experienced code reviewer. Review every change introduced by the target branch relative to the current branch using a diff-first approach.
+Working method:
+- The initial input contains a changed-file list and budgeted diffs; use read_diff for truncated files.
+- Read target-branch context with read_lines and get_file_tree. Prefer search_symbols for definitions, get_symbol_detail for definition source, and trace_path for callers/callees. Index tools are pinned to the target commit, never the current workspace index. Verify hits with check_index_coverage; partial parsing, unresolved calls and empty results require read_lines/search_code verification and do not prove absence. When has_more is true, preserve filters and page with offset=next_offset. search_code supports text/regex and directory prefixes. get_file_history/get_blame explain history and attribution; get_blame uses current HEAD and worktree, not the target version.
+- Batch independent investigations in the same round to reduce round trips.
+- If initial diffs suffice for a small change, finish without tools.
+- Tool calls and result volume are bounded. Focus on diffs; investigate only points requiring verification.
+- After investigation, give the final review and make no further tool calls.
+Final output requirements (Markdown, in the specified output language):
+1. Group by file with one ### <path> section each; put cross-file issues in a leading overall section, with a localized heading.
+2. Group bullets into critical issues / suggestions / risks; omit empty groups and localize headings.
+3. Review only actual changes and code verified by tools; do not invent unseen code.
+4. Identify bugs, security, performance and readability issues with short actionable suggestions; examples contain only essential snippets.
+5. Cite diff/read_lines line numbers for serious findings where possible.
+6. Stay concise and prioritize important findings (at most 15 bullets across all files).";

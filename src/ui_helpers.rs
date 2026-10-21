@@ -1,6 +1,11 @@
 // 本文件包含通用渲染辅助函数，其中部分 helper 为预留或过渡用途，可能暂未被调用。
 #![allow(dead_code)]
 
+#[path = "ui_resources/ui_helpers_messages.rs"]
+mod messages;
+
+
+
 use std::rc::Rc;
 
 use gpui::{
@@ -808,10 +813,10 @@ pub(crate) fn format_byte_size(bytes: u64) -> String {
 /// 说明无法以文本展示差异，并按新增/删除/修改给出文件大小信息（若可用）。
 pub(crate) fn binary_diff_placeholder(diff: &FileDiff) -> impl IntoElement + use<> {
     let size_label = match (diff.old_size, diff.new_size) {
-        (None, Some(new_size)) => format!("新增文件 · {}", format_byte_size(new_size)),
-        (Some(old_size), None) => format!("已删除 · 原大小 {}", format_byte_size(old_size)),
+        (None, Some(new_size)) => khaslana::ui_i18n::format(messages::NEW_FILE_NEW_SIZE, &[("new_size", &(format_byte_size(new_size)).to_string())]),
+        (Some(old_size), None) => khaslana::ui_i18n::format(messages::DELETED_ORIGINAL_SIZE_OLD_SIZE, &[("old_size", &(format_byte_size(old_size)).to_string())]),
         (Some(old_size), Some(new_size)) if old_size == new_size => {
-            format!("大小 {}", format_byte_size(new_size))
+            khaslana::ui_i18n::format(messages::SIZE_NEW_SIZE, &[("new_size", &(format_byte_size(new_size)).to_string())])
         }
         (Some(old_size), Some(new_size)) => format!(
             "{} → {}",
@@ -848,13 +853,13 @@ pub(crate) fn binary_diff_placeholder(diff: &FileDiff) -> impl IntoElement + use
                         .text_size(px(14.0))
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                        .child("二进制文件"),
+                        .child(khaslana::ui_i18n::text(messages::BINARY_FILE)),
                 )
                 .child(
                     div()
                         .text_size(px(12.0))
                         .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                        .child("无法以文本形式展示差异"),
+                        .child(khaslana::ui_i18n::text(messages::CANNOT_DISPLAY_DIFFERENCES_AS_TEXT)),
                 )
                 .when(!size_label.is_empty(), |this| {
                     this.child(
@@ -874,7 +879,7 @@ pub(crate) fn commit_time_label(seconds: i64) -> String {
                 .format("%Y-%m-%d %H:%M:%S")
                 .to_string()
         })
-        .unwrap_or_else(|| "时间未知".to_string())
+        .unwrap_or_else(|| khaslana::ui_i18n::text(messages::UNKNOWN_TIME).to_string())
 }
 
 pub(crate) fn author_avatar(author: &str) -> impl IntoElement {
@@ -969,8 +974,8 @@ fn repo_initials(name: &str) -> String {
 
 pub(crate) fn diff_scope_label(scope: &DiffScope) -> &'static str {
     match scope {
-        DiffScope::Staged => "已暂存",
-        DiffScope::Unstaged => "未暂存",
+        DiffScope::Staged => khaslana::ui_i18n::text(messages::STAGED),
+        DiffScope::Unstaged => khaslana::ui_i18n::text(messages::UNSTAGED),
     }
 }
 

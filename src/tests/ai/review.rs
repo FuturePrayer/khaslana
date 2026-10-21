@@ -1,6 +1,16 @@
 use super::*;
 
 #[test]
+fn summary_localizes_wrapper_not_model_content() {
+    use crate::language::Language;
+    let step = AiReviewStep::Reasoning { text: "模型原文 English".into() };
+    assert_eq!(step.summary_in(Language::En), "Reasoning: 模型原文 English");
+    assert_eq!(step.summary_in(Language::ZhCn), "思考：模型原文 English");
+    let step = AiReviewStep::Message { text: "用户内容 English".into() };
+    assert_eq!(step.summary_in(Language::En), "Reply: 用户内容 English");
+}
+
+#[test]
 fn reasoning_summary_derives_from_first_line() {
     // 首行非空文本作为摘要，短文本不截断。
     let step = AiReviewStep::Reasoning {

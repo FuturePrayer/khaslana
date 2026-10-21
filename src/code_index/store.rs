@@ -7,12 +7,12 @@
 //! 全量采用「删辅助索引 → 批量插入 → 重建索引」的 bulk 模式（对齐参考项目
 //! `cbm_store_begin_bulk`），FTS5 为 contentless 表、rowid 显式取节点 id。
 
+use crate::types::domain_ui_resources;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags, params};
 
-use super::err;
 use super::graph::{EdgeType, GraphBuffer, NodeId};
 use crate::types::Result;
 
@@ -26,7 +26,7 @@ const INDEX_CONTENT_VERSION: &str = "8";
 /// 目录不存在时创建。
 pub fn open_index_db_path(data_dir: &Path, repo_hash8: &str) -> Result<PathBuf> {
     let dir = data_dir.join("code-index").join(repo_hash8);
-    std::fs::create_dir_all(&dir).map_err(|e| err(format!("创建索引目录失败：{e}")))?;
+    std::fs::create_dir_all(&dir).map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CREATE_THE_INDEX_DIRECTORY, &[("e", &format!("{}", e))])))?;
     Ok(dir.join("index.db"))
 }
 
@@ -110,10 +110,10 @@ impl CodeIndexStore {
         for suffix in ["", "-wal", "-shm"] {
             let p = PathBuf::from(format!("{}{suffix}", path.display()));
             if p.exists() {
-                std::fs::remove_file(&p).map_err(|e| err(format!("重置索引库失败：{e}")))?;
+                std::fs::remove_file(&p).map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_RESET_THE_INDEX_DATABASE, &[("e", &format!("{}", e))])))?;
             }
         }
-        Self::try_open(path)?.ok_or_else(|| err("索引库创建失败"))
+        Self::try_open(path)?.ok_or_else(|| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CREATE_THE_INDEX_DATABASE, &[])))
     }
 
     fn try_open(path: &Path) -> Result<Option<Self>> {
@@ -122,7 +122,7 @@ impl CodeIndexStore {
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
         )
-        .map_err(|e| err(format!("打开索引库失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_OPEN_THE_INDEX_DATABASE, &[("e", &format!("{}", e))])))?;
         conn.pragma_update(None, "journal_mode", "WAL").ok();
         conn.pragma_update(None, "synchronous", "NORMAL").ok();
         conn.pragma_update(None, "cache_size", -32768).ok();
@@ -151,7 +151,7 @@ impl CodeIndexStore {
             store.conn.execute_batch("CREATE TABLE IF NOT EXISTS call_records (file_path TEXT PRIMARY KEY, data BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS call_names (name TEXT NOT NULL, file_path TEXT NOT NULL REFERENCES call_records(file_path) ON DELETE CASCADE, PRIMARY KEY(name,file_path)) WITHOUT ROWID;
                 CREATE INDEX IF NOT EXISTS idx_call_names_file ON call_names(file_path);")
-                .map_err(|error| err(format!("迁移调用记录表失败：{error}")))?;
+                .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_MIGRATE_THE_CALL_RECORD_TABLE, &[("error", &format!("{}", error))])))?;
             store.set_meta("schema_version", "4")?;
             return Ok(Some(store));
         }
@@ -200,7 +200,7 @@ impl CodeIndexStore {
                 );
                 "#,
             )
-            .map_err(|e| err(format!("初始化索引 schema 失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_INITIALIZE_THE_INDEX_SCHEMA, &[("e", &format!("{}", e))])))?;
         self.set_meta(
             "schema_version",
             CODE_INDEX_SCHEMA_VERSION.to_string().as_str(),
@@ -214,23 +214,23 @@ impl CodeIndexStore {
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 params![key, value],
             )
-            .map_err(|e| err(format!("写入索引元信息失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_WRITE_INDEX_METADATA, &[("e", &format!("{}", e))])))?;
         Ok(())
     }
 
     fn migrate_search_schema(&mut self) -> Result<()> {
-        let tx = self.conn.transaction().map_err(|e| err(format!("开启索引迁移失败：{e}")))?;
+        let tx = self.conn.transaction().map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_START_INDEX_MIGRATION, &[("e", &format!("{}", e))])))?;
         tx.execute_batch("DROP TABLE nodes_fts;
             CREATE VIRTUAL TABLE nodes_fts USING fts5(name, qualified_name, label, file_path, body,
                 content='', tokenize='unicode61 remove_diacritics 2');
             CREATE TABLE IF NOT EXISTS call_records (file_path TEXT PRIMARY KEY, data BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS call_names (name TEXT NOT NULL, file_path TEXT NOT NULL REFERENCES call_records(file_path) ON DELETE CASCADE, PRIMARY KEY(name,file_path)) WITHOUT ROWID;
                 CREATE INDEX IF NOT EXISTS idx_call_names_file ON call_names(file_path);")
-            .map_err(|e| err(format!("迁移全文索引失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_MIGRATE_THE_FULL_TEXT_INDEX, &[("e", &format!("{}", e))])))?;
         super::search::fill_stored_search_index(&tx)?;
         tx.execute("UPDATE meta SET value = ?1 WHERE key = 'schema_version'", params![CODE_INDEX_SCHEMA_VERSION.to_string()])
-            .map_err(|e| err(format!("更新索引版本失败：{e}")))?;
-        tx.commit().map_err(|e| err(format!("提交索引迁移失败：{e}")))
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_UPDATE_THE_INDEX_VERSION, &[("e", &format!("{}", e))])))?;
+        tx.commit().map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_COMMIT_INDEX_MIGRATION, &[("e", &format!("{}", e))])))
     }
 
     /// 旧图缺少文档或独立调用暂存时，下一次刷新补做一次全量提取。
@@ -243,17 +243,17 @@ impl CodeIndexStore {
         use rusqlite::OptionalExtension;
         self.conn.query_row("SELECT value FROM meta WHERE key='branch'", [], |row| row.get::<_, String>(0))
             .optional().map(|stored| stored.as_deref() == Some(branch))
-            .map_err(|error| err(format!("读取索引分支失败：{error}")))
+            .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_THE_INDEXED_BRANCH, &[("error", &format!("{}", error))])))
     }
 
     pub(super) fn retry_files(&self) -> Result<std::collections::HashSet<String>> {
         let mut select = self.conn.prepare("SELECT file_path FROM nodes WHERE label='File' AND json_extract(properties, '$.coverage.status') IN ('read_failed', 'parse_failed')")
-            .map_err(|e| err(format!("读取索引重试信息失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_INDEX_RETRY_INFORMATION, &[("e", &format!("{}", e))])))?;
         let rows = select.query_map([], |row| row.get::<_, String>(0))
-            .map_err(|e| err(format!("读取索引重试信息失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_INDEX_RETRY_INFORMATION, &[("e", &format!("{}", e))])))?;
         let mut failed = std::collections::HashSet::new();
         for row in rows {
-            failed.insert(row.map_err(|e| err(format!("读取索引重试信息失败：{e}")))?);
+            failed.insert(row.map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_INDEX_RETRY_INFORMATION, &[("e", &format!("{}", e))])))?);
         }
         for issue in self.discovery_issues()? {
             if matches!(issue.status.as_str(), "read_failed" | "parse_failed") { failed.insert(issue.path); }
@@ -264,11 +264,11 @@ impl CodeIndexStore {
     pub(super) fn discovery_issues(&self) -> Result<Vec<super::coverage::FileCoverage>> {
         use rusqlite::OptionalExtension;
         let properties: Option<String> = self.conn.query_row("SELECT properties FROM nodes WHERE label='Project' LIMIT 1", [], |row| row.get(0))
-            .optional().map_err(|error| err(format!("读取发现覆盖信息失败：{error}")))?;
+            .optional().map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_DISCOVERY_COVERAGE, &[("error", &format!("{}", error))])))?;
         let Some(properties) = properties else { return Ok(Vec::new()); };
-        let properties: serde_json::Value = serde_json::from_str(&properties).map_err(|error| err(format!("发现覆盖信息损坏：{error}")))?;
+        let properties: serde_json::Value = serde_json::from_str(&properties).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CORRUPT_DISCOVERY_COVERAGE_INFORMATION, &[("error", &format!("{}", error))])))?;
         properties.get("discovery_issues").cloned().map(serde_json::from_value).transpose()
-            .map_err(|error| err(format!("发现覆盖信息损坏：{error}"))).map(|issues| issues.unwrap_or_default())
+            .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CORRUPT_DISCOVERY_COVERAGE_INFORMATION, &[("error", &format!("{}", error))]))).map(|issues| issues.unwrap_or_default())
     }
 
     /// 全量替换图内容、调用记录和元信息；增量刷新使用按文件事务更新。
@@ -290,7 +290,7 @@ impl CodeIndexStore {
         let tx = self
             .conn
             .transaction()
-            .map_err(|e| err(format!("开启索引事务失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_START_THE_INDEX_TRANSACTION, &[("e", &format!("{}", e))])))?;
 
         // bulk 模式：先删辅助索引，插完重建。
         tx.execute_batch(
@@ -300,15 +300,15 @@ impl CodeIndexStore {
              DROP INDEX IF EXISTS idx_edges_source;
              DROP INDEX IF EXISTS idx_edges_target;",
         )
-        .map_err(|e| err(format!("清理索引辅助索引失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CLEAR_AUXILIARY_DATABASE_INDEXES, &[("e", &format!("{}", e))])))?;
 
         tx.execute("DELETE FROM edges", [])
             .and_then(|_| tx.execute("DELETE FROM nodes", []))
             .and_then(|_| tx.execute("DELETE FROM file_hashes", []))
-            .map_err(|e| err(format!("清空旧图失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CLEAR_THE_OLD_GRAPH, &[("e", &format!("{}", e))])))?;
         // contentless FTS 的整表清空特殊命令。
         tx.execute("INSERT INTO nodes_fts(nodes_fts) VALUES('delete-all')", [])
-            .map_err(|e| err(format!("清空全文索引失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CLEAR_THE_FULL_TEXT_INDEX, &[("e", &format!("{}", e))])))?;
 
         // 每批只构造有界参数数组，减少 SQLite 的 prepare/step 次数。
         for batch in graph.nodes.chunks(256) {
@@ -321,7 +321,7 @@ impl CodeIndexStore {
                 (node.start_line as i64).into(), (node.end_line as i64).into(), node.properties.to_string().into(),
             ]).collect();
             tx.prepare_cached(&sql).and_then(|mut stmt| stmt.execute(rusqlite::params_from_iter(args)))
-                .map_err(|error| err(format!("批量写入节点失败：{error}")))?;
+                .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_BATCH_WRITE_NODES, &[("error", &format!("{}", error))])))?;
         }
         for batch in graph.edges.chunks(512) {
             if cancelled() { return Ok(false); }
@@ -330,7 +330,7 @@ impl CodeIndexStore {
                 (edge.source as i64 + 1).into(), (edge.target as i64 + 1).into(), edge.etype.as_str().to_string().into(), edge.properties.to_string().into(),
             ]).collect();
             tx.prepare_cached(&sql).and_then(|mut stmt| stmt.execute(rusqlite::params_from_iter(args)))
-                .map_err(|error| err(format!("批量写入关系失败：{error}")))?;
+                .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_BATCH_WRITE_RELATIONSHIPS, &[("error", &format!("{}", error))])))?;
         }
         tx.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_nodes_label ON nodes(label);
@@ -339,18 +339,18 @@ impl CodeIndexStore {
              CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id, type);
              CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id, type);",
         )
-        .map_err(|e| err(format!("重建辅助索引失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_REBUILD_AUXILIARY_DATABASE_INDEXES, &[("e", &format!("{}", e))])))?;
 
         super::search::fill_search_index(&tx, graph, cancel)?;
-        tx.execute("DELETE FROM call_records", []).map_err(|error| err(format!("清理调用记录失败：{error}")))?;
+        tx.execute("DELETE FROM call_records", []).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CLEAR_CALL_RECORDS, &[("error", &format!("{}", error))])))?;
         write_calls(&tx, graph, None, cancel)?;
         {
             let mut stmt = tx
                 .prepare("INSERT INTO file_hashes (rel_path, mtime_ns, size) VALUES (?1, ?2, ?3)")
-                .map_err(|e| err(format!("准备文件哈希写入失败：{e}")))?;
+                .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_PREPARE_FILE_HASH_WRITES, &[("e", &format!("{}", e))])))?;
             for h in hashes {
                 stmt.execute(params![h.rel_path, h.mtime_ns as i64, h.size as i64,])
-                    .map_err(|e| err(format!("写入文件哈希失败：{e}")))?;
+                    .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_WRITE_FILE_HASHES, &[("e", &format!("{}", e))])))?;
             }
         }
 
@@ -358,7 +358,7 @@ impl CodeIndexStore {
 
         if cancelled() { return Ok(false); }
         tx.commit()
-            .map_err(|e| err(format!("提交索引事务失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_COMMIT_THE_INDEX_TRANSACTION, &[("e", &format!("{}", e))])))?;
         Ok(true)
     }
 
@@ -367,21 +367,21 @@ impl CodeIndexStore {
         let mut paths = std::collections::HashSet::new();
         for batch in names.chunks(256) {
             let sql = format!("SELECT DISTINCT file_path FROM call_names WHERE name IN ({})", vec!["?"; batch.len()].join(","));
-            let mut stmt = self.conn.prepare(&sql).map_err(|error| err(format!("定位受影响调用失败：{error}")))?;
+            let mut stmt = self.conn.prepare(&sql).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_LOCATE_AFFECTED_CALLS, &[("error", &format!("{}", error))])))?;
             let rows = stmt.query_map(rusqlite::params_from_iter(batch.iter().copied()), |row| row.get::<_, String>(0))
-                .map_err(|error| err(format!("定位受影响调用失败：{error}")))?;
-            for row in rows { paths.insert(row.map_err(|error| err(format!("读取调用文件失败：{error}")))?); }
+                .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_LOCATE_AFFECTED_CALLS, &[("error", &format!("{}", error))])))?;
+            for row in rows { paths.insert(row.map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_CALL_FILES, &[("error", &format!("{}", error))])))?); }
         }
         Ok(paths)
     }
 
     pub(super) fn load_call_records(&self, graph: &mut GraphBuffer, paths: &std::collections::HashSet<String>) -> Result<()> {
-        let mut stmt = self.conn.prepare("SELECT data FROM call_records WHERE file_path=?1").map_err(|error| err(format!("读取调用记录失败：{error}")))?;
+        let mut stmt = self.conn.prepare("SELECT data FROM call_records WHERE file_path=?1").map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_CALL_RECORDS, &[("error", &format!("{}", error))])))?;
         for path in paths {
             if graph.call_records.contains_key(path.as_str()) { continue; }
             use rusqlite::OptionalExtension;
             let bytes: Option<Vec<u8>> = stmt.query_row(params![path], |row| row.get(0)).optional()
-                .map_err(|error| err(format!("读取调用数据失败：{error}")))?;
+                .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_CALL_DATA, &[("error", &format!("{}", error))])))?;
             if let Some(bytes) = bytes { graph.call_records.insert(path.as_str().into(), super::calls::FileCalls::decode(&bytes)?); }
         }
         Ok(())
@@ -395,20 +395,20 @@ impl CodeIndexStore {
     ) -> Result<bool> {
         let cancelled = || cancel.load(std::sync::atomic::Ordering::Relaxed);
         if cancelled() { return Ok(false); }
-        let tx = self.conn.transaction().map_err(|error| err(format!("开启增量事务失败：{error}")))?;
+        let tx = self.conn.transaction().map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_START_THE_INCREMENTAL_TRANSACTION, &[("error", &format!("{}", error))])))?;
         for path in changed {
             if cancelled() { return Ok(false); }
             super::search::delete_file_search_index(&tx, path)?;
-            tx.execute("DELETE FROM nodes WHERE file_path=?1", params![path]).map_err(|error| err(format!("删除旧文件节点失败：{error}")))?;
-            tx.execute("DELETE FROM file_hashes WHERE rel_path=?1", params![path]).map_err(|error| err(format!("删除旧文件元数据失败：{error}")))?;
-            tx.execute("DELETE FROM call_records WHERE file_path=?1", params![path]).map_err(|error| err(format!("删除旧调用记录失败：{error}")))?;
+            tx.execute("DELETE FROM nodes WHERE file_path=?1", params![path]).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_DELETE_OLD_FILE_NODES, &[("error", &format!("{}", error))])))?;
+            tx.execute("DELETE FROM file_hashes WHERE rel_path=?1", params![path]).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_DELETE_OLD_FILE_METADATA, &[("error", &format!("{}", error))])))?;
+            tx.execute("DELETE FROM call_records WHERE file_path=?1", params![path]).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_DELETE_OLD_CALL_RECORDS, &[("error", &format!("{}", error))])))?;
         }
         let mut ids = HashMap::<String, i64>::new();
         {
-            let mut stmt = tx.prepare("SELECT qualified_name,id FROM nodes").map_err(|error| err(format!("读取节点编号失败：{error}")))?;
+            let mut stmt = tx.prepare("SELECT qualified_name,id FROM nodes").map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_NODE_IDS, &[("error", &format!("{}", error))])))?;
             let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
-                .map_err(|error| err(format!("读取节点编号失败：{error}")))?;
-            for row in rows { let (qn, id) = row.map_err(|error| err(format!("读取节点编号失败：{error}")))?; ids.insert(qn, id); }
+                .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_NODE_IDS, &[("error", &format!("{}", error))])))?;
+            for row in rows { let (qn, id) = row.map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_NODE_IDS, &[("error", &format!("{}", error))])))?; ids.insert(qn, id); }
         }
         let mut node_ids = Vec::with_capacity(graph.nodes.len());
         let mut fresh = std::collections::HashSet::new();
@@ -418,13 +418,13 @@ impl CodeIndexStore {
                 if node.label == super::graph::NodeLabel::Project || node.label == super::graph::NodeLabel::Branch
                     || (node.label == super::graph::NodeLabel::File && affected.contains(node.file_path.as_ref())) {
                     tx.execute("UPDATE nodes SET properties=?1 WHERE id=?2 AND properties<>?1", params![node.properties.as_ref(), id])
-                        .map_err(|error| err(format!("更新节点覆盖失败：{error}")))?;
+                        .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_UPDATE_NODE_COVERAGE, &[("error", &format!("{}", error))])))?;
                 }
                 id
             } else {
                 tx.execute("INSERT INTO nodes(label,name,qualified_name,file_path,start_line,end_line,properties) VALUES(?1,?2,?3,?4,?5,?6,?7)",
                     params![node.label.as_str(), node.name, node.qualified_name.as_ref(), node.file_path.as_ref(), node.start_line, node.end_line, node.properties.as_ref()])
-                    .map_err(|error| err(format!("增量写入节点失败：{error}")))?;
+                    .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_WRITE_INCREMENTAL_NODES, &[("error", &format!("{}", error))])))?;
                 let id = tx.last_insert_rowid();
                 fresh.insert(node.id);
                 super::search::insert_search_node(&tx, node, id)?;
@@ -435,42 +435,42 @@ impl CodeIndexStore {
         // 重解析的调用文件可能仍指向未修改节点，必须先精确删除其旧 CALLS。
         for path in affected {
             tx.execute("DELETE FROM edges WHERE type='CALLS' AND source_id IN (SELECT id FROM nodes WHERE file_path=?1)", params![path])
-                .map_err(|error| err(format!("清理受影响调用失败：{error}")))?;
+                .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CLEAR_AFFECTED_CALLS, &[("error", &format!("{}", error))])))?;
         }
         {
             let mut stmt = tx.prepare("INSERT OR IGNORE INTO edges(source_id,target_id,type,properties) VALUES(?1,?2,?3,?4)")
-                .map_err(|error| err(format!("准备增量关系失败：{error}")))?;
+                .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_PREPARE_INCREMENTAL_RELATIONSHIPS, &[("error", &format!("{}", error))])))?;
             for (index, edge) in graph.edges.iter().enumerate() {
                 if index % 512 == 0 && cancelled() { return Ok(false); }
                 let relevant = fresh.contains(&edge.source) || fresh.contains(&edge.target)
                     || (edge.etype == EdgeType::Calls && affected.contains(graph.get(edge.source).file_path.as_ref()));
                 if relevant { stmt.execute(params![node_ids[edge.source as usize], node_ids[edge.target as usize], edge.etype.as_str(), edge.properties.as_ref()])
-                    .map_err(|error| err(format!("增量写入关系失败：{error}")))?; }
+                    .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_WRITE_INCREMENTAL_RELATIONSHIPS, &[("error", &format!("{}", error))])))?; }
             }
         }
         // 模块、目录和分支没有文件路径，按存活集合删除；保留未变化行及其编号。
         let structures: Vec<(i64, String)> = {
-            let mut stmt = tx.prepare("SELECT id,qualified_name FROM nodes WHERE label IN ('Module','Folder','Branch')").map_err(|error| err(format!("读取旧结构节点失败：{error}")))?;
-            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).map_err(|error| err(format!("读取旧结构节点失败：{error}")))?
-                .collect::<rusqlite::Result<_>>().map_err(|error| err(format!("读取旧结构节点失败：{error}")))?
+            let mut stmt = tx.prepare("SELECT id,qualified_name FROM nodes WHERE label IN ('Module','Folder','Branch')").map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_OLD_STRUCTURAL_NODES, &[("error", &format!("{}", error))])))?;
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_OLD_STRUCTURAL_NODES, &[("error", &format!("{}", error))])))?
+                .collect::<rusqlite::Result<_>>().map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_OLD_STRUCTURAL_NODES, &[("error", &format!("{}", error))])))?
         };
         let live: std::collections::HashSet<_> = graph.nodes.iter().filter(|node| matches!(node.label,
             super::graph::NodeLabel::Module | super::graph::NodeLabel::Folder | super::graph::NodeLabel::Branch)).map(|node| node.qualified_name.as_ref()).collect();
         for (id, qn) in structures { if !live.contains(qn.as_str()) {
             super::search::delete_search_node(&tx, id)?;
-            tx.execute("DELETE FROM nodes WHERE id=?1", params![id]).map_err(|error| err(format!("删除过期结构节点失败：{error}")))?;
+            tx.execute("DELETE FROM nodes WHERE id=?1", params![id]).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_DELETE_STALE_STRUCTURAL_NODES, &[("error", &format!("{}", error))])))?;
         } }
         write_calls(&tx, graph, Some(changed), Some(cancel))?;
         {
             let mut stmt = tx.prepare("INSERT INTO file_hashes(rel_path,mtime_ns,size) VALUES(?1,?2,?3)")
-                .map_err(|error| err(format!("准备增量文件元数据失败：{error}")))?;
+                .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_PREPARE_INCREMENTAL_FILE_METADATA, &[("error", &format!("{}", error))])))?;
             for hash in hashes.iter().filter(|hash| changed.contains(&hash.rel_path)) {
-                stmt.execute(params![hash.rel_path, hash.mtime_ns as i64, hash.size as i64]).map_err(|error| err(format!("写入增量文件元数据失败：{error}")))?;
+                stmt.execute(params![hash.rel_path, hash.mtime_ns as i64, hash.size as i64]).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_WRITE_INCREMENTAL_FILE_METADATA, &[("error", &format!("{}", error))])))?;
             }
         }
         write_meta(&tx, graph, meta)?;
         if cancelled() { return Ok(false); }
-        tx.commit().map_err(|error| err(format!("提交增量事务失败：{error}")))?;
+        tx.commit().map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_COMMIT_THE_INCREMENTAL_TRANSACTION, &[("error", &format!("{}", error))])))?;
         Ok(true)
     }
 
@@ -487,7 +487,7 @@ impl CodeIndexStore {
         let mut stmt = self
             .conn
             .prepare("SELECT id, label, name, qualified_name, file_path, start_line, end_line, properties FROM nodes ORDER BY id")
-            .map_err(|e| err(format!("读取节点失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_NODES_2, &[("e", &format!("{}", e))])))?;
         let rows = stmt
             .query_map([], |row| {
                 Ok((
@@ -501,9 +501,9 @@ impl CodeIndexStore {
                     row.get::<_, String>(7)?,
                 ))
             })
-            .map_err(|e| err(format!("查询节点失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_QUERY_NODES_2, &[("e", &format!("{}", e))])))?;
         for row in rows {
-            let (old_id, label, name, qn, file_path, sl, el, props) = row.map_err(|error| err(format!("读取节点失败：{error}")))?;
+            let (old_id, label, name, qn, file_path, sl, el, props) = row.map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_NODES, &[("error", &format!("{}", error))])))?;
             let new_id = graph.upsert_node(
                 parse_label(&label),
                 name,
@@ -519,7 +519,7 @@ impl CodeIndexStore {
         let mut stmt = self
             .conn
             .prepare(if calls { "SELECT source_id, target_id, type, properties FROM edges" } else { "SELECT source_id, target_id, type, properties FROM edges WHERE type<>'CALLS'" })
-            .map_err(|e| err(format!("读取边失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_EDGES, &[("e", &format!("{}", e))])))?;
         let rows = stmt
             .query_map([], |row| {
                 Ok((
@@ -529,9 +529,9 @@ impl CodeIndexStore {
                     row.get::<_, String>(3)?,
                 ))
             })
-            .map_err(|e| err(format!("查询边失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_QUERY_EDGES, &[("e", &format!("{}", e))])))?;
         for row in rows {
-            let (src, tgt, etype, props) = row.map_err(|error| err(format!("读取边失败：{error}")))?;
+            let (src, tgt, etype, props) = row.map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_EDGES_2, &[("error", &format!("{}", error))])))?;
             let (Some(src), Some(tgt)) = (id_map.get(&src), id_map.get(&tgt)) else {
                 continue;
             };
@@ -547,7 +547,7 @@ impl CodeIndexStore {
         let mut stmt = self
             .conn
             .prepare("SELECT rel_path, mtime_ns, size FROM file_hashes")
-            .map_err(|e| err(format!("读取文件哈希失败：{e}")))?;
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_FILE_HASHES, &[("e", &format!("{}", e))])))?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(FileHashRow {
@@ -556,8 +556,8 @@ impl CodeIndexStore {
                     size: row.get::<_, i64>(2)?.max(0) as u64,
                 })
             })
-            .map_err(|e| err(format!("查询文件哈希失败：{e}")))?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|error| err(format!("读取文件哈希失败：{error}")))
+            .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_QUERY_FILE_HASHES, &[("e", &format!("{}", e))])))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_FILE_HASHES_2, &[("error", &format!("{}", error))])))
     }
 
     /// 读统计信息。空库返回 None（从未索引过）。
@@ -627,9 +627,9 @@ pub fn read_index_stats(db_path: &Path) -> Result<Option<IndexStats>> {
     let conn = open_read_only(db_path)?;
     let store = CodeIndexStore { conn };
     // MCP 与其他进程刷新可并行，所有计数和代际必须来自同一个 SQLite 读取快照。
-    let tx = store.conn.unchecked_transaction().map_err(|error| err(format!("开启索引统计快照失败：{error}")))?;
+    let tx = store.conn.unchecked_transaction().map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_START_THE_INDEX_STATISTICS_SNAPSHOT, &[("error", &format!("{}", error))])))?;
     let mut stats = store.read_stats()?;
-    tx.commit().map_err(|error| err(format!("结束索引统计快照失败：{error}")))?;
+    tx.commit().map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_FINISH_THE_INDEX_STATISTICS_SNAPSHOT, &[("error", &format!("{}", error))])))?;
     if let Some(s) = stats.as_mut() {
         s.db_bytes = std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
     }
@@ -640,7 +640,7 @@ pub fn index_generation(db_path: &Path) -> Result<Option<String>> {
     let Some(store) = open_read_only_if_exists(db_path)? else { return Ok(None); };
     use rusqlite::OptionalExtension;
     store.conn.query_row("SELECT value FROM meta WHERE key='generation'", [], |row| row.get(0))
-        .optional().map_err(|error| err(format!("读取索引代际失败：{error}")))
+        .optional().map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_THE_INDEX_GENERATION, &[("error", &format!("{}", error))])))
 }
 
 /// 只读符号搜索入口（设置页验证卡与全局面板共用；无标签过滤）。
@@ -685,7 +685,7 @@ pub fn open_read_only_if_exists(db_path: &Path) -> Result<Option<CodeIndexStore>
 
 fn open_read_only(db_path: &Path) -> Result<Connection> {
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| err(format!("打开索引库失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_OPEN_THE_INDEX_DATABASE, &[("e", &format!("{}", e))])))?;
     conn.busy_timeout(std::time::Duration::from_secs(2)).ok();
     Ok(conn)
 }
@@ -767,14 +767,14 @@ fn read_counts(conn: &Connection) -> Result<[usize; 5]> {
         (SELECT COUNT(*) FROM edges), (SELECT COUNT(*) FROM edges WHERE type='CALLS'), (SELECT COUNT(*) FROM file_hashes)");
     conn.query_row(&sql, [], |row| Ok([row.get::<_, i64>(0)? as usize, row.get::<_, i64>(1)? as usize,
         row.get::<_, i64>(2)? as usize, row.get::<_, i64>(3)? as usize, row.get::<_, i64>(4)? as usize]))
-        .map_err(|error| err(format!("统计索引失败：{error}")))
+        .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_COMPUTE_INDEX_STATISTICS, &[("error", &format!("{}", error))])))
 }
 
 fn write_meta(tx: &Connection, graph: &GraphBuffer, meta: &CodeIndexMeta) -> Result<()> {
     tx.execute("DELETE FROM meta WHERE key != 'schema_version'", [])
-        .map_err(|e| err(format!("清理旧元信息失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CLEAR_OLD_METADATA, &[("e", &format!("{}", e))])))?;
     let mut generation_bytes = [0u8; 16];
-    getrandom::fill(&mut generation_bytes).map_err(|e| err(format!("生成索引代际失败：{e}")))?;
+    getrandom::fill(&mut generation_bytes).map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_GENERATE_AN_INDEX_GENERATION, &[("e", &format!("{}", e))])))?;
     let generation: String = generation_bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     let coverage = super::coverage::summarize(graph).to_string();
     let counts = serde_json::to_string(&read_counts(tx)?).unwrap();
@@ -795,7 +795,7 @@ fn write_meta(tx: &Connection, graph: &GraphBuffer, meta: &CodeIndexMeta) -> Res
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![key, value],
         )
-        .map_err(|e| err(format!("写入索引元信息失败：{e}")))?;
+        .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_WRITE_INDEX_METADATA, &[("e", &format!("{}", e))])))?;
     }
 
     Ok(())
@@ -804,12 +804,12 @@ fn write_meta(tx: &Connection, graph: &GraphBuffer, meta: &CodeIndexMeta) -> Res
 fn write_calls(conn: &Connection, graph: &GraphBuffer, paths: Option<&std::collections::HashSet<String>>,
     cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<()> {
     let mut stmt = conn.prepare("INSERT INTO call_records(file_path,data) VALUES(?1,?2) ON CONFLICT(file_path) DO UPDATE SET data=excluded.data")
-        .map_err(|error| err(format!("准备调用记录失败：{error}")))?;
+        .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_PREPARE_CALL_RECORDS, &[("error", &format!("{}", error))])))?;
     for (path, records) in &graph.call_records {
         if cancel.is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Relaxed)) { break; }
         if paths.is_some_and(|paths| !paths.contains(path.as_ref())) { continue; }
-        stmt.execute(params![path.as_ref(), records.encode()?]).map_err(|error| err(format!("写入调用记录失败：{error}")))?;
-        conn.execute("DELETE FROM call_names WHERE file_path=?1", params![path.as_ref()]).map_err(|error| err(format!("清理调用名字失败：{error}")))?;
+        stmt.execute(params![path.as_ref(), records.encode()?]).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_WRITE_CALL_RECORDS, &[("error", &format!("{}", error))])))?;
+        conn.execute("DELETE FROM call_names WHERE file_path=?1", params![path.as_ref()]).map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CLEAR_CALL_NAMES, &[("error", &format!("{}", error))])))?;
         let mut names: std::collections::HashSet<_> = records.calls.iter().map(|call| call.name.to_string()).collect();
         for call in &records.calls {
             if let Ok(java) = serde_json::from_str::<super::java::JavaCall>(&call.java) { java.field_dependencies(&mut names); }
@@ -819,7 +819,7 @@ fn write_calls(conn: &Connection, graph: &GraphBuffer, paths: Option<&std::colle
             let sql = format!("INSERT INTO call_names(name,file_path) VALUES {}", vec!["(?,?)"; batch.len()].join(","));
             let args: Vec<_> = batch.iter().flat_map(|name| [name.as_str(), path.as_ref()]).collect();
             conn.prepare_cached(&sql).and_then(|mut stmt| stmt.execute(rusqlite::params_from_iter(args)))
-                .map_err(|error| err(format!("写入调用名字失败：{error}")))?;
+                .map_err(|error| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_WRITE_CALL_NAMES, &[("error", &format!("{}", error))])))?;
         }
     }
     Ok(())

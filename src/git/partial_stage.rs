@@ -13,6 +13,7 @@
 //! 选择以行号为准（Added 行 new_lineno / Removed 行 old_lineno 唯一定位），
 //! 服务端重生成 diff 为权威，与 UI 的上下文模式（紧凑/全文）无关。
 
+use crate::types::domain_ui_resources;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -251,9 +252,7 @@ fn build_partial_patch(
             .iter()
             .any(|line| matches!(line.origin, '=' | '>' | '<'))
         {
-            return Err(GitError::Message(
-                "该改动块包含无尾换行文件的标记，暂不支持按行部分暂存，可整块操作".into(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_HUNK_CONTAINS_A_NO_NEWLINE_AT_END_OF_FILE_MARKER_STAGE_THE_WHOLE_HUNK_INSTEAD_OF, &[])));
         }
 
         // 按行部分选择。pre 侧 = 应用基准（正向 index / 反向也 index，坐标不同源），
@@ -361,11 +360,11 @@ impl GitService {
         selection: &LineSelection,
     ) -> Result<RepositorySnapshot> {
         if selection.is_empty() {
-            return Err(GitError::Message("没有选中的改动行".into()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::NO_CHANGED_LINES_SELECTED, &[])));
         }
-        self.ensure_path_not_conflicted_with_action(repo, path, "暂存")?;
+        self.ensure_path_not_conflicted_with_action(repo, path, crate::ui_i18n::text(domain_ui_resources::STAGE))?;
         self.progress.emit(crate::types::OperationEvent::Started(
-            "正在暂存选中改动".into(),
+            crate::ui_i18n::text(domain_ui_resources::STAGING_SELECTED_CHANGES).into(),
         ));
 
         // 阶段一（块作用域内完成全部不可变借用）：重建 diff 并构造部分 patch 文本。
@@ -374,14 +373,14 @@ impl GitService {
             options.pathspec(path).context_lines(3);
             // 注意不带 include_untracked：未跟踪文件不支持部分暂存（无 index 基线）。
             let diff = repo.diff_index_to_workdir(None, Some(&mut options))?;
-            self.prepare_partial_patch(&diff, selection, false, "暂存")?
+            self.prepare_partial_patch(&diff, selection, false, crate::ui_i18n::text(domain_ui_resources::STAGE))?
         };
 
         // 阶段二：from_buffer 返回 Diff<'static>（不借 repo），apply 后快照。
-        self.apply_partial_patch(repo, &patch, "暂存")?;
+        self.apply_partial_patch(repo, &patch, crate::ui_i18n::text(domain_ui_resources::STAGE))?;
 
         self.progress.emit(crate::types::OperationEvent::Finished(
-            "已暂存选中改动".into(),
+            crate::ui_i18n::text(domain_ui_resources::SELECTED_CHANGES_STAGED).into(),
         ));
         self.snapshot_after_operation(repo)
     }
@@ -394,32 +393,30 @@ impl GitService {
         selection: &LineSelection,
     ) -> Result<RepositorySnapshot> {
         if selection.is_empty() {
-            return Err(GitError::Message("没有选中的改动行".into()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::NO_CHANGED_LINES_SELECTED, &[])));
         }
-        self.ensure_path_not_conflicted_with_action(repo, path, "取消暂存")?;
+        self.ensure_path_not_conflicted_with_action(repo, path, crate::ui_i18n::text(domain_ui_resources::UNSTAGE))?;
         self.progress.emit(crate::types::OperationEvent::Started(
-            "正在取消暂存选中改动".into(),
+            crate::ui_i18n::text(domain_ui_resources::UNSTAGING_SELECTED_CHANGES).into(),
         ));
 
         // 阶段一（块作用域内完成全部不可变借用）：重建 HEAD→index diff 并构造反向 patch。
         let patch = {
             let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
             let Some(head_tree) = head_tree else {
-                return Err(GitError::Message(
-                    "暂无提交历史，不能部分取消暂存，请使用整文件取消暂存".into(),
-                ));
+                return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THERE_IS_NO_COMMIT_HISTORY_PARTIAL_UNSTAGING_IS_UNAVAILABLE_UNSTAGE_THE_WHOLE_FILE_IN, &[])));
             };
             let mut options = DiffOptions::new();
             options.pathspec(path).context_lines(3);
             let diff = repo.diff_tree_to_index(Some(&head_tree), None, Some(&mut options))?;
-            self.prepare_partial_patch(&diff, selection, true, "取消暂存")?
+            self.prepare_partial_patch(&diff, selection, true, crate::ui_i18n::text(domain_ui_resources::UNSTAGE))?
         };
 
         // 阶段二：反向 patch 应用到 index 后快照。
-        self.apply_partial_patch(repo, &patch, "取消暂存")?;
+        self.apply_partial_patch(repo, &patch, crate::ui_i18n::text(domain_ui_resources::UNSTAGE))?;
 
         self.progress.emit(crate::types::OperationEvent::Finished(
-            "已取消暂存选中改动".into(),
+            crate::ui_i18n::text(domain_ui_resources::SELECTED_CHANGES_UNSTAGED).into(),
         ));
         self.snapshot_after_operation(repo)
     }
@@ -440,9 +437,7 @@ impl GitService {
                 | git2::Delta::Renamed
                 | git2::Delta::Untracked
                 | git2::Delta::Unmodified => {
-                    return Err(GitError::Message(format!(
-                        "该文件为整文件新增/删除/重命名，暂不支持部分{action}，请使用整文件按钮"
-                    )));
+                    return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THIS_FILE_WAS_ADDED_DELETED_OR_RENAMED_AS_A_WHOLE_CANNOT_PART_OF_IT_USE_THE_WHOLE_FIL, &[("action", &format!("{}", action))])));
                 }
                 _ => {}
             }
@@ -451,20 +446,14 @@ impl GitService {
         // 二进制守卫先于零-hunk 守卫：二进制 delta 只产出文件头 + 'B' 行，
         // 没有 hunk 头，顺序反了会给出误导文案。
         if raw_lines.iter().any(|line| line.origin == 'B') {
-            return Err(GitError::Message(format!(
-                "二进制文件不支持部分{action}，请使用整文件按钮"
-            )));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_PART_OF_A_BINARY_FILE_USE_THE_WHOLE_FILE_BUTTON, &[("action", &format!("{}", action))])));
         }
         if !raw_lines.iter().any(|line| line.origin == 'H') {
-            return Err(GitError::Message(format!(
-                "该文件没有可部分{action}的改动（可能是未跟踪文件或内容已变化），请刷新后使用整文件按钮"
-            )));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::NO_CHANGES_IN_THIS_FILE_CAN_BE_PARTIALLY_PROCESSED_WITH_IT_MAY_BE_UNTRACKED_OR_HAVE_C, &[("action", &format!("{}", action))])));
         }
         let patch = build_partial_patch(&raw_lines, selection, reverse)?;
         let Some(patch) = patch else {
-            return Err(GitError::Message(
-                "所选改动与当前内容已一致，没有需要应用的变更".into(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_SELECTED_CHANGES_ALREADY_MATCH_THE_CURRENT_CONTENT_NOTHING_TO_APPLY, &[])));
         };
         Ok(patch)
     }
@@ -472,14 +461,12 @@ impl GitService {
     /// 阶段二：部分 patch 应用到 index（from_buffer 产出 Diff<'static>，不借 repo）。
     fn apply_partial_patch(&self, repo: &Repository, patch: &[u8], action: &str) -> Result<()> {
         let patch_diff = git2::Diff::from_buffer(patch)
-            .map_err(|err| GitError::Message(format!("构造部分{action}补丁失败：{err}")))?;
+            .map_err(|err| GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_BUILD_THE_PARTIAL_PATCH, &[("action", &format!("{}", action)), ("err", &format!("{}", err))])))?;
         // apply 内部经 indexwriter 持有 index 锁：此前打开的 index 句柄
         //（冲突检查等）已在各自作用域释放。
         repo.apply(&patch_diff, ApplyLocation::Index, None)
             .map_err(|err| {
-                GitError::Message(format!(
-                    "所选改动无法应用到暂存区（内容可能已变化，请刷新后重试）：{err}"
-                ))
+                GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_APPLY_SELECTED_CHANGES_TO_THE_INDEX_CONTENT_MAY_HAVE_CHANGED_REFRESH_AND_RETRY, &[("err", &format!("{}", err))]))
             })?;
         Ok(())
     }

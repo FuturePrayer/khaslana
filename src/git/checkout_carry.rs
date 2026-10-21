@@ -1,3 +1,4 @@
+use crate::types::domain_ui_resources;
 use std::path::Path;
 
 use git2::{ErrorCode, Repository, RepositoryState};
@@ -65,7 +66,7 @@ impl GitService {
         let name = branch.0.clone();
         self.carrying_checkout(
             repo,
-            &format!("分支 {name}"),
+            &crate::ui_i18n::format(domain_ui_resources::BRANCH, &[("name", &format!("{}", name))]),
             auto_apply,
             move |service, repo| service.checkout_branch(repo, &BranchName::new(name)),
         )
@@ -81,7 +82,7 @@ impl GitService {
         let name = remote_branch.0.clone();
         self.carrying_checkout(
             repo,
-            &format!("远端分支 {name}"),
+            &crate::ui_i18n::format(domain_ui_resources::REMOTE_BRANCH, &[("name", &format!("{}", name))]),
             auto_apply,
             move |service, repo| service.checkout_remote_branch(repo, &BranchName::new(name)),
         )
@@ -97,7 +98,7 @@ impl GitService {
         let name = tag.0.clone();
         self.carrying_checkout(
             repo,
-            &format!("标签 {name}"),
+            &crate::ui_i18n::format(domain_ui_resources::TAG, &[("name", &format!("{}", name))]),
             auto_apply,
             move |service, repo| service.checkout_tag(repo, &TagName::new(name)),
         )
@@ -142,18 +143,14 @@ impl GitService {
         if let Err(err) = switch(self, repo) {
             // 贮藏后仍无法切换：保留贮藏条目，把原修改交还用户处理，
             // 绝不丢弃。
-            return Err(GitError::Message(format!(
-                "已暂存未提交修改，但切换到{target}仍失败：{err}；修改已保留在贮藏中，可手动弹出或删除"
-            )));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::UNCOMMITTED_CHANGES_WERE_STASHED_BUT_SWITCHING_TO_STILL_FAILED_CHANGES_REMAIN_IN_THE, &[("target", &format!("{}", target)), ("err", &format!("{}", err))])));
         }
         if !auto_apply {
             // 只贮藏并切换：修改留在贮藏列表第一条，稍后由用户手动应用或弹出。
             let snapshot = self.snapshot_after_operation(repo)?;
             return Ok(CarryingCheckoutOutcome {
                 snapshot,
-                notice: Some(format!(
-                    "已切换到{target}，未提交修改已保留在贮藏列表第一条，需要时可在左侧「贮藏」区域应用或弹出"
-                )),
+                notice: Some(crate::ui_i18n::format(domain_ui_resources::SWITCHED_TO_UNCOMMITTED_CHANGES_ARE_IN_THE_FIRST_STASH_ENTRY_APPLY_OR_POP_IT_FROM_THE, &[("target", &format!("{}", target))])),
             });
         }
         // 恢复：apply 后按冲突类型决定是否删除贮藏条目。
@@ -164,9 +161,7 @@ impl GitService {
                 let snapshot = self.snapshot_after_operation(repo)?;
                 return Ok(CarryingCheckoutOutcome {
                     snapshot,
-                    notice: Some(format!(
-                        "已切换到{target}，但恢复修改失败：{err}；原修改保留在贮藏列表第一条，请检查工作区后手动应用"
-                    )),
+                    notice: Some(crate::ui_i18n::format(domain_ui_resources::SWITCHED_TO_BUT_RESTORING_CHANGES_FAILED_ORIGINAL_CHANGES_REMAIN_IN_THE_FIRST_STASH_E, &[("target", &format!("{}", target)), ("err", &format!("{}", err))])),
                 });
             }
         };
@@ -195,13 +190,9 @@ impl GitService {
         Ok(CarryingCheckoutOutcome {
             snapshot,
             notice: Some(if worktree_only {
-                format!(
-                    "已切换到{target}，但恢复修改时产生工作区冲突；贮藏已保留。请在「冲突」区域查看文件，并用外部编辑器处理冲突标记"
-                )
+                crate::ui_i18n::format(domain_ui_resources::SWITCHED_TO_BUT_RESTORING_CHANGES_CAUSED_WORKING_TREE_CONFLICTS_THE_STASH_WAS_RETAINE, &[("target", &format!("{}", target))])
             } else {
-                format!(
-                    "已切换到{target}，但未提交修改恢复时存在冲突；原修改已保留在贮藏列表第一条，请在冲突区域解决"
-                )
+                crate::ui_i18n::format(domain_ui_resources::SWITCHED_TO_BUT_RESTORING_UNCOMMITTED_CHANGES_CAUSED_CONFLICTS_ORIGINAL_CHANGES_REMAI, &[("target", &format!("{}", target))])
             }),
         })
     }
@@ -223,7 +214,7 @@ impl GitService {
             match (conflict.our.as_ref(), conflict.their.as_ref()) {
                 (None, Some(their)) => {
                     let path = std::str::from_utf8(&their.path).map_err(|_| {
-                        GitError::Message("冲突文件路径不是有效 UTF-8，无法自动落定".into())
+                        GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THE_CONFLICT_FILE_PATH_IS_NOT_VALID_UTF_8_AUTOMATIC_RESOLUTION_IS_UNAVAILABLE, &[]))
                     })?;
                     stash_only_paths.push(path.to_string());
                 }

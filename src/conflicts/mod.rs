@@ -1,3 +1,6 @@
+#[path = "../ui_resources/conflicts_mod_messages.rs"]
+mod messages;
+
 use std::{ops::Range, path::Path, sync::Arc};
 
 pub(crate) mod editor;
@@ -53,12 +56,16 @@ const fn conflict_workbench_surfaces() -> ConflictWorkbenchSurfaces {
     }
 }
 
-pub(crate) fn conflict_status_message(label: &str, count: usize) -> String {
-    if label.starts_with("合并") {
-        return format!("合并产生冲突，请在工作区使用 IDEA 或进入“冲突处理”解决（{count} 个文件）");
-    }
-    let operation = label.strip_suffix("完成").unwrap_or("操作");
-    format!("{operation}产生冲突，请在左侧“冲突”区域解决（{count} 个文件）")
+pub(crate) fn conflict_status_message(operation_key: &str, count: usize) -> String {
+    // 操作身份来自核心事件链；语言和完成文案不参与冲突路由。
+    let message = if operation_key == crate::operation_ui_resources::MERGE_OPERATION_COMPLETED.key
+        || operation_key == crate::operation_ui_resources::MERGE_COMPLETED.key
+    {
+        messages::MERGE_CONFLICTS_OCCURRED_USE_IDEA_FROM_THE_WORKING_TREE_OR
+    } else {
+        messages::OPERATION_CONFLICTS
+    };
+    khaslana::ui_i18n::encode(message, &[("count", &count.to_string())])
 }
 
 fn conflict_paths(snapshot: Option<&RepositorySnapshot>) -> Vec<String> {
@@ -123,7 +130,7 @@ impl RepositoryView {
         div().when(has_conflicts, |this| {
             this.child(self.render_conflict_summary(conflicts.len()))
                 .child(self.render_change_section(
-                    "冲突",
+                    khaslana::ui_i18n::text(messages::CONFLICTS),
                     "conflict-list",
                     "",
                     false,
@@ -175,19 +182,19 @@ impl RepositoryView {
                     .text_size(px(ui_theme::TYPE_BODY))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(ui_theme::CONTENT_PRIMARY))
-                    .child("冲突文件")
+                    .child(khaslana::ui_i18n::text(messages::CONFLICT_FILES))
                     .child(div().text_size(px(12.0)).text_color(rgb(ui_theme::FEEDBACK_WARNING_TEXT)).child(conflicts.len().to_string())),
             )
             .child(div().flex_none().mx_3().mb_2().p_3().rounded(px(8.0)).bg(rgb(ui_theme::CONFLICT_GUTTER_BG))
-                .child(div().text_size(px(12.0)).text_color(rgb(ui_theme::CONTENT_PRIMARY)).child(if self.snapshot.as_ref().is_some_and(|s| s.rebase_in_progress) {"变基进行中"} else if self.merge_in_progress() {"合并进行中"} else {"冲突处理中"}))
-                .child(div().mt_1().text_size(px(11.0)).text_color(rgb(ui_theme::CONTENT_SECONDARY)).child(format!("{} 个文件等待解决", conflicts.len()))))
+                .child(div().text_size(px(12.0)).text_color(rgb(ui_theme::CONTENT_PRIMARY)).child(if self.snapshot.as_ref().is_some_and(|s| s.rebase_in_progress) {khaslana::ui_i18n::text(messages::REBASE_IN_PROGRESS)} else if self.merge_in_progress() {khaslana::ui_i18n::text(messages::MERGE_IN_PROGRESS)} else {khaslana::ui_i18n::text(messages::RESOLVING_CONFLICTS)}))
+                .child(div().mt_1().text_size(px(11.0)).text_color(rgb(ui_theme::CONTENT_SECONDARY)).child(khaslana::ui_i18n::format(messages::CONFLICTS_FILES_AWAITING_RESOLUTION, &[("conflicts", &(conflicts.len()).to_string())]))))
             .child(scrollable_uniform_frame("conflict-files-scroll", ScrollbarMode::Vertical,
                 list.into_any_element(), handle, true, cx))
             .when(self.merge_in_progress(), |rail| rail.child(
                 div().flex_none().flex().flex_col().gap_2().p_3()
                     .child(div().text_size(px(11.0)).text_color(rgb(ui_theme::CONTENT_TERTIARY))
-                        .child("作用于整个仓库的当前合并"))
-                    .child(self.danger_button("中止合并", !self.busy,
+                        .child(khaslana::ui_i18n::text(messages::APPLIES_TO_THE_CURRENT_MERGE_ACROSS_THE_ENTIRE_REPOSITORY)))
+                    .child(self.danger_button(khaslana::ui_i18n::text(messages::ABORT_MERGE), !self.busy,
                         |this, _, cx| { this.open_abort_merge_confirm_dialog(); cx.notify(); }, cx)),
             ))
     }
@@ -200,12 +207,12 @@ impl RepositoryView {
     ) -> impl IntoElement {
         let view = self.conflict_workbench.files.get(&path);
         let badge = match view.map(|view| view.kind) {
-            Some(ConflictFileKind::Text) => "文本",
-            Some(ConflictFileKind::Binary) => "二进制",
-            Some(ConflictFileKind::Unsupported) => "回退",
-            Some(ConflictFileKind::WorktreeOnly) => "工作区",
-            None if self.conflict_workbench.load_errors.contains_key(&path) => "读取失败",
-            None => "加载中",
+            Some(ConflictFileKind::Text) => khaslana::ui_i18n::text(messages::TEXT),
+            Some(ConflictFileKind::Binary) => khaslana::ui_i18n::text(messages::BINARY),
+            Some(ConflictFileKind::Unsupported) => khaslana::ui_i18n::text(messages::FALLBACK),
+            Some(ConflictFileKind::WorktreeOnly) => khaslana::ui_i18n::text(messages::WORKING_TREE),
+            None if self.conflict_workbench.load_errors.contains_key(&path) => khaslana::ui_i18n::text(messages::READ_FAILED),
+            None => khaslana::ui_i18n::text(messages::LOADING),
         };
         let unresolved = view
             .map(ConflictFileView::unresolved_block_count)
@@ -221,10 +228,10 @@ impl RepositoryView {
         let filename = path.rsplit('/').next().unwrap_or(&path).to_owned();
         let directory = path.rsplit_once('/').map(|(directory, _)| directory.to_owned()).unwrap_or_default();
         let status = match view.map(|view| view.kind) {
-            Some(ConflictFileKind::Text) => format!("{unresolved} 个待处理"),
-            Some(ConflictFileKind::Binary) => "二进制冲突".into(),
-            Some(ConflictFileKind::Unsupported) => "修改 / 删除等冲突".into(),
-            Some(ConflictFileKind::WorktreeOnly) => "仅工作区冲突".into(),
+            Some(ConflictFileKind::Text) => khaslana::ui_i18n::format(messages::UNRESOLVED_UNRESOLVED, &[("unresolved", &(unresolved).to_string())]),
+            Some(ConflictFileKind::Binary) => khaslana::ui_i18n::text(messages::BINARY_CONFLICT).into(),
+            Some(ConflictFileKind::Unsupported) => khaslana::ui_i18n::text(messages::MODIFY_DELETE_OR_OTHER_CONFLICT).into(),
+            Some(ConflictFileKind::WorktreeOnly) => khaslana::ui_i18n::text(messages::WORKING_TREE_CONFLICT_ONLY).into(),
             None => badge.into(),
         };
 
@@ -274,8 +281,8 @@ impl RepositoryView {
                     .text_size(px(ui_theme::TYPE_META))
                     .text_color(rgb(ui_theme::FEEDBACK_WARNING_TEXT))
                     .child(status)
-                    .when(dirty, |this| this.child("草稿已修改"))
-                    .when(applied, |this| this.child("已应用")),
+                    .when(dirty, |this| this.child(khaslana::ui_i18n::text(messages::DRAFT_MODIFIED)))
+                    .when(applied, |this| this.child(khaslana::ui_i18n::text(messages::APPLIED))),
             ))
     }
 
@@ -287,7 +294,7 @@ impl RepositoryView {
             .and_then(|path| self.conflict_workbench.files.get(path));
         let title = selected_path
             .clone()
-            .unwrap_or_else(|| "请选择一个冲突文件".to_string());
+            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::SELECT_A_CONFLICT_FILE).to_string());
 
         div()
             .flex()
@@ -312,9 +319,9 @@ impl RepositoryView {
                     .justify_center()
                     .text_color(rgb(ui_theme::CONTENT_SECONDARY))
                     .child(selected_path.as_ref().map(|path|
-                        self.conflict_workbench.load_errors.get(path).map(|e| format!("读取失败：{e}。请重新选择该文件重试。"))
-                            .unwrap_or_else(|| "正在读取三方版本…".into()))
-                        .unwrap_or_else(|| "请选择一个冲突文件".into()))
+                        self.conflict_workbench.load_errors.get(path).map(|e| khaslana::ui_i18n::format(messages::READ_FAILED_E_SELECT_THIS_FILE_AGAIN_TO_RETRY, &[("e", &(e).to_string())]))
+                            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::READING_THREE_WAY_VERSIONS).into()))
+                        .unwrap_or_else(|| khaslana::ui_i18n::text(messages::SELECT_A_CONFLICT_FILE).into()))
                     .into_any_element(),
             })
     }
@@ -359,12 +366,12 @@ impl RepositoryView {
                     .child(
                         view.fallback_reason
                             .clone()
-                            .unwrap_or_else(|| "该冲突暂不支持可视化文本编辑".into()),
+                            .unwrap_or_else(|| khaslana::ui_i18n::text(messages::VISUAL_TEXT_EDITING_IS_NOT_SUPPORTED_FOR_THIS_CONFLICT).into()),
                     ),
             )
             .when(view.kind == ConflictFileKind::WorktreeOnly, |this| {
                 this.child(self.button(
-                    "打开文件所在目录",
+                    khaslana::ui_i18n::text(messages::OPEN_CONTAINING_FOLDER),
                     !self.busy,
                     move |this, _, cx| {
                         this.open_file_parent_directory(path_for_directory.clone(), cx)
@@ -378,7 +385,7 @@ impl RepositoryView {
                     .flex_wrap()
                     .gap_1()
                     .child(self.button(
-                        "当前版本",
+                        khaslana::ui_i18n::text(messages::CURRENT_VERSION),
                         !self.busy,
                         move |this, _, _| {
                             this.resolve_conflict_with_side(
@@ -389,7 +396,7 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.button(
-                        "传入版本",
+                        khaslana::ui_i18n::text(messages::INCOMING_VERSION),
                         !self.busy,
                         move |this, _, _| {
                             this.resolve_conflict_with_side(
@@ -400,7 +407,7 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.primary_button(
-                        "标记解决",
+                        khaslana::ui_i18n::text(messages::MARK_RESOLVED),
                         !self.busy,
                         move |this, _, _| this.mark_conflict_resolved(path_for_mark.clone()),
                         cx,
@@ -494,8 +501,8 @@ impl RepositoryView {
         self.diff_headers_expanded = false;
         self.reset_uniform_scroll("diff-scroll");
         let label = match side {
-            ConflictResolutionSide::Ours => "已使用当前版本解决冲突",
-            ConflictResolutionSide::Theirs => "已使用传入版本解决冲突",
+            ConflictResolutionSide::Ours => crate::operation_ui_resources::CONFLICT_RESOLVED,
+            ConflictResolutionSide::Theirs => crate::operation_ui_resources::CONFLICT_RESOLVED,
         };
         self.with_repo(label, move |service, repo| {
             service.resolve_conflict_with_side(repo, Path::new(&path), side)
@@ -506,14 +513,14 @@ impl RepositoryView {
         self.diff = None;
         self.diff_headers_expanded = false;
         self.reset_uniform_scroll("diff-scroll");
-        self.with_repo("冲突已标记为解决", move |service, repo| {
+        self.with_repo(crate::operation_ui_resources::CONFLICT_RESOLVED, move |service, repo| {
             service.mark_conflict_resolved(repo, Path::new(&path))
         });
     }
 
     pub(crate) fn resolve_selected_conflict_with_intellij_idea(&mut self) {
         let Some(path) = self.conflict_workbench.selected_path.clone() else {
-            self.last_error = Some("请先选择一个冲突文件".into());
+            self.last_error = Some(khaslana::ui_i18n::encode(messages::SELECT_A_CONFLICT_FILE_FIRST, &[]));
             return;
         };
         self.resolve_conflict_with_intellij_idea_path(path);
@@ -549,7 +556,7 @@ impl RepositoryView {
 
     fn render_conflict_summary(&self, count: usize) -> impl IntoElement {
         // 与工作台内其他面板头统一走分组标题（分组底色带替代贯穿分割线）。
-        panel_section_header(format!("存在 {count} 个冲突文件"))
+        panel_section_header(khaslana::ui_i18n::format(messages::COUNT_CONFLICT_FILES_REMAIN, &[("count", &(count).to_string())]))
             .surface(PanelHeaderSurface::Grouped)
             .build()
     }
@@ -615,7 +622,7 @@ impl RepositoryView {
                     .flex_wrap()
                     .gap_1()
                     .child(self.button(
-                        "当前版本",
+                        khaslana::ui_i18n::text(messages::CURRENT_VERSION),
                         !self.busy,
                         move |this, _, _| {
                             this.resolve_conflict_with_side(
@@ -626,7 +633,7 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.button(
-                        "传入版本",
+                        khaslana::ui_i18n::text(messages::INCOMING_VERSION),
                         !self.busy,
                         move |this, _, _| {
                             this.resolve_conflict_with_side(
@@ -637,7 +644,7 @@ impl RepositoryView {
                         cx,
                     ))
                     .child(self.button(
-                        "标记解决",
+                        khaslana::ui_i18n::text(messages::MARK_RESOLVED),
                         !self.busy,
                         move |this, _, _| this.mark_conflict_resolved(path_for_mark.clone()),
                         cx,

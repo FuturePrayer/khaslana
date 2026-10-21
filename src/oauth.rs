@@ -10,6 +10,7 @@
 //!   公开客户端不能内置 client_secret，故 token 交换由部署在 EdgeOne 等边缘平台的
 //!   broker 代办（见独立仓库 khaslana-broker 的 `edge-functions/gitee.js`），客户端只持 client_id + broker URL。
 
+use khaslana::types::domain_ui_resources;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,7 +51,7 @@ fn build_agent(proxy_url: Option<String>) -> Result<ureq::Agent, String> {
         .map(str::trim)
         .filter(|url| !url.is_empty())
         .map(|url| {
-            ureq::Proxy::new(url).map_err(|err| format!("代理配置无效，已取消 OAuth 请求：{err}"))
+            ureq::Proxy::new(url).map_err(|err| khaslana::ui_i18n::format(domain_ui_resources::INVALID_PROXY_CONFIGURATION_OAUTH_REQUEST_CANCELLED, &[("err", &format!("{}", err))]))
         })
         .transpose()?;
     let builder = ureq::Agent::config_builder()
@@ -96,10 +97,10 @@ pub(crate) fn request_device_code(proxy_url: Option<String>) -> Result<DeviceCod
             ("client_id", GITHUB_OAUTH_CLIENT_ID),
             ("scope", GITHUB_OAUTH_SCOPES),
         ])
-        .map_err(|e| format!("请求设备码失败：{e}"))?;
+        .map_err(|e| khaslana::ui_i18n::format(domain_ui_resources::FAILED_TO_REQUEST_A_DEVICE_CODE, &[("e", &format!("{}", e))]))?;
     resp.body_mut()
         .read_json::<DeviceCodeResponse>()
-        .map_err(|e| format!("解析设备码响应失败：{e}"))
+        .map_err(|e| khaslana::ui_i18n::format(domain_ui_resources::FAILED_TO_PARSE_THE_DEVICE_CODE_RESPONSE, &[("e", &format!("{}", e))]))
 }
 
 /// GitHub 令牌端点响应（成功与待定/错误共用同一结构，按字段是否存在判定）。
@@ -134,9 +135,9 @@ fn classify_token(parsed: TokenResponse, interval: &mut u64) -> Result<Option<St
             *interval += 5;
             Ok(None)
         }
-        Some("expired_token") => Err("设备码已过期，请重新登录".into()),
-        Some("access_denied") => Err("已拒绝授权".into()),
-        Some(other) => Err(format!("GitHub 返回错误：{other}")),
+        Some("expired_token") => Err(khaslana::ui_i18n::text(domain_ui_resources::THE_DEVICE_CODE_HAS_EXPIRED_SIGN_IN_AGAIN).into()),
+        Some("access_denied") => Err(khaslana::ui_i18n::text(domain_ui_resources::AUTHORIZATION_DENIED).into()),
+        Some(other) => Err(khaslana::ui_i18n::format(domain_ui_resources::GITHUB_RETURNED_AN_ERROR, &[("other", &format!("{}", other))])),
     }
 }
 
@@ -148,7 +149,7 @@ fn build_token_poll_agent(proxy_url: Option<String>) -> Result<ureq::Agent, Stri
         .map(str::trim)
         .filter(|url| !url.is_empty())
         .map(|url| {
-            ureq::Proxy::new(url).map_err(|err| format!("代理配置无效，已取消 OAuth 请求：{err}"))
+            ureq::Proxy::new(url).map_err(|err| khaslana::ui_i18n::format(domain_ui_resources::INVALID_PROXY_CONFIGURATION_OAUTH_REQUEST_CANCELLED, &[("err", &format!("{}", err))]))
         })
         .transpose()?;
     let builder = ureq::Agent::config_builder()
@@ -176,15 +177,15 @@ pub(crate) fn poll_for_token(
     let deadline = Instant::now() + Duration::from_secs(expires_in);
     loop {
         if cancel.load(Ordering::Relaxed) {
-            return Err("已取消".into());
+            return Err(khaslana::ui_i18n::text(domain_ui_resources::CANCELLED).into());
         }
         if Instant::now() >= deadline {
-            return Err("设备码已过期，请重新登录".into());
+            return Err(khaslana::ui_i18n::text(domain_ui_resources::THE_DEVICE_CODE_HAS_EXPIRED_SIGN_IN_AGAIN).into());
         }
         // 首次轮询前需等待一个间隔（否则 GitHub 返回 slow_down）；分段睡眠以便及时响应取消。
         for _ in 0..interval {
             if cancel.load(Ordering::Relaxed) {
-                return Err("已取消".into());
+                return Err(khaslana::ui_i18n::text(domain_ui_resources::CANCELLED).into());
             }
             std::thread::sleep(Duration::from_secs(1));
         }
@@ -227,12 +228,12 @@ pub(crate) fn fetch_login(proxy_url: Option<String>, token: &str) -> Result<Stri
         .header("Authorization", format!("token {token}"))
         .header("User-Agent", "Khaslana")
         .call()
-        .map_err(|e| format!("获取用户信息失败：{e}"))?;
+        .map_err(|e| khaslana::ui_i18n::format(domain_ui_resources::FAILED_TO_FETCH_USER_INFORMATION, &[("e", &format!("{}", e))]))?;
     let user: GithubUser = resp
         .body_mut()
         .read_json()
-        .map_err(|e| format!("解析用户信息失败：{e}"))?;
-    user.login.ok_or_else(|| "GitHub 未返回登录名".into())
+        .map_err(|e| khaslana::ui_i18n::format(domain_ui_resources::FAILED_TO_PARSE_USER_INFORMATION, &[("e", &format!("{}", e))]))?;
+    user.login.ok_or_else(|| khaslana::ui_i18n::text(domain_ui_resources::GITHUB_DID_NOT_RETURN_A_LOGIN_NAME).into())
 }
 
 #[derive(Debug, Deserialize)]
@@ -289,10 +290,10 @@ where
     let state = random_state();
     // 1. 绑定本地回调监听。
     let listener = TcpListener::bind(("127.0.0.1", GITEE_CALLBACK_PORT))
-        .map_err(|e| format!("无法监听本地回调端口 {GITEE_CALLBACK_PORT}：{e}（可能被占用）"))?;
+        .map_err(|e| khaslana::ui_i18n::format(domain_ui_resources::CANNOT_LISTEN_ON_LOCAL_CALLBACK_PORT_IT_MAY_BE_IN_USE, &[("GITEE_CALLBACK_PORT", &format!("{}", GITEE_CALLBACK_PORT)), ("e", &format!("{}", e))]))?;
     listener
         .set_nonblocking(true)
-        .map_err(|e| format!("设置回调监听非阻塞失败：{e}"))?;
+        .map_err(|e| khaslana::ui_i18n::format(domain_ui_resources::FAILED_TO_MAKE_THE_CALLBACK_LISTENER_NON_BLOCKING, &[("e", &format!("{}", e))]))?;
 
     let authorize_url = gitee_authorize_url(&state);
     // 2. 监听已就绪，通知调用方打开浏览器。
@@ -302,10 +303,10 @@ where
     let deadline = Instant::now() + Duration::from_secs(180);
     let code = loop {
         if cancel.load(Ordering::Relaxed) {
-            return Err("已取消".into());
+            return Err(khaslana::ui_i18n::text(domain_ui_resources::CANCELLED).into());
         }
         if Instant::now() >= deadline {
-            return Err("等待浏览器授权超时".into());
+            return Err(khaslana::ui_i18n::text(domain_ui_resources::TIMED_OUT_WAITING_FOR_BROWSER_AUTHORIZATION).into());
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
@@ -314,12 +315,12 @@ where
                     // 先校验再回页：授权被拒/state 校验失败时不该给浏览器回
                     // 一张「登录成功」页。
                     if let Some(err) = err {
-                        return Err(format!("Gitee 拒绝授权：{err}"));
+                        return Err(khaslana::ui_i18n::format(domain_ui_resources::GITEE_DENIED_AUTHORIZATION, &[("err", &format!("{}", err))]));
                     }
                     if cb_state.as_deref() != Some(state.as_str()) {
-                        return Err("授权 state 校验失败，已放弃以防 CSRF".into());
+                        return Err(khaslana::ui_i18n::text(domain_ui_resources::AUTHORIZATION_STATE_VALIDATION_FAILED_ABORTED_TO_PREVENT_CSRF).into());
                     }
-                    let code = code.ok_or_else(|| "回调未携带授权码".to_string())?;
+                    let code = code.ok_or_else(|| khaslana::ui_i18n::text(domain_ui_resources::THE_CALLBACK_DID_NOT_CONTAIN_AN_AUTHORIZATION_CODE).to_string())?;
                     let _ = respond_callback_success(&mut stream);
                     break code;
                 }
@@ -328,7 +329,7 @@ where
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(200));
             }
-            Err(e) => return Err(format!("回调监听错误：{e}")),
+            Err(e) => return Err(khaslana::ui_i18n::format(domain_ui_resources::CALLBACK_LISTENER_ERROR, &[("e", &format!("{}", e))])),
         }
     };
 
@@ -388,16 +389,16 @@ pub(crate) fn gitee_refresh_via_broker(
         .post(GITEE_BROKER_URL)
         .header("Accept", "application/json")
         .send_json(&body)
-        .map_err(|e| format!("刷新请求失败（broker）：{e}"))?;
+        .map_err(|e| khaslana::ui_i18n::format(domain_ui_resources::REFRESH_REQUEST_FAILED_BROKER, &[("e", &format!("{}", e))]))?;
     let parsed: BrokerTokenResponse = resp
         .body_mut()
         .read_json()
-        .map_err(|e| format!("解析刷新响应失败：{e}"))?;
+        .map_err(|e| khaslana::ui_i18n::format(domain_ui_resources::FAILED_TO_PARSE_THE_REFRESH_RESPONSE, &[("e", &format!("{}", e))]))?;
     let error_text = parsed
         .error_description
         .clone()
         .or_else(|| parsed.error.clone())
-        .unwrap_or_else(|| "broker 未返回新令牌".to_string());
+        .unwrap_or_else(|| khaslana::ui_i18n::text(domain_ui_resources::THE_BROKER_DID_NOT_RETURN_A_NEW_TOKEN).to_string());
     parsed.into_grant().ok_or(error_text)
 }
 
@@ -453,9 +454,7 @@ fn read_callback_request(
 
 /// 回一个最小 HTML 告知用户登录成功、可关闭页面。
 fn respond_callback_success(stream: &mut TcpStream) -> std::io::Result<()> {
-    let body = "<!doctype html><meta charset='utf-8'><title>登录成功</title>\
-<body style='font-family:sans-serif;text-align:center;margin-top:60px'>\
-登录成功，可以关闭此页面返回 Khaslana。</body>";
+    let body = callback_success_html(khaslana::ui_i18n::language());
     let resp = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
@@ -463,6 +462,13 @@ fn respond_callback_success(stream: &mut TcpStream) -> std::io::Result<()> {
     );
     stream.write_all(resp.as_bytes())?;
     stream.flush()
+}
+
+/// 仅插入应用自有静态文案，不把远端回调参数写入 HTML。
+fn callback_success_html(language: khaslana::language::Language) -> String {
+    let title = khaslana::ui_i18n::text_in(language, domain_ui_resources::OAUTH_LOGIN_SUCCESS);
+    let message = khaslana::ui_i18n::text_in(language, domain_ui_resources::OAUTH_CALLBACK_SUCCESS_BODY);
+    format!("<!doctype html><meta charset='utf-8'><title>{title}</title><body style='font-family:sans-serif;text-align:center;margin-top:60px'>{message}</body>")
 }
 
 /// 通过 broker 用授权码换 token（broker 持有 client_secret 向 Gitee 交换）。
@@ -479,17 +485,17 @@ fn exchange_via_broker(
         .post(GITEE_BROKER_URL)
         .header("Accept", "application/json")
         .send_json(&body)
-        .map_err(|e| format!("令牌交换失败（broker）：{e}"))?;
+        .map_err(|e| khaslana::ui_i18n::format(domain_ui_resources::TOKEN_EXCHANGE_FAILED_BROKER, &[("e", &format!("{}", e))]))?;
     let parsed: BrokerTokenResponse = resp
         .body_mut()
         .read_json()
-        .map_err(|e| format!("解析令牌响应失败：{e}"))?;
+        .map_err(|e| khaslana::ui_i18n::format(domain_ui_resources::FAILED_TO_PARSE_THE_TOKEN_RESPONSE, &[("e", &format!("{}", e))]))?;
     // 优先用 Gitee 返回的中文 error_description，便于用户理解。
     let error_text = parsed
         .error_description
         .clone()
         .or_else(|| parsed.error.clone())
-        .unwrap_or_else(|| "broker 未返回令牌".to_string());
+        .unwrap_or_else(|| khaslana::ui_i18n::text(domain_ui_resources::THE_BROKER_DID_NOT_RETURN_A_TOKEN).to_string());
     parsed.into_grant().ok_or(error_text)
 }
 
@@ -532,12 +538,12 @@ fn fetch_gitee_login(proxy_url: Option<String>, token: &str) -> Result<String, S
         .get(GITEE_USER_API)
         .header("Authorization", format!("token {token}"))
         .call()
-        .map_err(|e| format!("获取 Gitee 用户信息失败：{e}"))?;
+        .map_err(|e| khaslana::ui_i18n::format(domain_ui_resources::FAILED_TO_FETCH_GITEE_USER_INFORMATION, &[("e", &format!("{}", e))]))?;
     let user: GiteeUser = resp
         .body_mut()
         .read_json()
-        .map_err(|e| format!("解析 Gitee 用户信息失败：{e}"))?;
-    user.login.ok_or_else(|| "Gitee 未返回登录名".into())
+        .map_err(|e| khaslana::ui_i18n::format(domain_ui_resources::FAILED_TO_PARSE_GITEE_USER_INFORMATION, &[("e", &format!("{}", e))]))?;
+    user.login.ok_or_else(|| khaslana::ui_i18n::text(domain_ui_resources::GITEE_DID_NOT_RETURN_A_LOGIN_NAME).into())
 }
 
 #[derive(Debug, Deserialize)]
@@ -624,6 +630,16 @@ fn url_encode(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callback_success_page_supports_both_languages() {
+        let zh = callback_success_html(khaslana::language::Language::ZhCn);
+        let en = callback_success_html(khaslana::language::Language::En);
+        assert!(zh.contains("<title>登录成功</title>"));
+        assert!(en.contains("<title>Sign-in successful</title>"));
+        assert!(en.contains("close this page and return to Khaslana"));
+        assert!(!en.contains("登录成功"));
+    }
 
     #[test]
     fn client_id_is_configured() {

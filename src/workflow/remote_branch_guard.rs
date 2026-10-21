@@ -1,4 +1,7 @@
 use git2::Repository;
+#[path = "remote_branch_guard_resources.rs"]
+mod deep_messages;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{GitError, Result};
@@ -31,18 +34,16 @@ pub(super) fn default_guard_fetch() -> bool {
 pub(super) fn validate_remote_branch_name(remote: &str, branch: &str) -> Result<()> {
     let branch = branch.trim();
     if branch.is_empty() {
-        return Err(GitError::Message("远端分支名不能为空".into()));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::REMOTE_BRANCH_NAME_CANNOT_BE_EMPTY, &[])));
     }
     if branch
         .strip_prefix(remote)
         .is_some_and(|rest| rest.starts_with('/'))
     {
-        return Err(GitError::Message(format!(
-            "远端分支名不要带远端名前缀，请填写不含 {remote}/ 的分支名：{branch}"
-        )));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::DO_NOT_PREFIX_THE_BRANCH_NAME_WITH, &[("remote", &(remote).to_string()), ("branch", &(branch).to_string())])));
     }
     if branch.starts_with('/') || branch.ends_with('/') || branch.contains("//") {
-        return Err(GitError::Message(format!("远端分支名无效：{branch}")));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::INVALID_REMOTE_BRANCH_NAME, &[("branch", &(branch).to_string())])));
     }
     Ok(())
 }
@@ -66,14 +67,10 @@ pub(super) fn guard_remote_branch(
 ) -> Result<()> {
     let exists = remote_branch_exists(repo, remote, branch)?;
     if exists && on_exists.should_fail() {
-        return Err(GitError::Message(format!(
-            "远端分支已存在：{remote}/{branch}"
-        )));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::REMOTE_BRANCH_ALREADY_EXISTS, &[("remote", &(remote).to_string()), ("branch", &(branch).to_string())])));
     }
     if !exists && on_missing.should_fail() {
-        return Err(GitError::Message(format!(
-            "远端分支不存在：{remote}/{branch}"
-        )));
+        return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(deep_messages::REMOTE_BRANCH_DOES_NOT_EXIST, &[("remote", &(remote).to_string()), ("branch", &(branch).to_string())])));
     }
     Ok(())
 }
@@ -86,19 +83,21 @@ pub(super) fn guard_summary(
     on_missing: RemoteBranchGuardAction,
 ) -> String {
     let refresh = if fetch {
-        "刷新后"
+        crate::ui_i18n::encode(deep_messages::AFTER_FETCHING, &[])
     } else {
-        "基于本地引用"
+        crate::ui_i18n::encode(deep_messages::USING_LOCAL_REFERENCES, &[])
     };
     let exists = match on_exists {
-        RemoteBranchGuardAction::Fail => "存在则停止",
-        RemoteBranchGuardAction::Continue => "存在则继续",
+        RemoteBranchGuardAction::Fail => crate::ui_i18n::encode(deep_messages::STOP_IF_PRESENT, &[]),
+        RemoteBranchGuardAction::Continue => crate::ui_i18n::encode(deep_messages::CONTINUE_IF_PRESENT, &[]),
     };
     let missing = match on_missing {
-        RemoteBranchGuardAction::Fail => "不存在则停止",
-        RemoteBranchGuardAction::Continue => "不存在则继续",
+        RemoteBranchGuardAction::Fail => crate::ui_i18n::encode(deep_messages::STOP_IF_MISSING, &[]),
+        RemoteBranchGuardAction::Continue => crate::ui_i18n::encode(deep_messages::CONTINUE_IF_MISSING, &[]),
     };
-    format!("检查远端分支 {remote}/{branch}（{refresh}，{exists}，{missing}）")
+    crate::ui_i18n::encode_with_messages(deep_messages::CHECK_REMOTE_BRANCH,
+        &[("remote", remote), ("branch", branch)],
+        &[("refresh", &refresh), ("exists", &exists), ("missing", &missing)])
 }
 
 #[cfg(test)]

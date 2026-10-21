@@ -5,13 +5,14 @@
 //! 作用域栈维护 class/impl 上下文（上下文内的 Function 定义升级为 Method）。
 //! 所有产出均为 owned 数据，便于跨线程传递。
 
+use crate::types::domain_ui_resources;
 use std::collections::{HashMap, VecDeque};
 
 use tree_sitter::{Node, Parser};
 
 use super::graph::NodeLabel;
 use super::lang_spec::{CallNameStrategy, DefKind, HeritageKind, LangSpec};
-use super::{LangId, err};
+use super::{LangId};
 use crate::types::Result;
 
 /// 单文件提取结果。
@@ -141,7 +142,7 @@ impl Extractor {
             let language = super::lang_spec::language_of(lang);
             parser
                 .set_language(&language)
-                .map_err(|e| err(format!("初始化 {} 解析器失败：{e}", lang.display_name())))?;
+                .map_err(|e| crate::types::GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_INITIALIZE_THE_PARSER, &[("value0", &format!("{}", lang.display_name())), ("e", &format!("{}", e))])))?;
             e.insert(parser);
         }
         Ok(self.parsers.get_mut(&key).expect("key 已插入"))

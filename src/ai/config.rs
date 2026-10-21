@@ -1,8 +1,8 @@
+use crate::ai::messages::ai_error;
 // AI 供应商配置：接口类型、连接参数、模型选择。
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::GitError;
 use crate::types::Result as KhaslanaResult;
 
 /// AI 供应商接口类型。
@@ -80,31 +80,29 @@ impl AiProviderSettings {
     pub fn validate_advanced(&self) -> KhaslanaResult<()> {
         let max_temperature = if self.api_type == AiApiType::AnthropicMessages { 1.0 } else { 2.0 };
         if !self.temperature.is_finite() || !(0.0..=max_temperature).contains(&self.temperature) {
-            return Err(GitError::Message(format!("温度必须是 0–{max_temperature} 之间的有限数值")));
+            return Err(ai_error!("ai.config.dc86ee108bc4", "温度必须是 0–{max_temperature} 之间的有限数值", "Temperature must be a finite number between 0 and {max_temperature}", "max_temperature" => max_temperature));
         }
         if self.max_tokens == 0 {
-            return Err(GitError::Message("最大输出必须是大于 0 的整数".into()));
+            return Err(ai_error!("ai.config.df92f63a590a", "最大输出必须是大于 0 的整数", "Maximum output must be an integer greater than 0"));
         }
         if self.request_timeout_secs == 0 {
-            return Err(GitError::Message("请求超时必须是大于 0 的整数秒数".into()));
+            return Err(ai_error!("ai.config.a3ff0291adb1", "请求超时必须是大于 0 的整数秒数", "Request timeout must be an integer number of seconds greater than 0"));
         }
         Ok(())
     }
 
-    /// 校验配置字段；返回中文错误文案以便直接展示给用户。
+    /// 校验配置字段；保留消息身份，在 UI 或任务边界按目标语言展示。
     pub fn validate(&self) -> KhaslanaResult<()> {
         self.validate_advanced()?;
         if self.base_url.trim().is_empty() {
-            return Err(GitError::Message("请填写 Base URL".into()));
+            return Err(ai_error!("ai.config.92a068b1cbd1", "请填写 Base URL", "Enter a Base URL"));
         }
         if !self.base_url.starts_with("http://") && !self.base_url.starts_with("https://") {
-            return Err(GitError::Message(
-                "Base URL 必须以 http:// 或 https:// 开头".into(),
-            ));
+            return Err(ai_error!("ai.config.f63e701a8b7b", "Base URL 必须以 http:// 或 https:// 开头", "Base URL must start with http:// or https://"));
         }
         // API Key 允许为空（部分自部署/本地模型如 Ollama 不需要鉴权）。
         if self.model.trim().is_empty() {
-            return Err(GitError::Message("请填写模型名称".into()));
+            return Err(ai_error!("ai.config.090051697c46", "请填写模型名称", "Enter a model name"));
         }
         Ok(())
     }

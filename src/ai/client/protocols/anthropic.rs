@@ -1,4 +1,5 @@
 //! 基于 anthropic-sdk-typescript messages.ts。签名及 redacted_thinking 块不改写。
+use crate::ai::messages::ai_error;
 use super::*;
 
 pub(super) fn build(body: &mut Value, messages: &[AgentChatMessage], tools: &[ToolSchema], max_tokens: u32, effort: Option<&str>) -> Result<(), AgentStreamError> {
@@ -10,12 +11,12 @@ pub(super) fn build(body: &mut Value, messages: &[AgentChatMessage], tools: &[To
             AgentChatMessage::User(s) => ("user", vec![json!({"type":"text","text":s})]),
             AgentChatMessage::Tool { tool_call_id, content } => ("user", vec![json!({"type":"tool_result","tool_use_id":tool_call_id,"content":content})]),
             AgentChatMessage::AssistantOpaque { history: AgentProtocolHistory::AnthropicMessages(items), .. } => ("assistant", items.clone()),
-            AgentChatMessage::AssistantOpaque { .. } => return Err(AgentStreamError::fatal("不能跨 AI 接口回填协议历史，请新建会话".into())),
+            AgentChatMessage::AssistantOpaque { .. } => return Err(AgentStreamError::fatal_error(ai_error!("ai.anthropic.8ea8b5a03e6e", "不能跨 AI 接口回填协议历史，请新建会话", "Cannot replay protocol history across AI APIs; start a new session"))),
             AgentChatMessage::Assistant { content, tool_calls } => {
                 let mut blocks = vec![];
                 if !content.is_empty() { blocks.push(json!({"type":"text","text":content})); }
                 for c in tool_calls {
-                    let input: Value = serde_json::from_str(&c.arguments).map_err(|_| AgentStreamError::fatal("工具历史参数不是有效 JSON".into()))?;
+                    let input: Value = serde_json::from_str(&c.arguments).map_err(|_| AgentStreamError::fatal_error(ai_error!("ai.anthropic.36125a58e462", "工具历史参数不是有效 JSON", "Tool history arguments are not valid JSON")))?;
                     blocks.push(json!({"type":"tool_use","id":c.id,"name":c.name,"input":input}));
                 }
                 ("assistant", blocks)
@@ -42,9 +43,9 @@ pub(super) fn parse(value: &Value, max_tokens: u32) -> Result<AgentTurn, AgentSt
     let reason = value["stop_reason"].as_str();
     check_finish(reason, max_tokens)?;
     if !matches!(reason, Some("end_turn" | "tool_use" | "stop_sequence")) {
-        return Err(AgentStreamError::transient(format!("AI Anthropic 回合未完成：{}", value["stop_reason"])));
+        return Err(AgentStreamError::transient_error(ai_error!("ai.anthropic.672e3708d1c0", "AI Anthropic 回合未完成：{arg0}", "AI Anthropic turn did not complete: {arg0}", "arg0" => value["stop_reason"])));
     }
-    let blocks = value["content"].as_array().ok_or_else(|| AgentStreamError::transient("AI Anthropic 缺少 content".into()))?;
+    let blocks = value["content"].as_array().ok_or_else(|| AgentStreamError::transient_error(ai_error!("ai.anthropic.67dd1ad06aad", "AI Anthropic 缺少 content", "AI Anthropic is missing content")))?;
     let mut content = String::new();
     let mut reasoning = String::new();
     let mut calls = vec![];
@@ -52,14 +53,14 @@ pub(super) fn parse(value: &Value, max_tokens: u32) -> Result<AgentTurn, AgentSt
         match block["type"].as_str() {
             Some("text") => content.push_str(block["text"].as_str().unwrap_or_default()),
             Some("thinking") => {
-                if block["signature"].as_str().is_none_or(str::is_empty) { return Err(AgentStreamError::transient("AI 思考块缺少签名，无法安全继续会话".into())); }
+                if block["signature"].as_str().is_none_or(str::is_empty) { return Err(AgentStreamError::transient_error(ai_error!("ai.anthropic.11c3a7502908", "AI 思考块缺少签名，无法安全继续会话", "AI reasoning block lacks a signature; cannot safely continue the session"))); }
                 reasoning.push_str(block["thinking"].as_str().unwrap_or_default());
             }
             Some("tool_use") => calls.push(call(block, "id", block, "input")?),
             _ => {}
         }
     }
-    if (reason == Some("tool_use")) != !calls.is_empty() { return Err(AgentStreamError::transient("AI 工具调用与终态不一致".into())); }
+    if (reason == Some("tool_use")) != !calls.is_empty() { return Err(AgentStreamError::transient_error(ai_error!("ai.anthropic.d2d91a29bc11", "AI 工具调用与终态不一致", "AI tool calls do not match the terminal state"))); }
     let (content, reasoning) = split_response_message_parts(Some(content), (!reasoning.is_empty()).then_some(reasoning));
     Ok(AgentTurn { content: content.trim().into(), reasoning, tool_calls: calls, protocol_history: Some(AgentProtocolHistory::AnthropicMessages(blocks.clone())) })
 }

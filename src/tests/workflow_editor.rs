@@ -15,7 +15,9 @@ fn minimal_data() -> WorkflowEditorData {
 fn build_workflow_definition_rejects_empty_steps() {
     let data = WorkflowEditorData::default();
     let err = build_workflow_definition(&data).unwrap_err();
-    assert_eq!(err, "至少需要一个步骤");
+    assert_eq!(khaslana::ui_i18n::message_key(&err).as_deref(), Some("workflow_editor.at_least_one_step_is_required"));
+    assert_eq!(khaslana::ui_i18n::resolve_in(khaslana::language::Language::ZhCn, &err), "至少需要一个步骤");
+    assert_eq!(khaslana::ui_i18n::resolve_in(khaslana::language::Language::En, &err), "At least one step is required");
 }
 
 #[test]
@@ -23,9 +25,9 @@ fn build_workflow_definition_rejects_missing_required_slot() {
     let mut data = minimal_data();
     data.steps[0].branch = "  ".to_string();
     let err = build_workflow_definition(&data).unwrap_err();
-    assert!(err.contains("第 1 个步骤"), "错误应指明步骤序号：{err}");
-    assert!(err.contains("切换分支"), "错误应含步骤类型名：{err}");
-    assert!(err.contains("分支"), "错误应含缺失槽名：{err}");
+    assert_eq!(khaslana::ui_i18n::message_key(&err).as_deref(), Some("workflow_editor.step_is_missing"));
+    assert_eq!(khaslana::ui_i18n::resolve_in(khaslana::language::Language::ZhCn, &err), "第 1 个步骤（切换分支）缺少「分支」");
+    assert_eq!(khaslana::ui_i18n::resolve_in(khaslana::language::Language::En, &err), "Step 1 (Switch branch) is missing \"Branch\"");
 }
 
 #[test]

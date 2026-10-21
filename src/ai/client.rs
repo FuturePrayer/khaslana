@@ -1,3 +1,4 @@
+use crate::ai::messages::ai_error;
 // 多协议同步 HTTP 客户端；协议适配在 client/protocols 中。
 //
 // 支持一次性请求（`request`，连接测试用）和流式 SSE 请求（`request_stream`，
@@ -132,6 +133,7 @@ impl AgentTurn {
 #[derive(Debug)]
 pub struct AgentStreamError {
     message: String,
+    localized: Option<GitError>,
     retryable: bool,
     retry_ceiling: usize,
 }
@@ -140,32 +142,17 @@ pub struct AgentStreamError {
 pub const AGENT_STREAM_MAX_RETRIES: usize = 3;
 
 impl AgentStreamError {
-    /// 瞬态故障：重试至默认上限。
-    fn transient(message: String) -> Self {
-        Self {
-            message,
-            retryable: true,
-            retry_ceiling: AGENT_STREAM_MAX_RETRIES,
-        }
+    fn transient_error(error: GitError) -> Self { Self::from_error(error, true, AGENT_STREAM_MAX_RETRIES) }
+    fn transient_once_error(error: GitError) -> Self { Self::from_error(error, true, 1) }
+    fn fatal_error(error: GitError) -> Self { Self::from_error(error, false, 0) }
+    fn from_error(error: GitError, retryable: bool, retry_ceiling: usize) -> Self {
+        // 保留旧 message() 检查的中文兼容性；任务展示必须用显式 display_in。
+        Self { message: error.display_in(crate::language::Language::ZhCn), localized: Some(error), retryable, retry_ceiling }
     }
-
-    /// 基本确定性的失败：只再试 1 次（采样波动可能产生更短输出）。
-    fn transient_once(message: String) -> Self {
-        Self {
-            message,
-            retryable: true,
-            retry_ceiling: 1,
-        }
+    pub fn display_in(&self, language: crate::language::Language) -> String {
+        self.localized.as_ref().map(|error| error.display_in(language)).unwrap_or_else(|| self.message.clone())
     }
-
-    /// 配置/能力类错误：重试无意义。
-    fn fatal(message: String) -> Self {
-        Self {
-            message,
-            retryable: false,
-            retry_ceiling: 0,
-        }
-    }
+    pub fn into_git_error(self) -> GitError { self.localized.unwrap_or(GitError::Message(self.message)) }
 
     pub fn message(&self) -> &str {
         &self.message
@@ -183,7 +170,7 @@ impl AgentStreamError {
 
 impl std::fmt::Display for AgentStreamError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
+        f.write_str(&self.display_in(crate::ui_i18n::language()))
     }
 }
 
@@ -399,7 +386,7 @@ fn resolve_proxy(proxy_url: Option<&str>) -> KhaslanaResult<Option<ureq::Proxy>>
     match proxy_url.map(str::trim).filter(|url| !url.is_empty()) {
         Some(url) => ureq::Proxy::new(url)
             .map(Some)
-            .map_err(|err| GitError::Message(format!("代理配置无效，已取消 AI 请求：{err}"))),
+            .map_err(|err| ai_error!("ai.client.3fbd02348b5f", "代理配置无效，已取消 AI 请求：{err}", "Invalid proxy configuration; AI request cancelled: {err}", "err" => err)),
         None => Ok(None),
     }
 }
@@ -684,14 +671,14 @@ fn agent_message_to_request(message: &AgentChatMessage) -> AgentRequestMessage<'
 pub fn classify_agent_http_error(err: ureq::Error) -> AgentStreamError {
     match &err {
         ureq::Error::StatusCode(code) if *code == 408 || *code == 429 || *code >= 500 => {
-            AgentStreamError::transient(format!("AI 端点返回 HTTP {code}（服务暂不可用或过载）"))
+            AgentStreamError::transient_error(ai_error!("ai.client.104166b7cb5e", "AI 端点返回 HTTP {code}（服务暂不可用或过载）", "AI endpoint returned HTTP {code} (temporarily unavailable or overloaded)", "code" => code))
         }
-        ureq::Error::StatusCode(_) => AgentStreamError::fatal(agent_request_error(err).to_string()),
+        ureq::Error::StatusCode(_) => AgentStreamError::fatal_error(agent_request_error(err)),
         ureq::Error::BadUri(_)
         | ureq::Error::InvalidProxyUrl
         | ureq::Error::RequireHttpsOnly(_)
-        | ureq::Error::TlsRequired => AgentStreamError::fatal(format!("AI 请求配置无效：{err}")),
-        _ => AgentStreamError::transient(format!("AI 请求失败（网络错误）：{err}")),
+        | ureq::Error::TlsRequired => AgentStreamError::fatal_error(ai_error!("ai.client.9e2ff52ac0c7", "AI 请求配置无效：{err}", "Invalid AI request configuration: {err}", "err" => err)),
+        _ => AgentStreamError::transient_error(ai_error!("ai.client.7df033487ba6", "AI 请求失败（网络错误）：{err}", "AI request failed (network error): {err}", "err" => err)),
     }
 }
 
@@ -710,83 +697,73 @@ pub fn agent_stream_truncation_message(
     max_tokens: u32,
 ) -> Option<AgentStreamError> {
     if finish_reason == Some("length") {
-        return Some(AgentStreamError::transient_once(format!(
-            "AI 本轮输出触及 max_tokens 上限（{max_tokens}）被截断，已产出的内容不完整\
-             （reasoning 模型的思考与正文共用输出预算）；请重试、缩小比较范围或更换\
-             输出上限更高的模型"
-        )));
+        return Some(AgentStreamError::transient_once_error(ai_error!("ai.stream.agent_limit",
+            "AI 本轮输出触及 max_tokens 上限（{max_tokens}）被截断，已产出的内容不完整（reasoning 模型的思考与正文共用输出预算）；请重试、缩小比较范围或更换输出上限更高的模型",
+            "AI turn was truncated at the max_tokens limit ({max_tokens}); output is incomplete (reasoning and text share the output budget). Retry, narrow the comparison or use a model with a higher output limit",
+            "max_tokens" => max_tokens)));
     }
     if !saw_done {
-        return Some(AgentStreamError::transient(
-            "AI 响应流在完成前被中断（未收到结束标记），已收到的内容不完整\
-             （疑似供应商网关掐断了连接）"
-                .to_string(),
-        ));
+        return Some(AgentStreamError::transient_error(ai_error!("ai.stream.agent_interrupted",
+            "AI 响应流在完成前被中断（未收到结束标记），已收到的内容不完整（疑似供应商网关掐断了连接）",
+            "AI response stream was interrupted before completion (no end marker); received content is incomplete (the provider gateway may have closed the connection)")));
     }
     None
 }
 
-/// 一次性生成流（commit message / 冲突合并建议 / 工作流模板）结束后的
-/// 截断判定（纯函数，可单测）。条件与 `agent_stream_truncation_message`
-/// 相同、文案面向单次生成场景（无重试语义）：
-/// 1. `finish_reason=length` —— 输出触及 max_tokens 上限被切断；
-/// 2. 未收到 `[DONE]` —— 连接在流完成前被供应商/网关中断。
-/// 两者无论已产出多少正文都判不完整——放行会出现「生成看似完成实为
-/// 半句话且无报错」，冲突合并建议甚至会把截断段拼进草稿。
-pub fn plain_stream_truncation_message(
-    saw_done: bool,
-    finish_reason: Option<&str>,
-    max_tokens: u32,
-) -> Option<String> {
+/// 兼容旧纯函数调用；业务错误保留结构化消息，展示可显式指定语言。
+pub fn plain_stream_truncation_message(saw_done: bool, finish_reason: Option<&str>, max_tokens: u32) -> Option<String> {
+    plain_stream_truncation_error(saw_done, finish_reason, max_tokens)
+        .map(|error| error.display_in(crate::ui_i18n::language()))
+}
+
+pub fn plain_stream_truncation_error(saw_done: bool, finish_reason: Option<&str>, max_tokens: u32) -> Option<GitError> {
     if finish_reason == Some("length") {
-        return Some(format!(
-            "AI 输出触及 max_tokens 上限（{max_tokens}）被截断，已生成的内容不完整\
-             （reasoning 模型的思考与正文共用输出预算）；请重试或调大输出上限"
-        ));
+        return Some(ai_error!("ai.stream.plain_limit",
+            "AI 输出触及 max_tokens 上限（{max_tokens}）被截断，已生成的内容不完整（reasoning 模型的思考与正文共用输出预算）；请重试或调大输出上限",
+            "AI output was truncated at the max_tokens limit ({max_tokens}); generated content is incomplete (reasoning and text share the output budget). Retry or increase the output limit",
+            "max_tokens" => max_tokens));
     }
     if !saw_done {
-        return Some(
-            "AI 响应流在完成前被中断（未收到结束标记），已生成的内容不完整\
-             （疑似供应商网关掐断了连接），请重试"
-                .to_string(),
-        );
+        return Some(ai_error!("ai.stream.plain_interrupted",
+            "AI 响应流在完成前被中断（未收到结束标记），已生成的内容不完整（疑似供应商网关掐断了连接），请重试",
+            "AI response stream was interrupted before completion (no end marker); generated content is incomplete (the provider gateway may have closed the connection). Retry"));
     }
     None
 }
 
-/// agent 回合「无正文且无工具调用」的失败文案选择（纯函数，可单测）。
-/// 截断信号（length / 无 DONE）已由 `agent_stream_truncation_message`
-/// 先行拦截，这里只区分剩余成因。
 pub fn agent_turn_empty_failure_message(valid_chunks: usize, has_reasoning: bool) -> &'static str {
+    crate::ui_i18n::text(empty_turn_message(valid_chunks, has_reasoning))
+}
+
+fn empty_turn_message(valid_chunks: usize, has_reasoning: bool) -> crate::ui_i18n::UiMessage {
+    use crate::ui_i18n::UiMessage;
     if valid_chunks == 0 {
-        return "AI 响应流中没有有效数据块（供应商响应格式异常或响应被截断）";
+        return UiMessage::new("ai.stream.no_chunks", "AI 响应流中没有有效数据块（供应商响应格式异常或响应被截断）",
+            "AI response stream contains no valid chunks (invalid provider format or truncated response)");
     }
     if has_reasoning {
-        return "AI 本轮只返回了思考过程，没有正文也没有工具调用（疑似被截断），\
-                请重试或更换模型";
+        return UiMessage::new("ai.stream.reasoning_only", "AI 本轮只返回了思考过程，没有正文也没有工具调用（疑似被截断），请重试或更换模型",
+            "AI turn returned only reasoning, without text or tool calls (possibly truncated). Retry or change models");
     }
-    "AI 返回了空内容"
+    UiMessage::new("ai.stream.empty", "AI 返回了空内容", "AI returned empty content")
 }
 
-/// agent 请求 HTTP 错误的文案分流（不做降级，直接给出行动指引）：
-/// - 400：成因不唯一（模型名/参数错误，或端点不支持工具调用），双因并提；
-/// - 404/422：基本可以归因端点不支持工具调用（tools），引导更换供应商/模型；
-/// - 其余错误原样透传。
+fn agent_turn_empty_error(valid_chunks: usize, has_reasoning: bool) -> GitError {
+    GitError::Localized(crate::ui_i18n::LocalizedMessage::new(empty_turn_message(valid_chunks, has_reasoning), &[]))
+}
+
 pub fn agent_request_error(err: ureq::Error) -> GitError {
     if let ureq::Error::StatusCode(code @ (400 | 404 | 422)) = &err {
-        return GitError::Message(match code {
-            400 => format!(
-                "AI 端点返回 HTTP 400，可能是模型名或请求参数错误，\
-                 也可能该端点不支持工具调用（tools）；请检查 AI 设置中的模型名称，\
-                 或更换支持工具调用的供应商/模型。原始错误：{err}"
-            ),
-            _ => format!(
-                "AI 端点返回 HTTP {code}，疑似不支持工具调用（tools）。\
-                 请在 AI 设置中更换支持工具调用的供应商或模型。原始错误：{err}"
-            ),
-        });
+        return match code {
+            400 => ai_error!("ai.http.bad_request",
+                "AI 端点返回 HTTP 400，可能是模型名或请求参数错误，也可能该端点不支持工具调用（tools）；请检查 AI 设置中的模型名称，或更换支持工具调用的供应商/模型。原始错误：{err}",
+                "AI endpoint returned HTTP 400: the model name or request parameters may be invalid, or the endpoint may not support tools. Check the AI model setting or use a provider/model supporting tool calls. Original error: {err}", "err" => err),
+            _ => ai_error!("ai.http.unsupported_tools",
+                "AI 端点返回 HTTP {code}，疑似不支持工具调用（tools）。请在 AI 设置中更换支持工具调用的供应商或模型。原始错误：{err}",
+                "AI endpoint returned HTTP {code}; it may not support tools. Select a provider/model supporting tool calls in AI settings. Original error: {err}", "code" => code, "err" => err),
+        };
     }
-    GitError::Message(format!("AI 请求失败：{err}"))
+    ai_error!("ai.http.failed", "AI 请求失败：{err}", "AI request failed: {err}", "err" => err)
 }
 
 #[cfg(test)]

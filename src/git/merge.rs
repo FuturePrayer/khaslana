@@ -1,5 +1,6 @@
 //! 普通合并会话：开始、完成和中止。
 
+use crate::types::domain_ui_resources;
 use git2::build::CheckoutBuilder;
 use git2::{AnnotatedCommit, MergeAnalysis, MergeOptions, Repository, RepositoryState, ResetType};
 
@@ -19,7 +20,7 @@ impl GitService {
         branch: &BranchName,
     ) -> Result<RepositorySnapshot> {
         self.progress
-            .emit(OperationEvent::Started(format!("正在合并 {}", branch.0)));
+            .emit(OperationEvent::Started(crate::ui_i18n::format(domain_ui_resources::MERGING, &[("value0", &format!("{}", branch.0))])));
         let reference = self.find_branch_reference(repo, &branch.0)?;
         let annotated = repo.reference_to_annotated_commit(&reference)?;
         self.merge_annotated(repo, &annotated, &branch.0)?;
@@ -28,9 +29,9 @@ impl GitService {
         // 无冲突的正常非快进合并：自动提交（双父提交），不保留 merge 会话。
         self.complete_clean_merge(repo, &branch.0)?;
         let message = if merge_in_progress(repo) {
-            format!("{} 的合并结果已写入暂存区", branch.0)
+            crate::ui_i18n::format(domain_ui_resources::MERGE_RESULT_FOR_WRITTEN_TO_THE_INDEX, &[("value0", &format!("{}", branch.0))])
         } else {
-            format!("已合并 {}", branch.0)
+            crate::ui_i18n::format(domain_ui_resources::MERGED, &[("value0", &format!("{}", branch.0))])
         };
         self.progress.emit(OperationEvent::Finished(message));
         self.snapshot_after_operation(repo)
@@ -78,9 +79,7 @@ impl GitService {
             return Ok(());
         }
         if !analysis.contains(MergeAnalysis::ANALYSIS_NORMAL) {
-            return Err(GitError::Message(format!(
-                "无法合并 {label}：不支持的合并分析结果"
-            )));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::CANNOT_MERGE_UNSUPPORTED_MERGE_ANALYSIS_RESULT, &[("label", &format!("{}", label))])));
         }
 
         let mut merge_options = MergeOptions::new();
@@ -111,10 +110,10 @@ impl GitService {
         message: &CommitMessage,
     ) -> Result<RepositorySnapshot> {
         if !merge_in_progress(repo) {
-            return Err(GitError::Message("当前没有正在进行的合并".into()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::NO_MERGE_IS_CURRENTLY_IN_PROGRESS, &[])));
         }
         self.progress
-            .emit(OperationEvent::Started("正在完成合并".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::COMPLETING_MERGE).into()));
         let mut merge_head_ids = Vec::new();
         repo.mergehead_foreach(|oid| {
             merge_head_ids.push(*oid);
@@ -122,36 +121,32 @@ impl GitService {
         })?;
         self.commit_merge(repo, message, &merge_head_ids)?;
         self.progress
-            .emit(OperationEvent::Finished("合并提交已创建".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::MERGE_COMMIT_CREATED).into()));
         self.snapshot_after_operation(repo)
     }
 
     pub fn abort_merge(&self, repo: &mut Repository) -> Result<RepositorySnapshot> {
         if !merge_in_progress(repo) {
-            return Err(GitError::Message("当前没有正在进行的合并".into()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::NO_MERGE_IS_CURRENTLY_IN_PROGRESS, &[])));
         }
 
         self.progress
-            .emit(OperationEvent::Started("正在中止合并".into()));
+            .emit(OperationEvent::Started(crate::ui_i18n::text(domain_ui_resources::ABORTING_MERGE).into()));
         let head = repo.head()?.peel_to_commit()?;
         reset_preserving_locked_directories(repo, head.as_object(), ResetType::Hard)?;
         drop(head);
         repo.cleanup_state()?;
         self.progress
-            .emit(OperationEvent::Finished("合并已中止".into()));
+            .emit(OperationEvent::Finished(crate::ui_i18n::text(domain_ui_resources::MERGE_ABORTED).into()));
         self.snapshot_after_operation(repo)
     }
 
     fn ensure_clean_for_merge(&self, repo: &Repository) -> Result<()> {
         if repo.state() != RepositoryState::Clean {
-            return Err(GitError::Message(
-                "仓库正在执行其他 Git 操作，请先完成或中止后再合并".into(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::ANOTHER_GIT_OPERATION_IS_IN_PROGRESS_COMPLETE_OR_ABORT_IT_BEFORE_MERGING, &[])));
         }
         if !self.status_full(repo)?.is_empty() || !self.conflicts(repo)?.is_empty() {
-            return Err(GitError::Message(
-                "当前存在未提交改动，请先提交或贮藏后再合并".into(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::THERE_ARE_UNCOMMITTED_CHANGES_COMMIT_OR_STASH_THEM_BEFORE_MERGING, &[])));
         }
         Ok(())
     }
@@ -163,7 +158,7 @@ impl GitService {
         merge_head_ids: &[git2::Oid],
     ) -> Result<()> {
         if !merge_in_progress(repo) {
-            return Err(GitError::Message("当前没有正在进行的合并".into()));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::NO_MERGE_IS_CURRENTLY_IN_PROGRESS, &[])));
         }
 
         let message = message.0.trim();
@@ -177,9 +172,7 @@ impl GitService {
         }
         let tree_id = index.write_tree()?;
         if merge_head_ids.is_empty() {
-            return Err(GitError::Message(
-                "合并状态缺少 MERGE_HEAD，无法完成合并".into(),
-            ));
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::MERGE_STATE_IS_MISSING_MERGE_HEAD_CANNOT_COMPLETE_THE_MERGE, &[])));
         }
         let tree = repo.find_tree(tree_id)?;
         let head = repo.head()?.peel_to_commit()?;

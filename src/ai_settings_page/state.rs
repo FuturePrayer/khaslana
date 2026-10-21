@@ -1,4 +1,6 @@
 use khaslana::{AiApiType, AiProviderSettings};
+use khaslana::ui_i18n::encode;
+use super::messages;
 
 pub(crate) const API_TYPES: [AiApiType; 3] = [
     AiApiType::ChatCompletions, AiApiType::Responses, AiApiType::AnthropicMessages,
@@ -13,11 +15,11 @@ pub(crate) fn parse_form_settings(
     reasoning_effort: &str,
 ) -> Result<AiProviderSettings, String> {
     settings.temperature = temperature.trim().parse()
-        .map_err(|_| "温度必须是有限数值".to_string())?;
+        .map_err(|_| encode(messages::TEMPERATURE_PARSE_ERROR, &[]))?;
     settings.max_tokens = max_tokens.trim().parse()
-        .map_err(|_| "最大输出必须是大于 0 的整数（不超过 4294967295）".to_string())?;
+        .map_err(|_| encode(messages::MAX_OUTPUT_PARSE_ERROR, &[]))?;
     settings.request_timeout_secs = timeout.trim().parse()
-        .map_err(|_| "请求超时必须是大于 0 的整数秒数".to_string())?;
+        .map_err(|_| encode(messages::TIMEOUT_PARSE_ERROR, &[]))?;
     let effort = reasoning_effort.trim();
     settings.reasoning_effort = (!effort.is_empty()).then(|| effort.to_string());
     settings.validate_advanced().map_err(|error| error.to_string())?;

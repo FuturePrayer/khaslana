@@ -1,3 +1,4 @@
+use crate::ai::messages::ai_error;
 // AI 评审记录本地落盘。
 //
 // 每次评审完成后由后台任务线程写一份 JSON 文件到
@@ -12,7 +13,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::ai::review::AiReviewResult;
-use crate::types::{GitError, Result};
+use crate::types::Result;
 
 /// 每个仓库保留的记录上限，超出时删除最旧的。
 pub const MAX_STORED_RECORDS: usize = 30;
@@ -73,14 +74,14 @@ fn repo_record_dir(base_dir: &Path, repo_path: &str) -> PathBuf {
 pub fn save_review_record(base_dir: &Path, mut record: AiReviewRecord) -> Result<String> {
     let dir = repo_record_dir(base_dir, &record.repo_path);
     fs::create_dir_all(&dir)
-        .map_err(|err| GitError::Message(format!("创建评审记录目录失败：{err}")))?;
+        .map_err(|err| ai_error!("ai.review_store.ad41a9d48b7d", "创建评审记录目录失败：{err}", "Failed to create review record directory: {err}", "err" => err))?;
 
     let id = unique_record_id(&dir, record.created_at_millis);
     record.id = id.clone();
     let json = serde_json::to_string(&record)
-        .map_err(|err| GitError::Message(format!("序列化评审记录失败：{err}")))?;
+        .map_err(|err| ai_error!("ai.review_store.c0f3a9c1ebf5", "序列化评审记录失败：{err}", "Failed to serialize review record: {err}", "err" => err))?;
     let path = dir.join(format!("{id}.json"));
-    fs::write(&path, json).map_err(|err| GitError::Message(format!("写入评审记录失败：{err}")))?;
+    fs::write(&path, json).map_err(|err| ai_error!("ai.review_store.77bd5ab7d17c", "写入评审记录失败：{err}", "Failed to write review record: {err}", "err" => err))?;
 
     prune_records(&dir);
     Ok(id)
@@ -184,7 +185,7 @@ fn collect_latest_records(dir: &Path, want: usize, records: &mut Vec<AiReviewRec
             Ok(record) => records.push(record),
             Err(err) => tracing::warn!(
                 target: "khaslana::ai",
-                "跳过损坏的评审记录 {}: {err}",
+                "Skipped corrupt review record {}: {err}",
                 path.display()
             ),
         }

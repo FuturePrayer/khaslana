@@ -80,3 +80,22 @@ fn submodule_status_display_keeps_local_label_before_remote_check_finishes() {
         ("需更新".to_string(), SubmoduleStatusTone::Warning)
     );
 }
+
+#[test]
+fn submodule_refresh_requires_structured_operation_identity() {
+    use khaslana::ui_i18n::{UiMessage, encode};
+    for operation in [
+        crate::operation_ui_resources::SUBMODULE_SYNCED,
+        crate::operation_ui_resources::SUBMODULES_UPDATED,
+        crate::operation_ui_resources::SUBMODULE_UPDATED,
+    ] {
+        assert!(operation_refreshes_submodule_dialog(&encode(operation, &[("name", "用户/{name}")])));
+        assert!(!operation_refreshes_submodule_dialog(operation.key));
+        assert!(!operation_refreshes_submodule_dialog(operation.zh));
+        assert!(!operation_refreshes_submodule_dialog(operation.en));
+    }
+    assert!(!operation_refreshes_submodule_dialog(&encode(crate::operation_ui_resources::FETCHED, &[])));
+    assert!(!operation_refreshes_submodule_dialog("子模块 deps/sub 已更新到远端最新"));
+    let unrelated = UiMessage::new("test.unrelated", "子模块已更新到远端最新", "Submodules updated");
+    assert!(!operation_refreshes_submodule_dialog(&encode(unrelated, &[])));
+}
