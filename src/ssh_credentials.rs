@@ -200,6 +200,69 @@ pub(crate) fn http_remote_to_ssh(url: &str, username: &str) -> Option<String> {
     }
 }
 
+/// SSH 与 HTTPS 的端口没有通用映射，转换时只保留主机和仓库路径。
+pub(crate) fn ssh_remote_to_https(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.chars().any(char::is_whitespace) || url.contains(['\\', '?', '#']) {
+        return None;
+    }
+    let (authority, path, explicit_scheme) = if let Some(rest) = url.strip_prefix("ssh://") {
+        let (authority, path) = rest.split_once('/')?;
+        (authority, path, true)
+    } else {
+        let (username, rest) = url.split_once('@')?;
+        if username.is_empty() || username.contains(['/', ':']) {
+            return None;
+        }
+        let (host, path) = if rest.starts_with('[') {
+            let end = rest.find(']')?;
+            (&rest[..=end], rest[end + 1..].strip_prefix(':')?)
+        } else {
+            rest.split_once(':')?
+        };
+        (host, path, false)
+    };
+    let authority = if explicit_scheme {
+        if let Some((username, host)) = authority.split_once('@') {
+            if username.is_empty() || username.contains(':') {
+                return None;
+            }
+            host
+        } else {
+            authority
+        }
+    } else {
+        authority
+    };
+    let (host, port) = if authority.starts_with('[') {
+        let end = authority.find(']')?;
+        authority[1..end].parse::<std::net::Ipv6Addr>().ok()?;
+        (&authority[..=end], &authority[end + 1..])
+    } else {
+        let (host, port) = authority
+            .split_once(':')
+            .map_or((authority, ""), |(host, _)| (host, &authority[host.len()..]));
+        if host.is_empty()
+            || !host
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+        {
+            return None;
+        }
+        (host, port)
+    };
+    if !port.is_empty() {
+        if !explicit_scheme || port.strip_prefix(':')?.parse::<u16>().ok()? == 0 {
+            return None;
+        }
+    }
+    let path = path.trim_start_matches('/');
+    if path.is_empty() {
+        return None;
+    }
+    Some(format!("https://{host}/{path}"))
+}
+
 fn ssh_agent_identities() -> Vec<String> {
     let mut command = Command::new("ssh-add");
     command.arg("-l");
@@ -394,6 +457,10 @@ impl RepositoryView {
         panel
     }
 }
+
+#[cfg(test)]
+#[path = "tests/ssh_credentials.rs"]
+mod conversion_tests;
 
 #[cfg(test)]
 mod tests {
