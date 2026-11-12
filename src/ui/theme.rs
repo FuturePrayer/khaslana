@@ -537,14 +537,17 @@ pub(crate) const WINDOW_CONTROLS_RIGHT_INSET: f32 = 12.0;
 /// Context Navigator 收起态窄条宽度（只剩展开箭头 + 模式图标）。
 pub(crate) const NAVIGATOR_COLLAPSED_WIDTH: f32 = 48.0;
 
+// 圆角阶梯（2026-11-12 用户反馈区域圆角过大后整体收紧）：旧 6/8/10/16/18
+// 偏消费级软圆角，与密集原生 IDE 的利落感不符；现 6/6/8/10/12，面板与导航
+// 明显更挺括。窗口外壳 24 为已确认决策，不随此次收紧。
 pub(crate) const RADIUS_XS: f32 = 6.0;
-pub(crate) const RADIUS_SM: f32 = 8.0;
+pub(crate) const RADIUS_SM: f32 = 6.0;
 #[allow(dead_code)]
-pub(crate) const RADIUS_MD: f32 = 10.0;
+pub(crate) const RADIUS_MD: f32 = 8.0;
 /// 工作面板圆角（文件列表、差异外壳、提交区）。
-pub(crate) const RADIUS_PANEL: f32 = 16.0;
+pub(crate) const RADIUS_PANEL: f32 = 10.0;
 /// 导航外壳圆角（画板比工作面板大一档）。
-pub(crate) const RADIUS_NAV: f32 = 18.0;
+pub(crate) const RADIUS_NAV: f32 = 12.0;
 /// 窗口圆角：外壳本身就是那张圆角卡片（画板把外围桌面装饰去掉，以圆角内容为边界）。
 pub(crate) const RADIUS_WINDOW: f32 = 24.0;
 pub(crate) const RADIUS_PILL: f32 = 999.0;
