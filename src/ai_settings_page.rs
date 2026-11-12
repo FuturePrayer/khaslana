@@ -154,7 +154,10 @@ impl RepositoryView {
         let content = div().id(AI_SETTINGS_PAGE_SCROLL_ID).size_full()
             .overflow_y_scroll().track_scroll(&handle)
             .child(v_flex().w_full().min_w(px(0.0)).px(px(8.0)).py_2()
-                .child(match (self.ai_settings.enabled, self.ai_extensions.tab) {
+                // 页面解锁跟「表单开关值」（编辑会话所见即所得）：拨动开关立即
+                // 显示/收起配置，保存才落盘。运行时 is_usable 与命令面板门控
+                // 仍读持久化 ai_settings.enabled，不受此处影响。
+                .child(match (self.ai_enabled_form, self.ai_extensions.tab) {
                     (false, _) => self.render_ai_locked_content(cx).into_any_element(),
                     (true, AiSettingsTab::Connection) =>
                         self.render_ai_connection_content(window, compact, cx).into_any_element(),
@@ -222,7 +225,7 @@ impl RepositoryView {
         // 淡色选中块。这里复用 Kit Button，补齐页签方向键与焦点切换。
         h_flex().id("ai-settings-tabs").w_full().flex_wrap().gap_1()
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if !this.ai_settings.enabled { return; }
+                if !this.ai_enabled_form { return; }
                 let current = this.ai_extensions.tab.index();
                 let index = match event.keystroke.key.as_str() {
                     "left" => (current + 3) % 4,
@@ -244,7 +247,7 @@ impl RepositoryView {
                     let view = view.clone();
                     settings_command_button(format!("ai-settings-tab-{index}"), label,
                         if selected { SettingsButtonTone::SelectedTab } else { SettingsButtonTone::Quiet },
-                        self.ai_settings.enabled, cx)
+                        self.ai_enabled_form, cx)
                         .accessibility_label(message(messages::TAB_LABEL, &[("label", label)])).toggled(selected)
                         .h(px(36.0)).min_w(px(0.0))
                         .on_click(move |_, _, cx| {
