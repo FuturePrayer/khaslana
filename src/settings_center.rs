@@ -42,8 +42,9 @@ use crate::{RepositoryView, SettingsCategory, ui::theme::{self as ui_theme, rgb}
 
 /// 设置中心分类的固定顺序：侧栏与 `Settings` 页码共用这一份，
 /// 增删分类必须同步 `page_index` 的映射语义（按位置查找）。
-pub(crate) const SETTINGS_CATEGORY_ORDER: [SettingsCategory; 9] = [
+pub(crate) const SETTINGS_CATEGORY_ORDER: [SettingsCategory; 10] = [
     SettingsCategory::Credentials,
+    SettingsCategory::GitConfig,
     SettingsCategory::Proxy,
     SettingsCategory::Ai,
     SettingsCategory::ExternalMerge,
@@ -58,6 +59,7 @@ pub(crate) const SETTINGS_CATEGORY_ORDER: [SettingsCategory; 9] = [
 pub(crate) fn category_icon(category: SettingsCategory) -> IconName {
     match category {
         SettingsCategory::Credentials => IconName::KeyRound,
+        SettingsCategory::GitConfig => IconName::GitBranch,
         SettingsCategory::Proxy => IconName::Network,
         SettingsCategory::Ai => IconName::Sparkles,
         SettingsCategory::ExternalMerge => IconName::GitMerge,
@@ -276,6 +278,10 @@ pub(crate) fn settings_pane_meta(category: SettingsCategory) -> SettingsPaneMeta
             title: khaslana::ui_i18n::text(crate::main_ui_resources::CREDENTIALS),
             description: khaslana::ui_i18n::text(crate::main_ui_resources::CREDENTIALS_DESCRIPTION),
         },
+        SettingsCategory::GitConfig => SettingsPaneMeta {
+            title: khaslana::ui_i18n::text(crate::main_ui_resources::GIT_CONFIG),
+            description: khaslana::ui_i18n::text(crate::main_ui_resources::GIT_CONFIG_DESCRIPTION),
+        },
         SettingsCategory::Proxy => SettingsPaneMeta {
             title: khaslana::ui_i18n::text(crate::main_ui_resources::PROXY),
             description: khaslana::ui_i18n::text(crate::main_ui_resources::PROXY_DESCRIPTION),
@@ -407,6 +413,7 @@ impl RepositoryView {
     ) -> Vec<SettingGroup> {
         match category {
             SettingsCategory::Credentials => self.settings_credentials_groups(cx),
+            SettingsCategory::GitConfig => self.settings_git_config_groups(window, cx),
             SettingsCategory::Proxy => self.settings_proxy_groups(window, cx),
             SettingsCategory::Ai => {
                 let view = cx.entity();

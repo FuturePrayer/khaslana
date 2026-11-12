@@ -33,6 +33,7 @@ mod blame;
 mod browse;
 mod checkout_carry;
 mod commit_trace;
+mod config;
 mod conflicts;
 mod merge;
 mod office;
@@ -57,6 +58,7 @@ pub(crate) mod test_support;
 // 重新导出浏览模式引用种类，供二进制 crate 使用
 pub use browse::BrowseRefKind;
 pub use checkout_carry::{CarryingCheckoutOutcome, CheckoutAttempt};
+pub use config::{GIT_CONFIG_KEYS, GitConfigItemState, GitConfigLevel, GitConfigScope, GitConfigSnapshot};
 pub use commit_trace::COMMIT_TRACE_OID_LIMIT;
 pub use partial_stage::{LineSelection, SelectedDiffLine, SelectionSide};
 pub use search::CodeSearchMatch;

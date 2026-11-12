@@ -44,6 +44,12 @@ impl RepositoryView {
                 });
             }
             UiEvent::SshUi(event) => self.handle_ssh_ui_event(event, cx),
+            UiEvent::GitConfigLoaded { request_id, result } => {
+                self.handle_git_config_loaded(request_id, result, cx);
+            }
+            UiEvent::GitConfigSaved { request_id, result } => {
+                self.handle_git_config_saved(request_id, result, cx);
+            }
             UiEvent::UiTick => {
                 self.tick_ssh_host_challenges(cx);
                 self.tick_recovery(cx);

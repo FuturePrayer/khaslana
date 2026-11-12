@@ -86,6 +86,7 @@ pub const SETTINGS_CENTER: UiMessage = UiMessage::new("views.code_palette_view.c
 pub const OPEN_APPLICATION_SETTINGS_AND_PREFERENCES: UiMessage = UiMessage::new("views.code_palette_view.catalog.open_application_settings_and_preferences", "打开应用设置和偏好", "Open application settings and preferences");
 pub const SETTINGS: UiMessage = UiMessage::new("views.code_palette_view.catalog.settings", "设置", "Settings");
 pub const SETTINGS_KEYS_TOKENS_ACCOUNTS_SSH_PASSWORDS_CREDENTIALS_TOKEN: UiMessage = UiMessage::new("views.code_palette_view.catalog.settings_keys_tokens_accounts_ssh_passwords_credentials_token", "设置 密钥 令牌 账号 SSH 密码 credentials token", "Settings keys tokens accounts SSH passwords credentials token");
+pub const SETTINGS_GIT_CONFIG_USER_NAME_EMAIL_IDENTITY: UiMessage = UiMessage::new("views.code_palette_view.catalog.settings_git_config_user_name_email_identity", "设置 Git 配置 用户名 邮箱 身份 user.name user.email config", "Settings Git configuration user name email identity user.name user.email config");
 pub const SETTINGS_PROXY_SOCKS_HTTP_HTTPS_PROXY: UiMessage = UiMessage::new("views.code_palette_view.catalog.settings_proxy_socks_http_https_proxy", "设置 代理 socks http https proxy", "Settings proxy socks http https proxy");
 pub const SETTINGS_MODELS_PROVIDERS_APIS_SERVICES_PROVIDER_API_AI: UiMessage = UiMessage::new("views.code_palette_view.catalog.settings_models_providers_apis_services_provider_api_ai", "设置 模型 大模型 接口 服务 商 provider API AI", "Settings models providers APIs services provider API AI");
 pub const SETTINGS_EXTERNAL_MERGE_INTELLIJ_IDEA_MERGE_TOOL: UiMessage = UiMessage::new("views.code_palette_view.catalog.settings_external_merge_intellij_idea_merge_tool", "设置 外部合并 IntelliJ IDEA merge tool", "Settings external merge IntelliJ IDEA merge tool");
@@ -226,6 +227,7 @@ const ALL_MESSAGES: &[UiMessage] = &[
     OPEN_APPLICATION_SETTINGS_AND_PREFERENCES,
     SETTINGS,
     SETTINGS_KEYS_TOKENS_ACCOUNTS_SSH_PASSWORDS_CREDENTIALS_TOKEN,
+    SETTINGS_GIT_CONFIG_USER_NAME_EMAIL_IDENTITY,
     SETTINGS_PROXY_SOCKS_HTTP_HTTPS_PROXY,
     SETTINGS_MODELS_PROVIDERS_APIS_SERVICES_PROVIDER_API_AI,
     SETTINGS_EXTERNAL_MERGE_INTELLIJ_IDEA_MERGE_TOOL,

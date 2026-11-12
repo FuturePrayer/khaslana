@@ -444,6 +444,7 @@ fn layout_preference_clamp_ranges_cover_defaults() {
 fn settings_categories_include_about_with_unique_labels() {
     let categories = [
         (SettingsCategory::Credentials, "凭据管理"),
+        (SettingsCategory::GitConfig, "Git 配置"),
         (SettingsCategory::Proxy, "网络代理"),
         (SettingsCategory::Ai, "AI 设置"),
         (SettingsCategory::ExternalMerge, "合并工具"),
