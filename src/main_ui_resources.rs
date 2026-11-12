@@ -3,6 +3,8 @@ use khaslana::ui_i18n::UiMessage;
 
 pub const CREDENTIALS: UiMessage = UiMessage::new("settings.credentials.title", "凭据管理", "Credentials");
 pub const CREDENTIALS_DESCRIPTION: UiMessage = UiMessage::new("settings.credentials.description", "各远端的用户名与访问令牌；密文保存在系统密钥库。", "Usernames and access tokens for remotes. Secrets are stored in the system keyring.");
+pub const GIT_CONFIG: UiMessage = UiMessage::new("settings.git_config.title", "Git 配置", "Git configuration");
+pub const GIT_CONFIG_DESCRIPTION: UiMessage = UiMessage::new("settings.git_config.description", "读写 Git 全局或当前仓库的配置，如提交身份与换行处理。保存后立即对后续 Git 操作生效。", "Read and write Git configuration globally or for the current repository, such as commit identity and line-ending handling. Changes apply to subsequent Git operations immediately.");
 pub const PROXY: UiMessage = UiMessage::new("settings.proxy.title", "网络代理", "Network proxy");
 pub const PROXY_DESCRIPTION: UiMessage = UiMessage::new("settings.proxy.description", "Git 网络操作走哪条代理链路。配置错误会直接报错，不会静默改走直连。", "Configure the proxy for Git network operations. Invalid settings report an error instead of silently connecting directly.");
 pub const AI: UiMessage = UiMessage::new("settings.ai.title", "AI 设置", "AI settings");
@@ -52,5 +54,5 @@ pub const ACCENTS: &[UiMessage] = &[
 #[cfg(test)]
 #[test]
 fn resources_have_unique_keys_and_matching_parameters() {
-    khaslana::ui_i18n::validate(&[CREDENTIALS, CREDENTIALS_DESCRIPTION, PROXY, PROXY_DESCRIPTION, AI, AI_DESCRIPTION, MERGE, MERGE_DESCRIPTION, INDEX, INDEX_DESCRIPTION, APPEARANCE, APPEARANCE_DESCRIPTION, UPDATE, UPDATE_DESCRIPTION, SHORTCUTS, SHORTCUTS_DESCRIPTION, ABOUT, ABOUT_DESCRIPTION, DISPLAY_MODE, DISPLAY_DESCRIPTION, THEME_MODE, ACCENT, ACCENT_DESCRIPTION, ACCENT_LABEL, CURRENT_DISPLAY, CURRENT_THEME, SYSTEM, LIGHT, DARK, LIGHT_THEME, DARK_THEME, THEME_CHANGED, THEME_SAVE_FAILED, ACCENT_CHANGED, ACCENT_SAVE_FAILED, ACCENTS[0], ACCENTS[1], ACCENTS[2], ACCENTS[3], ACCENTS[4], ACCENTS[5], ACCENTS[6], ACCENTS[7], ACCENTS[8]]).unwrap();
+    khaslana::ui_i18n::validate(&[CREDENTIALS, CREDENTIALS_DESCRIPTION, GIT_CONFIG, GIT_CONFIG_DESCRIPTION, PROXY, PROXY_DESCRIPTION, AI, AI_DESCRIPTION, MERGE, MERGE_DESCRIPTION, INDEX, INDEX_DESCRIPTION, APPEARANCE, APPEARANCE_DESCRIPTION, UPDATE, UPDATE_DESCRIPTION, SHORTCUTS, SHORTCUTS_DESCRIPTION, ABOUT, ABOUT_DESCRIPTION, DISPLAY_MODE, DISPLAY_DESCRIPTION, THEME_MODE, ACCENT, ACCENT_DESCRIPTION, ACCENT_LABEL, CURRENT_DISPLAY, CURRENT_THEME, SYSTEM, LIGHT, DARK, LIGHT_THEME, DARK_THEME, THEME_CHANGED, THEME_SAVE_FAILED, ACCENT_CHANGED, ACCENT_SAVE_FAILED, ACCENTS[0], ACCENTS[1], ACCENTS[2], ACCENTS[3], ACCENTS[4], ACCENTS[5], ACCENTS[6], ACCENTS[7], ACCENTS[8]]).unwrap();
 }

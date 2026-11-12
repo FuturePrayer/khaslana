@@ -17,6 +17,7 @@ mod conflicts;
 mod dialog_view;
 mod diff_view;
 mod external_merge_view;
+mod git_config_view;
 mod history_view;
 mod markdown_view;
 mod merge_view;
@@ -514,6 +515,9 @@ enum FieldId {
     ProxyHttpUrl,
     ProxyHttpsUrl,
     ProxySocks5Url,
+    GitConfigUserName,
+    GitConfigUserEmail,
+    GitConfigDefaultBranch,
     AiBaseUrl,
     AiApiKey,
     AiModel,
@@ -638,6 +642,15 @@ const DEDICATED_FIELDS: &[(FieldId, DedicatedFieldAccessor)] = &[
     (FieldId::ProxySocks5Url, |view: &RepositoryView| {
         &view.proxy_socks5_url
     }),
+    (FieldId::GitConfigUserName, |view: &RepositoryView| {
+        &view.git_config_ui.user_name
+    }),
+    (FieldId::GitConfigUserEmail, |view: &RepositoryView| {
+        &view.git_config_ui.user_email
+    }),
+    (FieldId::GitConfigDefaultBranch, |view: &RepositoryView| {
+        &view.git_config_ui.default_branch
+    }),
     (FieldId::AiBaseUrl, |view: &RepositoryView| {
         &view.ai_base_url
     }),
@@ -702,6 +715,9 @@ pub(crate) const ALL_FIELD_IDS: &[FieldId] = &[
     FieldId::ProxyHttpUrl,
     FieldId::ProxyHttpsUrl,
     FieldId::ProxySocks5Url,
+    FieldId::GitConfigUserName,
+    FieldId::GitConfigUserEmail,
+    FieldId::GitConfigDefaultBranch,
     FieldId::AiBaseUrl,
     FieldId::AiApiKey,
     FieldId::AiModel,
@@ -768,6 +784,8 @@ struct OAuthLoginFlowState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SettingsCategory {
     Credentials,
+    /// Git 配置：全局 / 当前仓库双作用域读写 user.name 等配置项。
+    GitConfig,
     Proxy,
     Ai,
     ExternalMerge,
@@ -2389,6 +2407,16 @@ impl RepositoryLoading {
 pub(crate) enum UiEvent {
     UiTick,
     SshUi(repository_ssh_ui::SshUiEvent),
+    /// Git 配置页加载完成（request_id 代际守卫，迟到结果丢弃）。
+    GitConfigLoaded {
+        request_id: u64,
+        result: std::result::Result<khaslana::GitConfigSnapshot, String>,
+    },
+    /// Git 配置页保存完成：写入后重读快照一并返回，成功即回填。
+    GitConfigSaved {
+        request_id: u64,
+        result: std::result::Result<khaslana::GitConfigSnapshot, String>,
+    },
     Recovery(recovery_view::RecoveryEvent),
     ConflictFilesLoaded {
         tab_id: RepoTabId,
@@ -3729,6 +3757,9 @@ pub(crate) struct RepositoryView {
     proxy_http_url: TextFieldState,
     proxy_https_url: TextFieldState,
     proxy_socks5_url: TextFieldState,
+    /// 设置中心「Git 配置」页的表单与作用域状态（跨仓库偏好放 RepositoryView，
+    /// 切换仓库/作用域时经 reload 重置，不污染其他仓库）。
+    pub(crate) git_config_ui: git_config_view::GitConfigUiState,
     /// 已迁移到 Kit 输入的字段宿主（`ui::fields`，按 `DEDICATED_FIELDS` 惰性创建）。
     kit_fields: Vec<(FieldId, ui::fields::KitField)>,
     pub(crate) ai_settings: AiProviderSettings,

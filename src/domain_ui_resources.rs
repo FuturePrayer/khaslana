@@ -12,6 +12,10 @@ pub const OPERATION_CONFLICTS: UiMessage = UiMessage::new("domain.operation_conf
 pub const WORKFLOW_CANCELLED: UiMessage = UiMessage::new("domain.workflow_cancelled", "工作流已取消", "Workflow cancelled");
 pub const FULL_FILE_TOO_LARGE: UiMessage = UiMessage::new("domain.full_file_too_large", "文件过大，无法显示全文视图", "The file is too large to display in full");
 pub const NON_FAST_FORWARD_PUSH: UiMessage = UiMessage::new("domain.non_fast_forward_push", "推送被拒绝（non-fast-forward）：远端分支有新提交，请先拉取并解决后再推送", "Push rejected (non-fast-forward): the remote branch has new commits; pull and resolve them before pushing");
+pub const GIT_CONFIG_READ_FAILED: UiMessage = UiMessage::new("domain.git_config_read_failed", "读取 Git 配置失败：{detail}", "Failed to read Git configuration: {detail}");
+pub const GIT_CONFIG_WRITE_FAILED: UiMessage = UiMessage::new("domain.git_config_write_failed", "写入 Git 配置失败：{detail}", "Failed to write Git configuration: {detail}");
+pub const GIT_CONFIG_INVALID_VALUE: UiMessage = UiMessage::new("domain.git_config_invalid_value", "配置项 {key} 的值不能包含换行或控制字符", "The value of {key} cannot contain newlines or control characters");
+pub const GIT_CONFIG_UNSUPPORTED_KEY: UiMessage = UiMessage::new("domain.git_config_unsupported_key", "不支持的配置项：{key}", "Unsupported configuration key: {key}");
 
 pub const CLONING: UiMessage = UiMessage::new("domain.cloning", "正在克隆 {url}", "Cloning {url}");
 pub const CLONED: UiMessage = UiMessage::new("domain.cloned", "已克隆 {url}", "Cloned {url}");
@@ -705,6 +709,10 @@ pub const ALL: &[UiMessage] = &[
     WORKFLOW_CANCELLED,
     FULL_FILE_TOO_LARGE,
     NON_FAST_FORWARD_PUSH,
+    GIT_CONFIG_READ_FAILED,
+    GIT_CONFIG_WRITE_FAILED,
+    GIT_CONFIG_INVALID_VALUE,
+    GIT_CONFIG_UNSUPPORTED_KEY,
     CLONING,
     CLONED,
     REMOTE_NAME_ALREADY_EXISTS,

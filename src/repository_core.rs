@@ -328,6 +328,7 @@ impl RepositoryView {
                 .with_value(proxy_custom.https_proxy),
             proxy_socks5_url: TextFieldState::localized(cx, messages::SOCKS5_PROXY_URL)
                 .with_value(proxy_custom.socks5_proxy),
+            git_config_ui: crate::git_config_view::GitConfigUiState::new(cx),
             // Kit 输入宿主按需创建（见 `ui::fields`）。
             kit_fields: Vec::new(),
         }
@@ -622,6 +623,10 @@ impl RepositoryView {
         self.save_session();
         // 切换仓库后自动本地刷新
         self.refresh();
+        // Git 配置页打开时，仓库级配置随活动仓库切换重新加载（不污染其他仓库）。
+        if self.settings_center == Some(SettingsCategory::GitConfig) {
+            self.reload_git_config();
+        }
     }
 
     /// 当前激活 tab 的主模式（无激活 tab 时 None）。
@@ -695,6 +700,10 @@ impl RepositoryView {
                 .get(index)
                 .or_else(|| index.checked_sub(1).and_then(|prev| self.tabs.get(prev)))
                 .map(|tab| tab.id);
+        }
+        // Git 配置页打开时，关闭仓库后重新加载（Local 无仓库会自动回落 Global）。
+        if self.settings_center == Some(SettingsCategory::GitConfig) {
+            self.reload_git_config();
         }
         self.save_session();
     }
@@ -1577,6 +1586,13 @@ impl RepositoryView {
             if self.settings_center == Some(SettingsCategory::Proxy) {
                 self.save_network_proxy_settings();
             }
+        } else if matches!(
+            field,
+            FieldId::GitConfigUserName | FieldId::GitConfigUserEmail | FieldId::GitConfigDefaultBranch
+        ) {
+            if self.settings_center == Some(SettingsCategory::GitConfig) {
+                self.save_git_config();
+            }
         } else if matches!(field, FieldId::ExternalMergeIntellijPath) {
             if self.settings_center == Some(SettingsCategory::ExternalMerge) {
                 self.save_external_merge_settings_from_form_and_resume();
@@ -1797,6 +1813,9 @@ impl RepositoryView {
             FieldId::ProxyHttpUrl => &mut self.proxy_http_url,
             FieldId::ProxyHttpsUrl => &mut self.proxy_https_url,
             FieldId::ProxySocks5Url => &mut self.proxy_socks5_url,
+            FieldId::GitConfigUserName => &mut self.git_config_ui.user_name,
+            FieldId::GitConfigUserEmail => &mut self.git_config_ui.user_email,
+            FieldId::GitConfigDefaultBranch => &mut self.git_config_ui.default_branch,
             FieldId::AiBaseUrl => &mut self.ai_base_url,
             FieldId::AiApiKey => &mut self.ai_api_key,
             FieldId::AiModel => &mut self.ai_model,
@@ -2589,6 +2608,9 @@ impl RepositoryView {
             SettingsCategory::Credentials => {
                 self.reload_ssh_keys();
                 self.reload_credential_records(khaslana::ui_i18n::encode(messages::CREDENTIAL_LIST_LOADED, &[]));
+            }
+            SettingsCategory::GitConfig => {
+                self.reload_git_config();
             }
             SettingsCategory::Proxy => {
                 self.reset_proxy_form_from_settings();

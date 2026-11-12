@@ -325,6 +325,7 @@ pub(super) fn function_entries(
         let meta = crate::settings_center::settings_pane_meta(category);
         let keywords = match category {
             SettingsCategory::Credentials => khaslana::ui_i18n::text(messages::SETTINGS_KEYS_TOKENS_ACCOUNTS_SSH_PASSWORDS_CREDENTIALS_TOKEN),
+            SettingsCategory::GitConfig => khaslana::ui_i18n::text(messages::SETTINGS_GIT_CONFIG_USER_NAME_EMAIL_IDENTITY),
             SettingsCategory::Proxy => khaslana::ui_i18n::text(messages::SETTINGS_PROXY_SOCKS_HTTP_HTTPS_PROXY),
             SettingsCategory::Ai => khaslana::ui_i18n::text(messages::SETTINGS_MODELS_PROVIDERS_APIS_SERVICES_PROVIDER_API_AI),
             SettingsCategory::ExternalMerge => khaslana::ui_i18n::text(messages::SETTINGS_EXTERNAL_MERGE_INTELLIJ_IDEA_MERGE_TOOL),

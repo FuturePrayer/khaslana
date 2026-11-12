@@ -27,6 +27,7 @@ pub use credentials::{
 pub use external_merge::ExternalMergeSettings;
 pub use git::{
     BrowseRefKind, CarryingCheckoutOutcome, CheckoutAttempt, FULL_FILE_TOO_LARGE_MESSAGE,
+    GIT_CONFIG_KEYS, GitConfigItemState, GitConfigLevel, GitConfigScope, GitConfigSnapshot,
     GitService, HistoryRefsCache, LineSelection, NoopProgress, ProgressEmitter, SelectedDiffLine,
     SelectionSide,
 };

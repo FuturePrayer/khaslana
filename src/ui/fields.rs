@@ -296,6 +296,7 @@ impl RepositoryView {
         self.reconcile_dynamic_kit_fields(window, cx);
         self.ensure_ai_api_type_select(window, cx);
         self.ensure_language_selects(window, cx);
+        self.ensure_git_config_selects(window, cx);
     }
 
     /// 动态字段宿主的多退少补：宿主集合精确等于当前活跃的动态字段集合。
