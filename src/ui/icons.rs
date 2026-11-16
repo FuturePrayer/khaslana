@@ -25,6 +25,7 @@ pub(crate) enum ToolbarIcon {
     ChevronLeft,
     Check,
     ArrowUp,
+    Wrench,
 }
 
 impl ToolbarIcon {
@@ -51,6 +52,7 @@ impl ToolbarIcon {
             Self::ChevronLeft => "icons/chevron-left.svg",
             Self::Check => "icons/check.svg",
             Self::ArrowUp => "icons/arrow-up.svg",
+            Self::Wrench => "icons/wrench.svg",
         }
     }
 }

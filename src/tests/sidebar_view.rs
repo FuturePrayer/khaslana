@@ -257,3 +257,58 @@ fn sidebar_stash_label_drops_git_prefix() {
     assert_eq!(sidebar_stash_label("自定义消息"), "自定义消息");
     assert_eq!(sidebar_stash_label(""), "");
 }
+
+#[test]
+fn sidebar_section_count_zero_without_snapshot() {
+    // 未开仓库/加载无数据时计数为 0，配合「>0 才显示徽标」不显示误导性的 0。
+    for section in [
+        SidebarSection::LocalBranches,
+        SidebarSection::Remotes,
+        SidebarSection::RemoteBranches,
+        SidebarSection::Tags,
+        SidebarSection::Stashes,
+    ] {
+        assert_eq!(sidebar_section_count(None, section), 0);
+    }
+}
+
+#[test]
+fn sidebar_section_count_splits_branch_kinds_and_uses_totals() {
+    let snapshot = RepositorySnapshot {
+        branches: vec![
+            branch("main", BranchKind::Local, None),
+            branch("feature/a", BranchKind::Local, None),
+            branch("origin/main", BranchKind::Remote, None),
+            branch("origin/dev", BranchKind::Remote, None),
+            branch("upstream/main", BranchKind::Remote, None),
+        ],
+        remotes: vec![RemoteInfo {
+            name: "origin".into(),
+            url: "https://example.com/o.git".into(),
+            credential_record_id: None,
+        }],
+        tags: vec![TagInfo { name: "v1".into() }, TagInfo { name: "v2".into() }],
+        stashes: (0..4)
+            .map(|index| StashInfo {
+                index,
+                message: format!("s{index}"),
+                oid: format!("{index}"),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let snapshot = Some(&snapshot);
+
+    // 本地/远端分支按 kind 拆分，互不混计；其余分组取各自数组长度（总数，不受搜索过滤影响）。
+    assert_eq!(
+        sidebar_section_count(snapshot, SidebarSection::LocalBranches),
+        2
+    );
+    assert_eq!(
+        sidebar_section_count(snapshot, SidebarSection::RemoteBranches),
+        3
+    );
+    assert_eq!(sidebar_section_count(snapshot, SidebarSection::Remotes), 1);
+    assert_eq!(sidebar_section_count(snapshot, SidebarSection::Tags), 2);
+    assert_eq!(sidebar_section_count(snapshot, SidebarSection::Stashes), 4);
+}
