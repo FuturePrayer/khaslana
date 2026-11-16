@@ -4108,7 +4108,7 @@ dependencies = [
 
 [[package]]
 name = "khaslana"
-version = "3.0.1-beta.2"
+version = "3.0.1-beta.3"
 dependencies = [
  "async-channel",
  "base64 0.22.1",
