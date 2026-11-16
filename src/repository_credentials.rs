@@ -5,6 +5,15 @@ mod messages;
 
 use crate::*;
 
+/// 新增远端时的默认名称：仓库尚无 `origin` 时预填 `origin`（git 惯例默认远端），
+/// 已存在则留空避免重名。编辑已有远端不套用此默认。
+pub(crate) fn default_new_remote_name(snapshot: Option<&RepositorySnapshot>) -> &'static str {
+    let has_origin = snapshot.is_some_and(|snapshot| {
+        snapshot.remotes.iter().any(|remote| remote.name == "origin")
+    });
+    if has_origin { "" } else { "origin" }
+}
+
 impl RepositoryView {
     pub(crate) fn open_credential_form(&mut self) {
         self.credential_context_menu = None;
@@ -470,7 +479,12 @@ impl RepositoryView {
                     self.remote_credential_policy_for_remote(repo_path, &remote.name, &remote.url);
             }
         } else {
-            self.remote_name.clear();
+            let default_name = default_new_remote_name(self.snapshot.as_ref());
+            if default_name.is_empty() {
+                self.remote_name.clear();
+            } else {
+                self.remote_name.set_value(default_name);
+            }
             self.remote_url.clear();
         }
         self.active_dialog = Some(DialogState::RemoteForm { editing });
@@ -842,3 +856,7 @@ impl RepositoryView {
             .unwrap_or(RemoteCredentialPolicy::AutoMatch)
     }
 }
+
+#[cfg(test)]
+#[path = "tests/repository_credentials.rs"]
+mod tests;
