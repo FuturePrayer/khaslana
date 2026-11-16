@@ -8,6 +8,9 @@ use gpui_kit::base::FocusTrapElement;
 use gpui_kit::component::setting::{SettingGroup, SettingItem};
 use gpui_kit::component::{Disableable, Sizable, Size, button::Button, menu::DropdownMenu};
 
+/// 新增远端名称框下方的常用名快捷 chips（远端名属代码标识符，不翻译）。
+const REMOTE_NAME_PRESETS: &[&str] = &["origin", "upstream", "backup", "github", "gitee", "gitlab"];
+
 /// 冻结操作列须容纳两个不可收缩的按钮，不能依靠溢出绘制侵入左侧数据栏。
 /// 每个标签预留 48px（覆盖 12px 字号的中英文 Test / Delete），另计按钮两侧
 /// 各 12px 内边距与 1px 边框、4px 按钮间距、行两侧各 8px 内边距。
@@ -1709,9 +1712,17 @@ impl RepositoryView {
         } else {
             khaslana::ui_i18n::text(messages::ADD_REMOTE)
         };
+        // 常用名 chips 仅新增时显示；编辑（改名）场景保持干净。
+        // 候选全部已被占用时整行隐藏（render 返回 None）。
+        let chips = if editing.is_none() {
+            self.render_remote_name_chips(cx)
+        } else {
+            None
+        };
         self.dialog_panel(title, cx)
             .w(px(560.0))
             .child(self.input(FieldId::RemoteName, false, window, cx))
+            .when_some(chips, |this, chips| this.child(chips))
             .child(self.input(FieldId::RemoteUrl, false, window, cx))
             .child(
                 div()
@@ -1746,6 +1757,59 @@ impl RepositoryView {
                         cx,
                     )),
             )
+    }
+
+    /// 「常用名称」标签 + 候选 chips 同一行（不换行）。已被现有远端占用的名字
+    /// 直接过滤掉；候选全部被占用时返回 None，整行隐藏。
+    fn render_remote_name_chips(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let available: Vec<&'static str> = REMOTE_NAME_PRESETS
+            .iter()
+            .copied()
+            .filter(|name| {
+                !self.snapshot.as_ref().is_some_and(|snapshot| {
+                    snapshot.remotes.iter().any(|remote| remote.name == *name)
+                })
+            })
+            .collect();
+        if available.is_empty() {
+            return None;
+        }
+        // 用 for 循环而非 map：chip 元素带 &self/cx 生命周期，
+        // FnMut 闭包返回借用值会触发 “captured variable cannot escape”。
+        let mut chips = Vec::new();
+        for name in available {
+            chips.push(self.remote_name_chip(name, cx));
+        }
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(12.0))
+                        .text_color(rgb(ui_theme::CONTENT_SECONDARY))
+                        .child(khaslana::ui_i18n::text(messages::COMMON_REMOTE_NAMES)),
+                )
+                .child(div().flex().items_center().gap_1().children(chips)),
+        )
+    }
+
+    /// 单个常用名 chip：点击填入名称框；当前名称与 chip 一致时高亮。
+    /// 已存在的名字不会进入候选（见 render_remote_name_chips），故无需置灰。
+    fn remote_name_chip(&self, name: &'static str, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let selected = self.remote_name.value.trim() == name;
+        let enabled = !self.busy;
+        segmented_button(format!("remote-name-chip-{name}"), selected, enabled)
+            .on_click(cx.listener(move |this, _event, _window, cx| {
+                if enabled {
+                    this.remote_name.set_value(name);
+                    cx.notify();
+                }
+            }))
+            .child(name)
+            .into_any_element()
     }
 
     fn remote_credential_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {

@@ -732,6 +732,7 @@ impl RepositoryView {
     pub(crate) fn select_remote_branch_operation_remote(&mut self, remote: String) {
         self.remote_branch_operation.selected_remote = Some(remote.clone());
         self.remote_branch_operation.branch_dropdown_open = false;
+        self.remote_branch_operation.remote_dropdown_open = false;
         self.remote_branch_search.clear();
         let default_branch = self
             .snapshot

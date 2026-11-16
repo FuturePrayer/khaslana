@@ -210,13 +210,15 @@ impl RepositoryView {
     }
 
     pub(crate) fn select_ai_settings_tab(&mut self, tab: AiSettingsTab) {
-        if tab != AiSettingsTab::Connection && !self.ai_settings.enabled { return; }
+        if tab != AiSettingsTab::Connection && !self.ai_enabled_form { return; }
         self.ai_extensions.tab = tab;
         if tab == AiSettingsTab::Runtime { self.refresh_ai_extensions(); }
     }
 
     fn can_edit_ai_extensions(&self) -> bool {
-        self.settings_center == Some(SettingsCategory::Ai) && self.ai_settings.enabled
+        // 跟表单开关值：与页面解锁一致，未保存启用时也可管理扩展（扩展操作
+        // 立即生效独立落库）；运行时是否真正启用仍由持久化 is_usable 决定。
+        self.settings_center == Some(SettingsCategory::Ai) && self.ai_enabled_form
     }
 
     pub(crate) fn open_ai_skill_folder(&mut self, cx: &mut Context<Self>) {

@@ -13,7 +13,7 @@ pub const REMOTES: UiMessage = UiMessage::new("views.sidebar_view.remotes", "远
 pub const REMOTE_BRANCHES: UiMessage = UiMessage::new("views.sidebar_view.remote_branches", "远端分支", "Remote branches");
 pub const TAGS: UiMessage = UiMessage::new("views.sidebar_view.tags", "标签", "Tags");
 pub const STASHES: UiMessage = UiMessage::new("views.sidebar_view.stashes", "贮藏", "Stashes");
-pub const MANAGE: UiMessage = UiMessage::new("views.sidebar_view.manage", "管理", "Manage");
+pub const MANAGE_REMOTES: UiMessage = UiMessage::new("views.sidebar_view.manage_remotes", "远端管理", "Manage remotes");
 pub const REFRESH: UiMessage = UiMessage::new("views.sidebar_view.refresh", "刷新", "Refresh");
 pub const COPY_REMOTE_NAME: UiMessage = UiMessage::new("views.sidebar_view.copy_remote_name", "复制远端名", "Copy remote name");
 pub const RUN_WORKFLOW: UiMessage = UiMessage::new("views.sidebar_view.run_workflow", "运行工作流…", "Run workflow…");
@@ -48,7 +48,7 @@ const ALL_MESSAGES: &[UiMessage] = &[
     REMOTE_BRANCHES,
     TAGS,
     STASHES,
-    MANAGE,
+    MANAGE_REMOTES,
     REFRESH,
     COPY_REMOTE_NAME,
     RUN_WORKFLOW,

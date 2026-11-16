@@ -17,6 +17,7 @@ fn toolbar_icon_paths_match_embedded_asset_root() {
     assert_eq!(ToolbarIcon::Download.path(), "icons/download.svg");
     assert_eq!(ToolbarIcon::Globe.path(), "icons/globe.svg");
     assert_eq!(ToolbarIcon::ChevronRight.path(), "icons/chevron-right.svg");
+    assert_eq!(ToolbarIcon::Wrench.path(), "icons/wrench.svg");
 }
 
 #[test]
@@ -37,6 +38,7 @@ fn toolbar_svgs_use_monochrome_mask_shapes() {
         ToolbarIcon::Download,
         ToolbarIcon::Globe,
         ToolbarIcon::ChevronRight,
+        ToolbarIcon::Wrench,
     ] {
         let asset_path = format!("assets/{}", icon.path());
         let svg = fs::read_to_string(&asset_path).unwrap_or_else(|err| {

@@ -9,7 +9,9 @@ use gpui::{
     prelude::*, px, uniform_list,
 };
 use gpui_kit::base::FocusTrapElement;
-use khaslana::{BranchInfo, BranchKind, BranchName, RemoteInfo, StashInfo, TagInfo};
+use khaslana::{
+    BranchInfo, BranchKind, BranchName, RemoteInfo, RepositorySnapshot, StashInfo, TagInfo,
+};
 
 use crate::{
     BRANCH_MENU_WIDTH, BranchContextMenu, FieldId, REMOTE_MENU_HEIGHT,
@@ -19,7 +21,7 @@ use crate::{
     context_menu_item_with_context, menu_separator, placeholder_row, scrollable_frame_when,
     scrollable_uniform_frame,
     ui::{
-        components::{glass_menu, sync_badge, tooltip_text},
+        components::{PanelBadge, glass_menu, sync_badge, tooltip_text},
         icons::{ToolbarIcon, toolbar_icon, toolbar_icon_rotated},
         theme as ui_theme,
     },
@@ -155,6 +157,27 @@ fn sidebar_section_should_render_rows(
     has_stashes: bool,
 ) -> bool {
     sidebar_section_is_visible(section, has_stashes) && state.is_expanded(section)
+}
+
+/// 分组头计数：取快照总数（不受搜索过滤影响）；无快照时为 0，
+/// 配合「>0 才显示徽标」，未开仓库/加载无数据时不显示误导性的 0。
+fn sidebar_section_count(snapshot: Option<&RepositorySnapshot>, section: SidebarSection) -> usize {
+    let Some(snapshot) = snapshot else { return 0 };
+    match section {
+        SidebarSection::LocalBranches => snapshot
+            .branches
+            .iter()
+            .filter(|branch| branch.kind == BranchKind::Local)
+            .count(),
+        SidebarSection::Remotes => snapshot.remotes.len(),
+        SidebarSection::RemoteBranches => snapshot
+            .branches
+            .iter()
+            .filter(|branch| branch.kind == BranchKind::Remote)
+            .count(),
+        SidebarSection::Tags => snapshot.tags.len(),
+        SidebarSection::Stashes => snapshot.stashes.len(),
+    }
 }
 
 fn sidebar_remote_manage_enabled(repo_available: bool, busy: bool) -> bool {
@@ -550,6 +573,8 @@ impl RepositoryView {
             ToolbarIcon::Plus,
             false,
             self.repo_path.is_some() && !self.busy,
+            None,
+            None,
             |this, _, _| this.open_create_branch_dialog(),
             cx,
         )
@@ -571,6 +596,8 @@ impl RepositoryView {
             icon,
             open,
             self.repo_path.is_some(),
+            None,
+            None,
             move |this, window, cx| this.toggle_sidebar_branch_search(section, window, cx),
             cx,
         )
@@ -582,6 +609,8 @@ impl RepositoryView {
         icon: ToolbarIcon,
         active: bool,
         enabled: bool,
+        aria_label: Option<&'static str>,
+        tooltip: Option<&'static str>,
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -621,6 +650,10 @@ impl RepositoryView {
                     cx.notify();
                 }
             }))
+            .when_some(aria_label, |this, label| this.aria_label(label))
+            .when_some(tooltip, |this, text| {
+                this.tooltip(move |_window, cx| tooltip_text(text, cx))
+            })
             .child(toolbar_icon(icon, icon_color))
             .into_any_element()
     }
@@ -684,6 +717,12 @@ impl RepositoryView {
             .truncate()
             .child(title);
         let action = self.sidebar_section_action(section, enabled, cx);
+        // 计数徽标紧跟标题（左组），右侧操作区只留按钮，避免计数挤占按钮槽、
+        // 破坏「按钮居最右」的对齐；0 不显示（PanelBadge 约定）。
+        let count = sidebar_section_count(self.snapshot.as_ref(), section);
+        let badge = (count > 0).then(|| {
+            PanelBadge::new(count, ui_theme::SURFACE_SUNKEN, ui_theme::CONTENT_SECONDARY)
+        });
 
         let toggle = if is_collapsible {
             let icon = if expanded {
@@ -731,7 +770,8 @@ impl RepositoryView {
                     .gap(px(6.0))
                     .min_w(px(0.0))
                     .when_some(toggle, |this, toggle| this.child(toggle))
-                    .child(title_el),
+                    .child(title_el)
+                    .when_some(badge, |this, badge| this.child(badge.render())),
             )
             .when_some(action, |this, action| this.child(action))
     }
@@ -761,93 +801,36 @@ impl RepositoryView {
                 let enabled = sidebar_remote_manage_enabled(self.repo_path.is_some(), self.busy);
                 let disabled_reason =
                     sidebar_remote_manage_disabled_reason(self.repo_path.is_some(), self.busy);
-                Some(
-                    div()
-                        .id("sidebar-remote-manage")
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .px(px(8.0))
-                        .py(px(2.0))
-                        .rounded(px(ui_theme::RADIUS_PILL))
-                        .border_1()
-                        .border_color(rgb(ui_theme::BORDER_MUTED))
-                        .bg(rgb(ui_theme::SURFACE_BASE))
-                        .text_size(px(10.0))
-                        .font_weight(gpui::FontWeight::NORMAL)
-                        .text_color(rgb(if enabled {
-                            ui_theme::CONTENT_SECONDARY
-                        } else {
-                            ui_theme::CONTENT_TERTIARY
-                        }))
-                        .when(enabled, |this| {
-                            this.cursor_pointer()
-                                .hover(|this| this.bg(rgb(ui_theme::STATE_HOVER)))
-                        })
-                        .when(!enabled, |this| this.cursor_not_allowed().opacity(0.62))
-                        .when_some(disabled_reason, |this, reason| {
-                            this.tooltip(move |_window, cx| tooltip_text(reason, cx))
-                        })
-                        .on_click(cx.listener(move |this, _event, _window, cx| {
-                            if enabled {
-                                this.open_remote_manager();
-                                cx.stop_propagation();
-                                cx.notify();
-                            }
-                        }))
-                        .child(khaslana::ui_i18n::text(messages::MANAGE))
-                        .into_any_element(),
-                )
+                let label = khaslana::ui_i18n::text(messages::MANAGE_REMOTES);
+                // 与同排 +/搜索一致的 20×20 图标按钮；禁用时 tooltip 说明原因。
+                Some(self.sidebar_header_icon_button(
+                    "sidebar-remote-manage",
+                    ToolbarIcon::Wrench,
+                    false,
+                    enabled,
+                    Some(label),
+                    Some(disabled_reason.unwrap_or(label)),
+                    |this, _, _| this.open_remote_manager(),
+                    cx,
+                ))
             }
             SidebarSection::RemoteBranches => Some(self.sidebar_branch_search_button(
                 section,
                 self.sidebar_remote_branch_search_open,
                 cx,
             )),
-            SidebarSection::Tags => {
-                let tag_count = self
-                    .snapshot
-                    .as_ref()
-                    .map_or(0, |snapshot| snapshot.tags.len());
-                Some(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap_1()
-                        .child(self.sidebar_header_icon_button(
-                            SIDEBAR_TAG_CREATE_ID,
-                            ToolbarIcon::Plus,
-                            false,
-                            enabled,
-                            |this, _, _| this.open_tag_form_dialog(None, String::new()),
-                            cx,
-                        ))
-                        .when(tag_count > 0, |this| {
-                            this.child(
-                                div()
-                                    .text_size(px(10.0))
-                                    .font_weight(gpui::FontWeight::NORMAL)
-                                    .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                                    .child(tag_count.to_string()),
-                            )
-                        })
-                        .into_any_element(),
-                )
-            }
-            SidebarSection::Stashes => self.snapshot.as_ref().and_then(|snapshot| {
-                let count = snapshot.stashes.len();
-                (count > 0).then(|| {
-                    div()
-                        .flex_none()
-                        .text_size(px(10.0))
-                        .font_weight(gpui::FontWeight::NORMAL)
-                        .text_color(rgb(ui_theme::CONTENT_SECONDARY))
-                        .child(count.to_string())
-                        .into_any_element()
-                })
-            }),
+            // 计数已移至分组头标题旁，操作区只留按钮。
+            SidebarSection::Tags => Some(self.sidebar_header_icon_button(
+                SIDEBAR_TAG_CREATE_ID,
+                ToolbarIcon::Plus,
+                false,
+                enabled,
+                None,
+                None,
+                |this, _, _| this.open_tag_form_dialog(None, String::new()),
+                cx,
+            )),
+            SidebarSection::Stashes => None,
         }
     }
 

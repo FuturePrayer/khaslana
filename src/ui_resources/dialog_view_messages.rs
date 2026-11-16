@@ -142,6 +142,7 @@ pub const EDIT: UiMessage = UiMessage::new("views.dialog_view.edit", "编辑", "
 pub const DELETE: UiMessage = UiMessage::new("views.dialog_view.delete", "删除", "Delete");
 pub const EDIT_REMOTE: UiMessage = UiMessage::new("views.dialog_view.edit_remote", "编辑远端", "Edit remote");
 pub const BIND_CREDENTIALS: UiMessage = UiMessage::new("views.dialog_view.bind_credentials", "绑定凭据", "Bind credentials");
+pub const COMMON_REMOTE_NAMES: UiMessage = UiMessage::new("views.dialog_view.common_remote_names", "常用名称", "Common names");
 pub const SAVE: UiMessage = UiMessage::new("views.dialog_view.save", "保存", "Save");
 pub const AUTOMATICALLY_MATCH_SAVED_CREDENTIALS: UiMessage = UiMessage::new("views.dialog_view.automatically_match_saved_credentials", "自动匹配保存凭据", "Automatically match saved credentials");
 pub const NOT_A_MATCH: UiMessage = UiMessage::new("views.dialog_view.not_a_match", "（不匹配）", "(Not a match)");
@@ -342,6 +343,7 @@ const ALL_MESSAGES: &[UiMessage] = &[
     DELETE,
     EDIT_REMOTE,
     BIND_CREDENTIALS,
+    COMMON_REMOTE_NAMES,
     SAVE,
     AUTOMATICALLY_MATCH_SAVED_CREDENTIALS,
     NOT_A_MATCH,
