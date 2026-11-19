@@ -185,6 +185,8 @@ impl RepositoryView {
             tray,
             #[cfg(windows)]
             tray_error,
+            #[cfg(windows)]
+            taskbar: None,
             branch_context_menu: None,
             remote_context_menu: None,
             change_context_menu: None,
@@ -213,6 +215,8 @@ impl RepositoryView {
             clone_url: TextFieldState::localized(cx, messages::REMOTE_REPOSITORY_URL),
             clone_path: TextFieldState::localized(cx, messages::PARENT_FOLDER_FOR_CLONING),
             clone_recursive_submodules: default_clone_recursive_submodules(),
+            clone_task: None,
+            next_clone_task_id: 1,
             branch_name: TextFieldState::localized(cx, messages::NEW_BRANCH_NAME),
             create_branch_checkout: true,
             create_branch_base: None,
@@ -320,6 +324,8 @@ impl RepositoryView {
             update_downloading: false,
             available_update: None,
             update_download_progress: None,
+            update_download_done: 0,
+            update_download_total: 0,
             update_error: None,
             staging_dir_for_install: None,
             proxy_http_url: TextFieldState::localized(cx, messages::HTTP_PROXY_URL)
@@ -1087,7 +1093,7 @@ impl RepositoryView {
                 self.storage.clone(),
                 self.remote_credential_bindings.clone(),
                 self.tx.clone(),
-                tab_id,
+                Some(tab_id),
                 self.proxy_settings.clone(),
             )),
             Arc::new(TabProgress {
@@ -1238,6 +1244,9 @@ impl RepositoryView {
         while let Ok(event) = self.rx.try_recv() {
             self.handle_ui_event(event, cx);
         }
+        // 每批事件后同步任务栏进度：事件泵在最小化时仍运行（gpui 暂停渲染），
+        // 不能只靠 render 路径；控制器内部去重，无变化不发 COM 调用。
+        self.sync_taskbar_progress();
     }
 
     pub(crate) fn merge_metadata_snapshot(&mut self, snapshot: RepositorySnapshot) {
@@ -1859,8 +1868,8 @@ impl RepositoryView {
 
     pub(crate) fn open_clone_dialog(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
         self.close_popups();
-        self.clone_url.clear();
-        self.clone_path.clear();
+        // 保留上次填写的 URL/父目录：失败关闭后重开可直接修改重试，
+        // 不必重新输入；子模块开关仍回到默认值。
         self.clone_recursive_submodules = default_clone_recursive_submodules();
         self.active_dialog = Some(DialogState::CloneRepo);
         self.last_error = None;
@@ -2415,6 +2424,22 @@ impl RepositoryView {
             self.cancel_window_close();
             return;
         }
+        // 克隆弹窗关闭语义按任务状态分流：进行中关闭 = 取消克隆；
+        // 失败后关闭 = 放弃重试，清理残留并留在原仓库。
+        if self.active_dialog == Some(DialogState::CloneRepo)
+            && let Some(task) = self.clone_task.as_ref()
+        {
+            match task.phase {
+                repository_clone::ClonePhase::Running => {
+                    self.cancel_clone();
+                    return;
+                }
+                repository_clone::ClonePhase::Failed => {
+                    self.dismiss_failed_clone();
+                    // 继续走常规关闭（置空 active_dialog、恢复焦点）。
+                }
+            }
+        }
         if self.active_dialog == Some(DialogState::GenerateSshKey) {
             self.close_ssh_key_form();
             return;
@@ -2544,6 +2569,9 @@ impl RepositoryView {
                     if let Some(tray) = self.tray.as_ref() {
                         tray.show_window();
                     }
+                    // 隐藏期间任务栏按钮被 shell 重建，进度叠加丢失：清缓存重发。
+                    self.invalidate_taskbar_progress();
+                    self.sync_taskbar_progress();
                 }
                 Some(tray::TrayAction::Exit) => self.exit_application(cx),
                 None => {}

@@ -214,6 +214,11 @@ impl RepositoryView {
     }
 
     fn render_clone_dialog(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 有克隆任务时切到进度/失败态：表单不再渲染，关闭弹窗语义变为
+        // 取消（进行中）或放弃重试（失败），见 repository_clone。
+        if let Some(task) = self.clone_task.as_ref() {
+            return self.render_clone_task_dialog(task, cx).into_any_element();
+        }
         let preview = infer_clone_target_path(&self.clone_url.value, &self.clone_path.value)
             .map(|path| path.display().to_string());
         self.dialog_panel(khaslana::ui_i18n::text(messages::CLONE_REPOSITORY), cx)
@@ -239,6 +244,10 @@ impl RepositoryView {
                         khaslana::ui_i18n::text(messages::ENTER_A_REMOTE_REPOSITORY_URL_AND_PARENT_FOLDER_TO_SEE).to_string()
                     })),
             )
+            // 表单校验错误就地显示，不只落在底部状态栏小字。
+            .when_some(self.last_error.clone(), |this, error| {
+                this.child(inline_error_bubble(khaslana::ui_i18n::resolve(&error)))
+            })
             .child(
                 div()
                     .flex()
@@ -268,6 +277,84 @@ impl RepositoryView {
                             )),
                     ),
             )
+            .into_any_element()
+    }
+
+    /// 克隆进度/失败态：只读展示 URL 与目标路径，进度只在这里显示，
+    /// 不写 tab status（工作流 Console 与状态栏不串台）。
+    fn render_clone_task_dialog(
+        &self,
+        task: &repository_clone::CloneTask,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let failed = task.phase == repository_clone::ClonePhase::Failed;
+        let detail = if failed {
+            danger_callout(
+                task.error
+                    .as_deref()
+                    .map(khaslana::ui_i18n::resolve)
+                    .unwrap_or_default(),
+            )
+            .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(ui_theme::SPACE_2))
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(rgb(ui_theme::CONTENT_PRIMARY))
+                        .child(khaslana::ui_i18n::resolve(&task.progress_message)),
+                )
+                .child(linear_progress_bar(task.received_objects, task.total_objects))
+                .into_any_element()
+        };
+        let actions = if failed {
+            dialog_actions()
+                .child(self.button(
+                    khaslana::ui_i18n::text(messages::CLOSE),
+                    true,
+                    |this, _, _| this.close_dialog(),
+                    cx,
+                ))
+                .child(self.primary_button(
+                    khaslana::ui_i18n::text(messages::CLONE_RETRY),
+                    true,
+                    |this, _, _| this.retry_clone(),
+                    cx,
+                ))
+        } else {
+            dialog_actions().child(self.button(
+                khaslana::ui_i18n::text(messages::CANCEL),
+                true,
+                |this, _, _| this.cancel_clone(),
+                cx,
+            ))
+        };
+        self.dialog_panel(khaslana::ui_i18n::text(messages::CLONE_REPOSITORY), cx)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(ui_theme::SPACE_1))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(ui_theme::CONTENT_SECONDARY))
+                            .truncate()
+                            .child(task.url.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(ui_theme::CONTENT_SECONDARY))
+                            .truncate()
+                            .child(task.path.display().to_string()),
+                    ),
+            )
+            .child(detail)
+            .child(actions)
     }
 
     fn render_confirm_window_close_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {

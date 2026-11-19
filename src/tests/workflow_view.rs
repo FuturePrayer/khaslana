@@ -191,7 +191,8 @@ fn workflow_studio_layout_uses_preview_only_when_no_inputs() {
 }
 
 #[test]
-fn workflow_console_expands_only_for_busy_or_existing_log() {
+fn workflow_console_expands_only_for_running_workflow_or_existing_log() {
+    // 首参是工作流运行态而非 tab busy：克隆/fetch/push 的 busy 不展开 Console。
     assert_eq!(
         workflow_console_state(false, 0),
         WorkflowConsoleState::Collapsed

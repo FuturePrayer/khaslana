@@ -198,6 +198,86 @@ fn create_bare_remote_with_seed(file_name: &str, body: &str) -> (TempDir, GitSer
     (remote_dir, service)
 }
 
+#[test]
+fn clone_honors_custom_proxy_settings() {
+    use crate::proxy::{CustomProxySettings, NetworkProxyMode, NetworkProxySettings};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    // 本地假代理：记录克隆发来的 CONNECT 请求后回 502 让克隆失败。
+    // 直接断言代理收到了目标主机的隧道请求——比检查错误文本更可靠
+    // （Windows WinHTTP 的错误消息不含代理地址）。若克隆绕过代理直连，
+    // 假代理收不到任何请求，断言失败。
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let proxy_thread = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let (mut stream, _) = loop {
+            match listener.accept() {
+                Ok(pair) => break pair,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() >= deadline {
+                        return String::new();
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(err) => panic!("假代理 accept 失败：{err}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    request.extend_from_slice(&buf[..n]);
+                    if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+        String::from_utf8_lossy(&request).into_owned()
+    });
+
+    let (_seed_dir, _seed_repo, base_service) = git_support::init_repo();
+    let service = base_service.with_proxy_settings(NetworkProxySettings {
+        mode: NetworkProxyMode::Custom,
+        custom: CustomProxySettings {
+            https_proxy: format!("http://{proxy_addr}"),
+            ..Default::default()
+        },
+    });
+    let target_dir = TempDir::new().unwrap();
+    let target = target_dir.path().join("proxy-clone");
+    let err = service
+        .clone_repo("https://example.invalid/repo.git", &RepoPath::new(&target))
+        .expect_err("假代理返回 502，克隆必须失败，不能静默成功");
+    assert!(!err.to_string().is_empty());
+    let request = proxy_thread.join().unwrap();
+    assert!(
+        request.contains("CONNECT example.invalid:443"),
+        "克隆必须经代理发起目标主机的 CONNECT 隧道请求：{request:?}"
+    );
+
+    // 本地路径克隆（Other 协议）不受自定义代理影响，仍可直连成功。
+    let (remote_dir, _remote_service) = create_bare_remote_with_seed("README.md", "seed\n");
+    let local_target = target_dir.path().join("local-clone");
+    service
+        .clone_repo(
+            &git_support::path_url(remote_dir.path()),
+            &RepoPath::new(&local_target),
+        )
+        .unwrap();
+    assert!(local_target.join(".git").exists() || local_target.join("HEAD").exists());
+}
+
 fn create_super_remote_with_submodule() -> (TempDir, TempDir, GitService) {
     let (sub_remote, service) = create_bare_remote_with_seed("sub.txt", "sub v1\n");
     let (super_remote, _super_service) = create_bare_remote_with_seed("README.md", "super\n");
