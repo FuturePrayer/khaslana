@@ -176,6 +176,16 @@ pub(crate) struct RunWorkflowShortcut {
     pub(crate) background: bool,
 }
 
+/// 快捷键录制态的临时动作：gpui 把「轻点修饰键」合成为 keystroke 并走 keymap，
+/// 连按序列（如 "shift shift"）匹配后派发本动作，由录制监听统一收尾保存。
+/// 仅在 skip_shortcuts 录制态注册，退出录制重注册时随应用键位一并清除。
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = app_action, no_json)]
+pub(crate) struct RecordDoublePress {
+    /// gpui 合成键名（shift/control/alt），录制绑定串为 "{key} {key}"。
+    pub(crate) key: String,
+}
+
 /// Kit 下拉菜单的有载荷动作：菜单项只负责派发选择，业务状态仍由 RepositoryView 持有。
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(namespace = ui_action, no_json)]
@@ -387,8 +397,9 @@ pub(crate) fn prune_workflow_shortcut_bindings(
     let mut seen_keystrokes: Vec<String> = Vec::new();
     for (file, binding) in &bindings.bindings {
         let keystroke = binding.keystroke.trim();
-        if keystroke.is_empty()
-            || gpui::Keystroke::parse(keystroke).is_err()
+        // 序列感知校验：连按绑定（如 "shift shift"）按整段规则判断，
+        // 单键 Keystroke::parse 会把空格串误当成一个主键。
+        if !shortcuts_view::is_valid_shortcut_string(keystroke)
             || static_keystrokes.contains(&keystroke)
             || seen_keystrokes.iter().any(|seen| seen == keystroke)
         {
@@ -4131,57 +4142,19 @@ impl Render for RepositoryView {
                             return;
                         }
                     }
+                    // 孤立轻点修饰键（含连按序列超时回放）不构成快捷键：
+                    // 连按录制由 RecordDoublePress 临时绑定完成，这里提示后继续等待。
+                    if shortcuts_view::is_modifier_only_keystroke(&event.keystroke) {
+                        this.notify_warning(
+                            ui_encode(app_messages::MODIFIER_KEYS_MUST_BE_PRESSED_TWICE_TO_RECORD, &[]),
+                            cx,
+                        );
+                        cx.stop_propagation();
+                        return;
+                    }
                     if let Some(target) = this.recording_shortcut.clone() {
                         let ks = shortcuts_view::keystroke_to_string(event);
-                        // 统一冲突检查：静态动作与工作流绑定共用键位空间。
-                        if let Some(conflict) = find_keystroke_conflict(
-                            &this.shortcut_bindings,
-                            &this.workflow_shortcut_bindings,
-                            &target,
-                            &ks,
-                        ) {
-                            this.recording_shortcut = None;
-                            this.notify_warning(
-                                ui_encode(app_messages::SHORTCUT_TAKEN, &[("keystroke", &shortcuts_view::format_keystroke(&ks)), ("action", &conflict.describe())]),
-                                cx,
-                            );
-                        } else {
-                            // 通过检查，按录制目标写入对应绑定表。
-                            match &target {
-                                ShortcutRecordingTarget::App(action) => {
-                                    this.shortcut_bindings
-                                        .bindings
-                                        .insert(action.action_id().to_string(), ks);
-                                    this.recording_shortcut = None;
-                                    this.save_shortcut_bindings();
-                                    crate::register_all_key_bindings(
-                                        &mut cx.deref_mut(),
-                                        &this.shortcut_bindings,
-                                        &this.workflow_shortcut_bindings,
-                                        false,
-                                    );
-                                    cx.notify();
-                                }
-                                ShortcutRecordingTarget::Workflow { file } => {
-                                    // 保留已有的后台执行标志，仅更新键位。
-                                    let background = this
-                                        .workflow_shortcut_bindings
-                                        .bindings
-                                        .get(file)
-                                        .map(|binding| binding.background)
-                                        .unwrap_or(false);
-                                    this.workflow_shortcut_bindings.bindings.insert(
-                                        file.clone(),
-                                        khaslana::WorkflowShortcutBinding {
-                                            keystroke: ks,
-                                            background,
-                                        },
-                                    );
-                                    this.recording_shortcut = None;
-                                    this.persist_workflow_shortcut_bindings(cx);
-                                }
-                            }
-                        }
+                        this.finish_shortcut_recording(target, ks, cx);
                     }
                     cx.stop_propagation();
                 }))
@@ -4829,7 +4802,8 @@ fn register_all_key_bindings(
         //（正常路径由统一冲突检查在写入前拦截，这只是防御顺序）。
         for (file, binding) in &workflow_bindings.bindings {
             // KeyBinding::new 对不可解析键位会 panic；加载层已剪枝，此处再防一次。
-            if gpui::Keystroke::parse(&binding.keystroke).is_err() {
+            // 序列感知校验：连按绑定（如 "shift shift"）须整段合法，不能按单键解析。
+            if !shortcuts_view::is_valid_shortcut_string(&binding.keystroke) {
                 tracing::warn!("skip unparseable workflow shortcut: {file}");
                 continue;
             }
@@ -4876,6 +4850,19 @@ fn register_all_key_bindings(
                 }
             };
             cx.bind_keys([binding]);
+        }
+    } else {
+        // 录制态：注册连按序列临时绑定。gpui 把轻点修饰键合成为 keystroke，
+        // 1 秒内连按两次同一修饰键即匹配序列并派发 RecordDoublePress，
+        // 由录制监听收尾；普通组合键仍走根 capture_key_down。
+        for key in shortcuts_view::DOUBLE_PRESS_MODIFIER_KEYS {
+            cx.bind_keys([KeyBinding::new(
+                &format!("{key} {key}"),
+                RecordDoublePress {
+                    key: key.to_string(),
+                },
+                None,
+            )]);
         }
     }
 }
@@ -5043,6 +5030,20 @@ fn register_shortcut_listeners(cx: &mut App, weak: WeakEntity<RepositoryView>) {
                 }
                 this.trigger_workflow_shortcut(a.file.clone(), a.background, cx);
                 cx.notify();
+            });
+        }
+    });
+    // 连按录制：临时序列绑定只在录制态注册，正常态不会派发；
+    // 这里仍校验录制态，防御退出录制与按键分派之间的竞态。
+    cx.on_action({
+        let weak = weak.clone();
+        move |a: &RecordDoublePress, cx| {
+            let _ = weak.update(cx, |this, cx| {
+                let Some(target) = this.recording_shortcut.clone() else {
+                    return;
+                };
+                let keystroke = format!("{} {}", a.key, a.key);
+                this.finish_shortcut_recording(target, keystroke, cx);
             });
         }
     });

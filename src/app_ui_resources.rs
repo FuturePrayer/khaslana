@@ -12,7 +12,7 @@ pub const HISTORY: UiMessage = UiMessage::new("commands.history", "提交记录"
 pub const WORKFLOW: UiMessage = UiMessage::new("commands.workflow", "工作流", "Workflows");
 pub const EXPLORER: UiMessage = UiMessage::new("commands.explorer", "在资源管理器中打开仓库", "Open repository in file manager");
 pub const BROWSER: UiMessage = UiMessage::new("commands.browser", "以浏览器打开当前远端", "Open current remote in browser");
-pub const SEARCH: UiMessage = UiMessage::new("commands.search", "全局搜索", "Global search");
+pub const SEARCH: UiMessage = UiMessage::new("commands.search", "搜索", "Search");
 pub const WORKFLOW_CONFLICT: UiMessage = UiMessage::new("shortcuts.workflow_conflict", "工作流 {file}", "Workflow {file}");
 pub const BRANCH_TARGET: UiMessage = UiMessage::new("checkout.branch_target", "分支 {name}", "Branch {name}");
 pub const REMOTE_TARGET: UiMessage = UiMessage::new("checkout.remote_target", "远端分支 {name}", "Remote branch {name}");
@@ -30,6 +30,7 @@ pub const TEST_SSH: UiMessage = UiMessage::new("credentials.test.ssh_required", 
 pub const TEST_HOST: UiMessage = UiMessage::new("credentials.test.host_mismatch", "该凭据绑定 {record_host}，令牌不通用，不能用其它站点（{host}）的地址测试", "These credentials are bound to {record_host}. Tokens cannot be tested on another site ({host}).");
 pub const TEST_URL_INVALID: UiMessage = UiMessage::new("credentials.test.url_invalid", "无法解析测试地址", "Could not parse the test URL");
 pub const SHORTCUT_TAKEN: UiMessage = UiMessage::new("shortcuts.taken", "快捷键 {keystroke} 已被「{action}」占用", "Shortcut {keystroke} is already assigned to {action}");
+pub const MODIFIER_KEYS_MUST_BE_PRESSED_TWICE_TO_RECORD: UiMessage = UiMessage::new("shortcuts.modifier_double_press_required", "修饰键需连按两次才能录制为快捷键", "Modifier keys must be pressed twice to record a shortcut");
 pub const ENCODING_AUTO: UiMessage = UiMessage::new("diff.encoding.auto", "编码：自动({encoding})", "Encoding: Auto ({encoding})");
 pub const ENCODING: UiMessage = UiMessage::new("diff.encoding.selected", "编码：{encoding}", "Encoding: {encoding}");
 pub const ENCODING_REPLACED: UiMessage = UiMessage::new("diff.encoding.replaced", "{encoding}，有替换", "{encoding}, replacements present");
@@ -39,5 +40,5 @@ pub const UPDATE_NEW: UiMessage = UiMessage::new("update.new", "发现新版本 
 #[cfg(test)]
 #[test]
 fn resources_have_unique_keys_and_matching_parameters() {
-    khaslana::ui_i18n::validate(&[REFRESH, FETCH, PULL, PUSH, STASH, SUBMODULE, SETTINGS, WORKTREE, HISTORY, WORKFLOW, EXPLORER, BROWSER, SEARCH, WORKFLOW_CONFLICT, BRANCH_TARGET, REMOTE_TARGET, TAG_TARGET, MORE_FILES, READY, UNNAMED_REPOSITORY, GITEE_SAVE_FAILED, GITEE_RENEWED, GITEE_RENEW_FAILED, CREDENTIAL_CANCELLED, TEST_URL_REQUIRED, TEST_HTTPS, TEST_SSH, TEST_HOST, TEST_URL_INVALID, SHORTCUT_TAKEN, ENCODING_AUTO, ENCODING, ENCODING_REPLACED, UPDATE_CHECK_FAILED, UPDATE_NEW]).unwrap();
+    khaslana::ui_i18n::validate(&[REFRESH, FETCH, PULL, PUSH, STASH, SUBMODULE, SETTINGS, WORKTREE, HISTORY, WORKFLOW, EXPLORER, BROWSER, SEARCH, WORKFLOW_CONFLICT, BRANCH_TARGET, REMOTE_TARGET, TAG_TARGET, MORE_FILES, READY, UNNAMED_REPOSITORY, GITEE_SAVE_FAILED, GITEE_RENEWED, GITEE_RENEW_FAILED, CREDENTIAL_CANCELLED, TEST_URL_REQUIRED, TEST_HTTPS, TEST_SSH, TEST_HOST, TEST_URL_INVALID, SHORTCUT_TAKEN, MODIFIER_KEYS_MUST_BE_PRESSED_TWICE_TO_RECORD, ENCODING_AUTO, ENCODING, ENCODING_REPLACED, UPDATE_CHECK_FAILED, UPDATE_NEW]).unwrap();
 }

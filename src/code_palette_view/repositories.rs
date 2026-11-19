@@ -101,24 +101,35 @@ pub(super) fn unopened_repository_paths(
         .collect()
 }
 
+/// 仅仓库级切换条目（不深入分支）：关闭「搜索全部仓库」时供最近仓库快速切换。
+/// 标题取目录名、副标题为完整路径，与仓库切换器和扫描目录的仓库条目同构。
+pub(super) fn saved_repository_switch_entries(paths: &[PathBuf]) -> Vec<SearchEntry> {
+    paths
+        .iter()
+        .map(|path| {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            SearchEntry::new(
+                name,
+                path.to_string_lossy().into_owned(),
+                khaslana::ui_i18n::text(messages::REPOSITORIES),
+                khaslana::ui_i18n::text(messages::PROJECT_REPOSITORY_REPO),
+                SearchTarget::SavedRepository(path.clone()),
+            )
+        })
+        .collect()
+}
+
 pub(super) fn saved_repository_entries(repo: &SavedRepositorySearch) -> Vec<SearchEntry> {
-    let name = repo
-        .path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| repo.path.to_string_lossy().into_owned());
-    let mut repository = SearchEntry::new(
-        name.clone(),
-        repo.path.to_string_lossy().into_owned(),
-        khaslana::ui_i18n::text(messages::REPOSITORIES),
-        khaslana::ui_i18n::text(messages::PROJECT_REPOSITORY_REPO),
-        SearchTarget::SavedRepository(repo.path.clone()),
-    );
+    let mut entries = saved_repository_switch_entries(std::slice::from_ref(&repo.path));
+    let repository = &mut entries[0];
+    let name = repository.title.clone();
     if let Some(Err(error)) = &repo.branches {
         repository.disabled_reason = Some(khaslana::ui_i18n::text(messages::REPOSITORY_DIRECTORY_UNAVAILABLE_CANNOT_READ_BRANCHES));
         repository.subtitle = format!("{} · {error}", repo.path.display());
     }
-    let mut entries = vec![repository];
     if let Some(Ok(branches)) = &repo.branches {
         for branch in branches {
             let group = if branch.kind == BranchKind::Local {
