@@ -1469,7 +1469,7 @@ impl RepositoryView {
                         khaslana::ui_i18n::text(messages::OPEN_GITHUB_RELEASE),
                         true,
                         |_, _, _| {
-                            open_url("https://github.com/FuturePrayer/khaslana/releases");
+                            open_url("https://github.com/Neglecton/khaslana/releases");
                         },
                         cx,
                     )),

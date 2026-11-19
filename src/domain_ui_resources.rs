@@ -378,6 +378,7 @@ pub const AUTOMATIC_UPDATES_ARE_NOT_SUPPORTED_ON_THIS_PLATFORM_MISSING_WINDOWS_X
 pub const FAILED_TO_DOWNLOAD_THE_UPDATE_PACKAGE_NO_AVAILABLE_SOURCES: UiMessage = UiMessage::new("domain.failed_to_download_the_update_package_no_available_sources", "下载更新包失败：无可用源", "Failed to download the update package: no available sources");
 pub const THE_UPDATE_PACKAGE_IS_MISSING_KHASLANA_EXE: UiMessage = UiMessage::new("domain.the_update_package_is_missing_khaslana_exe", "更新包缺少 khaslana.exe", "The update package is missing khaslana.exe");
 pub const THE_UPDATE_PACKAGE_IS_MISSING_KHASLANA_UPDATER_EXE: UiMessage = UiMessage::new("domain.the_update_package_is_missing_khaslana_updater_exe", "更新包缺少 khaslana_updater.exe", "The update package is missing khaslana_updater.exe");
+pub const KLADO_INSTALL_FAILED: UiMessage = UiMessage::new("domain.klado_install_failed", "无法完成 Klado 更新。请重试，或重新下载 Klado 安装包。\n\n{error}", "Klado could not finish updating. Retry the update or download the Klado installer again.\n\n{error}");
 pub const CANNOT_FETCH_THE_UPDATE_MANIFEST: UiMessage = UiMessage::new("domain.cannot_fetch_the_update_manifest", "无法获取更新清单", "Cannot fetch the update manifest");
 pub const UNKNOWN_REASON: UiMessage = UiMessage::new("domain.unknown_reason", "未知原因", "Unknown reason");
 pub const NOT_INITIALIZED: UiMessage = UiMessage::new("domain.not_initialized", "未初始化", "Not initialized");
@@ -1074,6 +1075,7 @@ pub const ALL: &[UiMessage] = &[
     FAILED_TO_DOWNLOAD_THE_UPDATE_PACKAGE_NO_AVAILABLE_SOURCES,
     THE_UPDATE_PACKAGE_IS_MISSING_KHASLANA_EXE,
     THE_UPDATE_PACKAGE_IS_MISSING_KHASLANA_UPDATER_EXE,
+    KLADO_INSTALL_FAILED,
     CANNOT_FETCH_THE_UPDATE_MANIFEST,
     UNKNOWN_REASON,
     NOT_INITIALIZED,
@@ -1195,7 +1197,7 @@ pub const FAILED_TO_READ_THE_MAIN_WINDOW_HANDLE: UiMessage = UiMessage::new("dom
 
 pub const SHOW_MAIN_WINDOW: UiMessage = UiMessage::new("domain.show_main_window", "显示主窗口", "Show main window");
 
-pub const QUIT_KHASLANA: UiMessage = UiMessage::new("domain.quit_khaslana", "退出 Khaslana", "Quit Khaslana");
+pub const QUIT_KHASLANA: UiMessage = UiMessage::new("domain.quit_khaslana", "退出 Klado", "Quit Klado");
 
 pub const THE_CURRENT_WINDOW_IS_NOT_A_WIN32_WINDOW_CANNOT_MINIMIZE_TO_THE_SYSTEM_TRAY: UiMessage = UiMessage::new("domain.the_current_window_is_not_a_win32_window_cannot_minimize_to_the_system_tray", "当前窗口不是 Win32 窗口，无法缩小到系统托盘", "The current window is not a Win32 window; cannot minimize to the system tray");
 
@@ -1227,7 +1229,7 @@ pub const INTELLIJ_COMMAND_NOT_FOUND: UiMessage = UiMessage::new("domain.intelli
 
 pub const OAUTH_LOGIN_SUCCESS: UiMessage = UiMessage::new("domain.oauth_login_success", "登录成功", "Sign-in successful");
 
-pub const OAUTH_CALLBACK_SUCCESS_BODY: UiMessage = UiMessage::new("domain.oauth_callback_success_body", "登录成功，可以关闭此页面返回 Khaslana。", "Sign-in successful. You can close this page and return to Khaslana.");
+pub const OAUTH_CALLBACK_SUCCESS_BODY: UiMessage = UiMessage::new("domain.oauth_callback_success_body", "登录成功，可以关闭此页面返回 Klado。", "Sign-in successful. You can close this page and return to Klado.");
 
 pub const INDEX_PROGRESS_PARSE: UiMessage = UiMessage::new("domain.index_progress_parse", "解析符号 {done}/{total}", "Parsing symbols {done}/{total}");
 

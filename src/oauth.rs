@@ -226,7 +226,7 @@ pub(crate) fn fetch_login(proxy_url: Option<String>, token: &str) -> Result<Stri
         .get(USER_URL)
         .header("Accept", "application/json")
         .header("Authorization", format!("token {token}"))
-        .header("User-Agent", "Khaslana")
+        .header("User-Agent", khaslana::APP_NAME)
         .call()
         .map_err(|e| khaslana::ui_i18n::format(domain_ui_resources::FAILED_TO_FETCH_USER_INFORMATION, &[("e", &format!("{}", e))]))?;
     let user: GithubUser = resp
@@ -637,7 +637,7 @@ mod tests {
         let en = callback_success_html(khaslana::language::Language::En);
         assert!(zh.contains("<title>登录成功</title>"));
         assert!(en.contains("<title>Sign-in successful</title>"));
-        assert!(en.contains("close this page and return to Khaslana"));
+        assert!(en.contains("close this page and return to Klado"));
         assert!(!en.contains("登录成功"));
     }
 

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use directories::ProjectDirs;
+use directories::{BaseDirs, ProjectDirs};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
@@ -17,10 +17,14 @@ use crate::external_merge::ExternalMergeSettings;
 use crate::proxy::{CustomProxySettings, NetworkProxyMode, NetworkProxySettings};
 use crate::types::{DiffEncodingChoice, GitError, Result};
 
-const DB_FILE_NAME: &str = "khaslana.sqlite3";
+const DB_FILE_NAME: &str = "klado.sqlite3";
 const SCHEMA_VERSION: i64 = 10;
 
-/// 旧数据目录（`%APPDATA%\Khaslana`）下出现该标记文件，表示数据已迁移到便携目录；
+#[path = "storage/brand_migration.rs"]
+mod brand_migration;
+pub use brand_migration::{PreparedKladoData, migrate_klado_data_at_startup, prepare_klado_data};
+
+/// 旧数据目录（`%APPDATA%\Klado`）下出现该标记文件，表示数据已迁移到便携目录；
 /// 启动解析路径时强制走便携路径，即使旧库文件仍在。
 const PORTABLE_MIGRATED_MARKER: &str = ".migrated_to_portable";
 /// 旧数据目录下出现该标记文件，表示用户已同意迁移，下次启动时在打开数据库前完成搬运。
@@ -591,12 +595,12 @@ impl AppStorage {
     }
 }
 
-/// 旧版默认数据目录（Windows 下为 `%APPDATA%\Khaslana`），仅用于回退兼容与便携迁移来源定位。
+/// 漫游数据目录（Windows 下为 `%APPDATA%\Klado\config`）。
 pub fn legacy_database_dir() -> Option<PathBuf> {
-    ProjectDirs::from("", "", "Khaslana").map(|dirs| dirs.config_dir().to_path_buf())
+    ProjectDirs::from("", "", "Klado").map(|dirs| dirs.config_dir().to_path_buf())
 }
 
-/// 旧版默认数据库文件路径（`<旧目录>/khaslana.sqlite3`）。
+/// 旧版默认数据库文件路径（`<漫游目录>/klado.sqlite3`）。
 pub fn legacy_database_path() -> Option<PathBuf> {
     legacy_database_dir().map(|dir| dir.join(DB_FILE_NAME))
 }
@@ -608,7 +612,7 @@ pub fn portable_database_dir() -> Option<PathBuf> {
         .and_then(|exe| exe.parent().map(|p| p.join("data")))
 }
 
-/// 便携数据库文件路径（`<可执行文件目录>/data/khaslana.sqlite3`）。
+/// 便携数据库文件路径（`<可执行文件目录>/data/klado.sqlite3`）。
 pub fn portable_database_path() -> Option<PathBuf> {
     portable_database_dir().map(|dir| dir.join(DB_FILE_NAME))
 }
@@ -671,10 +675,10 @@ pub fn current_exe_location_risk() -> ExeLocationRisk {
         .unwrap_or(ExeLocationRisk::Safe)
 }
 
-/// 固定数据目录（不随 exe 位置漂移；Windows 下 `%LOCALAPPDATA%\Khaslana`）。
+/// 固定数据目录（不随 exe 位置漂移；Windows 下 `%LOCALAPPDATA%\Klado\data`）。
 /// exe 位于危险/下载目录时，新用户的数据落在这里。
 pub fn fixed_database_dir() -> Option<PathBuf> {
-    ProjectDirs::from("", "", "Khaslana").map(|dirs| dirs.data_local_dir().to_path_buf())
+    ProjectDirs::from("", "", "Klado").map(|dirs| dirs.data_local_dir().to_path_buf())
 }
 
 /// 固定数据库文件路径。
@@ -721,13 +725,9 @@ pub fn record_last_data_home(data_dir: &Path) {
 }
 
 /// 程序搬迁的目标目录（程序与数据一起搬到这里；Windows 下
-/// `%LOCALAPPDATA%\Programs\Khaslana`，用户级安装的常见约定位置）。
+/// `%LOCALAPPDATA%\Programs\Klado`，用户级安装的常见约定位置）。
 pub fn exe_relocation_target_dir() -> Option<PathBuf> {
-    fixed_database_dir().and_then(|fixed| {
-        fixed
-            .parent()
-            .map(|local| local.join("Programs").join("Khaslana"))
-    })
+    BaseDirs::new().map(|dirs| dirs.data_local_dir().join("Programs").join("Klado"))
 }
 
 /// 根据可执行文件位置、旧目录状态与 exe 风险分级，决定本次启动应使用的
@@ -785,7 +785,11 @@ pub fn default_database_path() -> Option<PathBuf> {
     let fixed = fixed_database_path();
     let pointer_db = read_last_data_home().map(|dir| dir.join(DB_FILE_NAME));
     let risk = current_exe_location_risk();
-    pick_active_path(legacy, portable, legacy_dir, fixed, pointer_db, risk)
+    let selected = pick_active_path(legacy, portable, legacy_dir, fixed.clone(), pointer_db, risk);
+    selected.as_ref().filter(|path| path.is_file()).cloned()
+        .or_else(|| fixed.filter(|path| path.is_file()))
+        .or_else(|| brand_migration::previous_database_path(&std::env::current_exe().ok()?))
+        .or(selected)
 }
 
 /// 应用当前应使用的数据目录（数据库所在目录），与 DB 同一套便携/旧目录
@@ -1018,7 +1022,7 @@ fn perform_exe_relocation_files(
     fs::create_dir_all(target_dir)?;
     let target_exe = target_dir.join(
         exe.file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("khaslana.exe")),
+            .unwrap_or_else(|| std::ffi::OsStr::new("klado.exe")),
     );
     // 运行中的 exe 文件可以复制、不能删除；目标副本未运行，覆盖安全。
     fs::copy(exe, &target_exe)?;

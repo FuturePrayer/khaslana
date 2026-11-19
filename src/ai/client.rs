@@ -21,9 +21,9 @@ use crate::ai::prompt::ChatMessage;
 use crate::types::{GitError, Result as KhaslanaResult};
 
 /// 所有大模型请求附带的 User-Agent 标头。
-/// 格式遵循标准规范：`Khaslana/<version> (<target>)`。
+/// 格式遵循标准规范：`Klado/<version> (<target>)`。
 pub const AI_USER_AGENT: &str = concat!(
-    "Khaslana/",
+    "Klado/",
     env!("CARGO_PKG_VERSION"),
     " (",
     env!("KHASLANA_TARGET"),

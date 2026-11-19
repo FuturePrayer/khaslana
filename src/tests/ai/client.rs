@@ -532,7 +532,7 @@ fn plain_stream_truncation_message_length_and_missing_done() {
 #[test]
 fn ai_user_agent_format_contains_app_version_and_target() {
     let ua = AI_USER_AGENT;
-    assert!(ua.starts_with("Khaslana/"), "UA 应以 Khaslana/ 开头：{ua}");
+    assert!(ua.starts_with("Klado/"), "UA 应以 Klado/ 开头：{ua}");
     assert!(
         ua.contains(env!("CARGO_PKG_VERSION")),
         "UA 应包含完整版本号（含预发布标识）：{ua}"

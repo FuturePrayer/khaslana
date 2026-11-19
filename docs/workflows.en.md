@@ -1,4 +1,4 @@
-# Khaslana workflows
+# Klado workflows
 
 This is the English reference corresponding to [workflows.md](workflows.md). Workflows execute sequential Git operations in the active repository. JSON5/JSONC v1 and v2 are supported. V2 adds local stdio MCP, restricted JavaScript and AI Skills; arbitrary shell and Python scripts are not supported.
 

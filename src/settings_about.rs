@@ -136,7 +136,7 @@ fn info_row(label: &'static str, value: impl Into<SharedString>) -> Div {
 
 impl RepositoryView {
     pub(crate) fn settings_about_groups(&self, cx: &mut Context<Self>) -> Vec<SettingGroup> {
-        let version = format!("Khaslana v{}", env!("CARGO_PKG_VERSION"));
+        let version = format!("{} v{}", khaslana::APP_NAME, env!("CARGO_PKG_VERSION"));
         let channel = update::current_update_channel();
         let notes = update::current_release_notes().to_owned();
         let view = cx.entity();

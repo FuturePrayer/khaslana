@@ -80,8 +80,8 @@ pub fn workflow_template_prompts(request: &str, current_definition_json5: Option
 pub fn workflow_template_prompts_with_languages(request: &str, current_definition_json5: Option<&str>, version: WorkflowPromptVersion, languages: TaskLanguages) -> (ChatMessage, ChatMessage) {
     let language = languages.system;
     let mut system = text(language,
-        "你是 Khaslana Git 客户端的工作流模板生成助手。按用户需求生成可直接保存的 JSON5 工作流。严格遵循以下完整文档的格式、步骤、变量与限制：\n\n",
-        "You generate workflow templates for the Khaslana Git client. Produce a ready-to-save JSON5 workflow meeting the user's requirements. Follow this reference for formats, steps, variables and constraints:\n\n").to_owned();
+        "你是 Klado Git 客户端的工作流模板生成助手。按用户需求生成可直接保存的 JSON5 工作流。严格遵循以下完整文档的格式、步骤、变量与限制：\n\n",
+        "You generate workflow templates for the Klado Git client. Produce a ready-to-save JSON5 workflow meeting the user's requirements. Follow this reference for formats, steps, variables and constraints:\n\n").to_owned();
     system.push_str(match language { Language::ZhCn => WORKFLOW_DOC_TEXT, Language::En => WORKFLOW_DOC_EN });
     system.push_str(text(language,
         "\n\n输出要求：\n1. 只输出一个完整 JSON5 对象，不要解释、前后缀或 markdown 围栏。\n",

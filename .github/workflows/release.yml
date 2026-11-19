@@ -48,44 +48,30 @@ jobs:
       - name: Build
         # release-perf：fat LTO + codegen-units=1（见 Cargo.toml [profile.release-perf]），
         # 发布产物走极致优化；自定义 profile 的产物目录是 target/release-perf/。
-        run: cargo build --profile release-perf --bin khaslana --bin khaslana_updater
+        run: cargo build --profile release-perf --bin klado --bin klado_updater
         env:
           KHASLANA_RELEASE_NOTES: ${{ env.KHASLANA_RELEASE_NOTES }}
 
-      - name: Package
-        # 渠道规则：tag 版本含预发布段（如 v1.1.0-beta.1）= 测试版，只写
-        # khaslana-update-beta.json（测试版用户读）；正式版同时写
-        # khaslana-update.json（旧客户端与未勾选测试版的新客户端读，永远
-        # 只指向正式版）与 khaslana-update-beta.json（让测试版用户升级）。
-        # 清单 JSON 用 python 组装：heredoc 无法安全转义多行/引号的版本说明。
+      - name: Package portable build
         shell: bash
         env:
           VERSION_TAG: ${{ github.ref_name }}
         run: |
           VERSION="${VERSION_TAG#v}"
-          ZIP="khaslana-v${VERSION}-windows-x86_64"
+          ZIP="klado-v${VERSION}-windows-x86_64"
           mkdir -p dist/package
-          cp target/release-perf/khaslana.exe dist/package/
-          cp target/release-perf/khaslana_updater.exe dist/package/
+          cp target/release-perf/klado.exe dist/package/
+          cp target/release-perf/klado_updater.exe dist/package/
           cp LICENSE dist/package/ || true
           cp OPENSSL-LICENSE.txt dist/package/
           cp README.md dist/package/ || true
           cd dist/package
           7z a "../${ZIP}.zip" .
-          cd ../..
-          cd dist
-          sha256sum "${ZIP}.zip" > "${ZIP}.zip.sha256"
-          SHA=$(cut -d' ' -f1 "${ZIP}.zip.sha256")
-          SIZE=$(wc -c < "${ZIP}.zip")
-          if [[ "$VERSION" == *-* ]]; then CHANNEL="beta"; else CHANNEL="stable"; fi
-          export MANIFEST_VERSION="$VERSION" MANIFEST_CHANNEL="$CHANNEL" \
-                 MANIFEST_TAG="$VERSION_TAG" MANIFEST_SHA="$SHA" MANIFEST_SIZE="$SIZE" \
-                 MANIFEST_ZIP="$ZIP" MANIFEST_NOTES="$KHASLANA_RELEASE_NOTES"
-          python ../.github/workflows/make_manifests.py
           cd ..
+          sha256sum "${ZIP}.zip" > "${ZIP}.zip.sha256"
 
       - name: Build installer
-        # Inno Setup 7 用户级安装器（免管理员，默认装到 %LOCALAPPDATA%\Programs\Khaslana，
+        # Inno Setup 7 用户级安装器（免管理员，默认装到 %LOCALAPPDATA%\Programs\Klado，
         # 与应用内「移动到安全目录」的目标一致）。从官方 GitHub Release 下载固定版本的
         # 64 位版安装（runner 在 Azure 机房，直连 GitHub 稳定），静默安装后用固定路径调
         # ISCC；版本号经 /D 注入，源文件与便携 zip 同一打包目录。
@@ -101,16 +87,41 @@ jobs:
           if (-not (Test-Path $iscc)) { throw "ISCC not found at $iscc" }
           & $iscc "/DAppVersion=$VERSION" installer\khaslana.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $setup = "dist\khaslana-setup-v$VERSION-windows-x86_64.exe"
+          $setup = "dist\klado-setup-v$VERSION-windows-x86_64.exe"
           $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
           "$hash  $(Split-Path $setup -Leaf)" | Out-File -Encoding ascii "$setup.sha256"
+
+      - name: Package in-app update
+        # 旧客户端先校验固定文件名，再启动包内更新器。两个正式二进制以旧入口名
+        # 进入 staging，安装器则供已注册的安装版静默升级；便携版只替换程序。
+        shell: bash
+        env:
+          VERSION_TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${VERSION_TAG#v}"
+          ZIP="klado-update-v${VERSION}-windows-x86_64"
+          mkdir -p dist/update
+          cp dist/package/klado.exe dist/update/khaslana.exe
+          cp dist/package/klado_updater.exe dist/update/khaslana_updater.exe
+          cp "dist/klado-setup-v${VERSION}-windows-x86_64.exe" dist/update/klado-setup.exe
+          cd dist/update
+          7z a "../${ZIP}.zip" .
+          cd ..
+          sha256sum "${ZIP}.zip" > "${ZIP}.zip.sha256"
+          SHA=$(cut -d' ' -f1 "${ZIP}.zip.sha256")
+          SIZE=$(wc -c < "${ZIP}.zip")
+          if [[ "$VERSION" == *-* ]]; then CHANNEL="beta"; else CHANNEL="stable"; fi
+          export MANIFEST_VERSION="$VERSION" MANIFEST_CHANNEL="$CHANNEL" \
+                 MANIFEST_TAG="$VERSION_TAG" MANIFEST_SHA="$SHA" MANIFEST_SIZE="$SIZE" \
+                 MANIFEST_ZIP="$ZIP" MANIFEST_NOTES="$KHASLANA_RELEASE_NOTES"
+          python ../.github/workflows/make_manifests.py
 
       - name: GitHub Release
         # 测试版标记 prerelease：GitHub releases/latest/download 天然只解析最新
         # 非预发布版——旧客户端的正式清单兜底源永远不会被测试版发布污染。
         uses: softprops/action-gh-release@v2
         with:
-          name: Khaslana ${{ github.ref_name }}
+          name: Klado ${{ github.ref_name }}
           body_path: RELEASE_NOTES.md
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
@@ -129,15 +140,11 @@ jobs:
           VERSION_TAG: ${{ github.ref_name }}
         run: |
           VERSION="${VERSION_TAG#v}"
-          ZIP="khaslana-v${VERSION}-windows-x86_64.zip"
-          SETUP="khaslana-setup-v${VERSION}-windows-x86_64.exe"
           if [[ "$VERSION" == *-* ]]; then CHANNEL="beta"; else CHANNEL="stable"; fi
           git clone "https://cnb:${CNB_TOKEN}@cnb.cool/suhoan/khaslana-release.git" cnb-release
           mkdir -p "cnb-release/releases/v${VERSION}"
-          cp "dist/${ZIP}" "cnb-release/releases/v${VERSION}/${ZIP}"
-          cp "dist/${ZIP}.sha256" "cnb-release/releases/v${VERSION}/${ZIP}.sha256"
-          cp "dist/${SETUP}" "cnb-release/releases/v${VERSION}/${SETUP}"
-          cp "dist/${SETUP}.sha256" "cnb-release/releases/v${VERSION}/${SETUP}.sha256"
+          cp dist/klado*.zip dist/klado*.zip.sha256 dist/klado*setup*.exe dist/klado*setup*.exe.sha256 \
+             "cnb-release/releases/v${VERSION}/"
           if [[ "$CHANNEL" == "stable" ]]; then
             cp "dist/khaslana-update.json" "cnb-release/khaslana-update.json"
           fi
