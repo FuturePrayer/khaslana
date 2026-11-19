@@ -1,153 +1,245 @@
-//! Khaslana 自动更新器。
-//!
-//! 等待主进程退出后替换 exe 文件，并可选重启应用。
-//!
-//! 参数：
-//!   --pid <PID>          主进程 PID，等待其退出
-//!   --target-exe <PATH>  目标 khaslana.exe 路径
-//!   --new-exe <PATH>     新 khaslana.exe 路径（staging 目录中）
-//!   --new-updater <PATH> 新 khaslana_updater.exe 路径
-//!   --backup-dir <PATH>  备份目录
-//!   --restart            替换成功后重启应用
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
-use std::env;
+use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::thread;
-use std::time::Duration;
+
+use khaslana::storage::PreparedKladoData;
+
+const EXE: &str = "klado.exe";
+const UPDATER: &str = "klado_updater.exe";
+const PREVIOUS_EXE: &str = "khaslana.exe";
+const PREVIOUS_UPDATER: &str = "khaslana_updater.exe";
+
+#[cfg(windows)]
+#[path = "klado_update_windows.rs"]
+mod windows;
 
 fn main() {
-    if let Err(err) = run() {
-        eprintln!("更新失败：{err}");
+    let result = if std::env::current_exe().ok()
+        .is_some_and(|path| named(&path, PREVIOUS_EXE))
+    {
+        launch_from_previous_path()
+    } else {
+        let mut args = std::env::args_os().skip(1);
+        if args.next().as_deref() == Some(OsStr::new("--migrate-installed-data")) {
+            migrate_installed_data(args)
+        } else {
+            update()
+        }
+    };
+    if let Err(error) = result {
+        eprintln!("{error}");
+        #[cfg(windows)]
+        windows::show_failure(&error);
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-
-    let pid = arg_value(&args, "--pid").ok_or("缺少 --pid 参数")?;
-    let target_exe =
-        PathBuf::from(arg_value(&args, "--target-exe").ok_or("缺少 --target-exe 参数")?);
-    let new_exe = PathBuf::from(arg_value(&args, "--new-exe").ok_or("缺少 --new-exe 参数")?);
-    let new_updater =
-        PathBuf::from(arg_value(&args, "--new-updater").ok_or("缺少 --new-updater 参数")?);
-    let backup_dir =
-        PathBuf::from(arg_value(&args, "--backup-dir").ok_or("缺少 --backup-dir 参数")?);
-    let restart = args.iter().any(|a| a == "--restart");
-
-    // 推断同目录下的 khaslana_updater.exe
-    let target_updater = target_exe.with_file_name("khaslana_updater.exe");
-
-    // 1. 等待父进程退出
-    let pid: u32 = pid.parse()?;
-    wait_for_process_exit(pid, 30)?;
-
-    // 2. 创建备份目录
-    fs::create_dir_all(&backup_dir)?;
-
-    // 3. 备份当前 exe
-    let backup_exe = backup_dir.join("khaslana.exe.bak");
-    let backup_updater = backup_dir.join("khaslana_updater.exe.bak");
-
-    if target_exe.exists() {
-        fs::copy(&target_exe, &backup_exe)?;
+fn migrate_installed_data(mut args: impl Iterator<Item = OsString>) -> io::Result<()> {
+    let previous = PathBuf::from(args.next().ok_or(io::ErrorKind::InvalidInput)?);
+    let next = PathBuf::from(args.next().ok_or(io::ErrorKind::InvalidInput)?);
+    let previous_dir = fs::canonicalize(previous.parent().ok_or(io::ErrorKind::InvalidInput)?)?;
+    let next_dir = fs::canonicalize(next.parent().ok_or(io::ErrorKind::InvalidInput)?)?;
+    let previous = previous_dir.join(PREVIOUS_EXE);
+    let next = next_dir.join(EXE);
+    if let Some(prepared) = khaslana::storage::prepare_klado_data(&previous, &next)? {
+        prepared.commit()?;
     }
-    if target_updater.exists() {
-        fs::copy(&target_updater, &backup_updater)?;
+    if previous_dir == next_dir || previous_dir.with_file_name("Klado") == next_dir {
+        let source = std::env::current_exe()?;
+        if replace_from(&source, &previous).is_ok() {
+            let _ = fs::remove_file(previous_dir.join(PREVIOUS_UPDATER));
+        }
     }
-
-    // 4. 替换 exe 文件
-    if let Err(e) = replace_file(&new_exe, &target_exe) {
-        // 恢复备份
-        let _ = fs::copy(&backup_exe, &target_exe);
-        let _ = fs::copy(&backup_updater, &target_updater);
-        return Err(format!("替换 khaslana.exe 失败：{e}").into());
-    }
-
-    if let Err(e) = replace_file(&new_updater, &target_updater) {
-        // 恢复备份
-        let _ = fs::copy(&backup_exe, &target_exe);
-        let _ = fs::copy(&backup_updater, &target_updater);
-        return Err(format!("替换 khaslana_updater.exe 失败：{e}").into());
-    }
-
-    // 5. 清理备份和 staging
-    let _ = fs::remove_dir_all(&backup_dir);
-
-    // 6. 可选重启
-    if restart {
-        Command::new(&target_exe).spawn()?;
-    }
-
     Ok(())
 }
 
-/// 替换文件：先尝试直接 copy；失败时 rename-and-replace fallback。
-///
-/// Windows 上如果目标文件被短暂锁定，rename 旧文件后 copy 新文件可以成功。
-/// fallback 的 copy 失败时必须先把旧文件放回原位再报错，否则目标位置
-/// 既没有新文件也没有旧文件，安装彻底损坏。
-fn replace_file(src: &Path, dst: &Path) -> std::io::Result<()> {
-    match fs::copy(src, dst) {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            // fallback: rename old → .old, then copy new
-            let old = dst.with_extension("old");
-            let _ = fs::remove_file(&old);
-            fs::rename(dst, &old)?;
-            match fs::copy(src, dst) {
-                Ok(_) => {
-                    let _ = fs::remove_file(&old); // 清理旧文件
-                    Ok(())
-                }
-                Err(err) => {
-                    // 恢复旧文件到原位，保留现场供人工修复。
-                    if let Err(restore_err) = fs::rename(&old, dst) {
-                        eprintln!(
-                            "警告：恢复旧文件失败（{restore_err}），旧文件保留在 {}",
-                            old.display()
-                        );
-                    }
-                    Err(err)
-                }
+fn launch_from_previous_path() -> io::Result<()> {
+    let current = std::env::current_exe()?;
+    let parent = current.parent().ok_or(io::ErrorKind::InvalidInput)?;
+    let local = parent.join(EXE);
+    let sibling = parent.with_file_name("Klado").join(EXE);
+    let target = [local, sibling].into_iter().find(|path| path.is_file())
+        .ok_or(io::ErrorKind::NotFound)?;
+    let status = Command::new(target).args(std::env::args_os().skip(1)).status()?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+fn update() -> io::Result<()> {
+    // 已发布客户端会从 staging 运行更新器，并继续传这组参数。
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let target = PathBuf::from(argument(&args, "--target-exe")?);
+    let new_exe = PathBuf::from(argument(&args, "--new-exe")?);
+    let new_updater = PathBuf::from(argument(&args, "--new-updater")?);
+    let backup = PathBuf::from(argument(&args, "--backup-dir")?);
+    let pid = argument(&args, "--pid")?.to_str().and_then(|pid| pid.parse().ok())
+        .filter(|pid| *pid != 0).ok_or(io::ErrorKind::InvalidInput)?;
+    let restart = args.iter().any(|arg| arg == "--restart");
+    wait_for_exit(pid)?;
+    let migrated_exe = match install(&target, &new_exe, &new_updater, &backup) {
+        Ok(exe) => exe,
+        Err(error) => {
+            // 应用已退出。原入口仍可用时恢复旧进程，保留错误便于用户重试。
+            if restart && target.is_file() {
+                let _ = Command::new(&target).spawn();
             }
+            return Err(error);
         }
+    };
+    if restart {
+        Command::new(&migrated_exe)
+            .arg("--complete-klado-migration")
+            .current_dir(migrated_exe.parent().ok_or(io::ErrorKind::InvalidInput)?)
+            .spawn()?;
+    }
+    Ok(())
+}
+
+fn install(target: &Path, new_exe: &Path, new_updater: &Path, backup: &Path) -> io::Result<PathBuf> {
+    let current_dir = target.parent().ok_or(io::ErrorKind::InvalidInput)?;
+    let current_dir = fs::canonicalize(current_dir)?;
+    let lock = fs::OpenOptions::new().write(true).create(true).truncate(false)
+        .open(current_dir.join(".klado-update.lock"))?;
+    lock.try_lock()?;
+    let legacy = !named(target, EXE);
+    #[cfg(windows)]
+    let installed = windows::registered_install_directory()?.is_some_and(|dir| dir == current_dir);
+    #[cfg(not(windows))]
+    let installed = false;
+    let destination = if installed && legacy {
+        if current_dir.parent().is_none() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        current_dir.with_file_name("Klado")
+    } else {
+        current_dir.clone()
+    };
+    let next = destination.join(EXE);
+    if destination != current_dir && destination.try_exists()?
+        && fs::read_dir(&destination)?.any(|entry| {
+            entry.map_or(true, |entry| {
+                let name = entry.file_name();
+                name != ".klado-data-migration.lock" && !name.to_string_lossy().starts_with(".klado-data-")
+            })
+        })
+    {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, destination.display().to_string()));
+    }
+    if legacy && next.exists() {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, next.display().to_string()));
+    }
+    let prepared_data = if legacy {
+        khaslana::storage::prepare_klado_data(target, &next)?
+    } else {
+        None
+    };
+
+    if installed {
+        #[cfg(windows)]
+        windows::run_installer(&new_exe.with_file_name("klado-setup.exe"), &destination, legacy)?;
+        if let Some(prepared) = prepared_data {
+            prepared.commit()?;
+        }
+    } else {
+        install_portable(&next, new_exe, new_updater, backup, prepared_data)?;
+    }
+    if legacy && named(target, PREVIOUS_EXE) {
+        // 旧任务栏固定项与外部 MCP 配置仍可经原路径进入新版本。
+        if replace_from(new_updater, &current_dir.join(PREVIOUS_EXE)).is_ok() {
+            let _ = fs::remove_file(current_dir.join(PREVIOUS_UPDATER));
+        }
+    }
+    Ok(next)
+}
+
+fn install_portable(
+    target: &Path,
+    new_exe: &Path,
+    new_updater: &Path,
+    backup: &Path,
+    prepared_data: Option<PreparedKladoData>,
+) -> io::Result<()> {
+    fs::create_dir_all(backup)?;
+    let target_updater = target.with_file_name(UPDATER);
+    let saved_exe = backup.join("klado.exe.bak");
+    let saved_updater = backup.join("klado_updater.exe.bak");
+    let had_exe = backup_existing(target, &saved_exe)?;
+    let had_updater = backup_existing(&target_updater, &saved_updater)?;
+    replace_from(new_updater, &target_updater)?;
+    if let Err(error) = replace_from(new_exe, target) {
+        restore_backup(&target_updater, &saved_updater, had_updater)?;
+        return Err(error);
+    }
+    if let Some(prepared) = prepared_data
+        && let Err(error) = prepared.commit()
+    {
+        let restore_app = restore_backup(target, &saved_exe, had_exe);
+        restore_backup(&target_updater, &saved_updater, had_updater)?;
+        restore_app?;
+        return Err(error);
+    }
+    if had_exe {
+        let _ = fs::remove_file(saved_exe);
+    }
+    if had_updater {
+        let _ = fs::remove_file(saved_updater);
+    }
+    Ok(())
+}
+
+fn restore_backup(target: &Path, saved: &Path, existed: bool) -> io::Result<()> {
+    if existed {
+        replace_from(saved, target)
+    } else {
+        fs::remove_file(target)
     }
 }
 
-/// 等待指定 PID 的进程退出。
-///
-/// 在 Windows 上通过 `tasklist` 命令检查进程是否仍存在。
-/// 最多等待 `max_seconds` 秒。
-fn wait_for_process_exit(pid: u32, max_seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
-    let start = std::time::Instant::now();
-    loop {
-        let output = Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-            .output()?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // tasklist 输出中如果进程不存在，会显示 "INFO: No tasks are running..."
-        // 如果存在，会显示进程名和 PID。按整词比较 PID，避免 PID 123 匹配到 1234。
-        let pid_str = pid.to_string();
-        let process_running = stdout
-            .lines()
-            .any(|line| line.split_whitespace().any(|token| token == pid_str));
-        if !process_running {
-            return Ok(());
-        }
-
-        if start.elapsed().as_secs() >= max_seconds {
-            return Err(format!("等待进程 {pid} 退出超时（{max_seconds}秒）").into());
-        }
-
-        thread::sleep(Duration::from_millis(500));
+fn backup_existing(target: &Path, saved: &Path) -> io::Result<bool> {
+    if !target.try_exists()? {
+        return Ok(false);
     }
+    fs::copy(target, saved).map(|_| true)
 }
 
-/// 从命令行参数中提取指定名称的值。
-fn arg_value(args: &[String], name: &str) -> Option<String> {
-    args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone())
+fn replace_from(source: &Path, target: &Path) -> io::Result<()> {
+    // 临时文件与目标同卷。最后一步才替换，复制或写入失败时旧 exe 仍在。
+    let staging = target.with_extension(format!("replacing-{}", std::process::id()));
+    let mut destination = fs::OpenOptions::new().create_new(true).write(true).open(&staging)?;
+    let result = (|| {
+        io::copy(&mut fs::File::open(source)?, &mut destination)?;
+        destination.sync_all()?;
+        drop(destination);
+        fs::rename(&staging, target)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&staging);
+    }
+    result
 }
+
+fn named(path: &Path, name: &str) -> bool {
+    path.file_name().and_then(OsStr::to_str).is_some_and(|file| file.eq_ignore_ascii_case(name))
+}
+
+fn argument<'a>(args: &'a [OsString], name: &str) -> io::Result<&'a OsStr> {
+    args.windows(2).find(|pair| pair[0] == name).map(|pair| pair[1].as_os_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, name))
+}
+
+#[cfg(windows)]
+fn wait_for_exit(pid: u32) -> io::Result<()> {
+    windows::wait_for_exit(pid)
+}
+
+#[cfg(not(windows))]
+fn wait_for_exit(_pid: u32) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
+#[cfg(test)]
+#[path = "../tests/klado_updater.rs"]
+mod tests;

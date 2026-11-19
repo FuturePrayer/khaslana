@@ -7,7 +7,7 @@
     白色区域 = 实心（取 text_color），mask 黑色刻痕 = 挖空透底，
     颜色完全由调用方的 text_color（主题色）决定。
   -->
-  <title>Khaslana 应用标志（负空间分支）</title>
+  <title>Klado 应用标志（负空间分支）</title>
   <defs>
     <mask id="carve">
       <rect x="5" y="5" width="90" height="90" rx="26.47" fill="white"/>

@@ -1,9 +1,26 @@
 [package]
-name = "khaslana"
-version = "3.0.1-beta.3"
+name = "klado"
+version = "3.0.1"
 edition = "2024"
 license = "Apache-2.0"
 build = "build.rs"
+autobins = false
+default-run = "klado"
+
+[lib]
+name = "khaslana"
+
+[[bin]]
+name = "klado"
+path = "src/main.rs"
+
+[[bin]]
+name = "klado_updater"
+path = "src/bin/khaslana_updater.rs"
+
+[[bin]]
+name = "klado_packager"
+path = "src/bin/khaslana_packager.rs"
 
 [workspace]
 members = ["."]
@@ -95,7 +112,7 @@ libgit2-sys = "0.18"
 libssh2-sys = { version = "0.3", features = ["openssl-on-win32"] }
 raw-window-handle = "0.6"
 tray-icon = { version = "0.24.2", default-features = false }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Memory"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Memory", "Win32_System_Registry"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

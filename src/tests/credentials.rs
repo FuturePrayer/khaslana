@@ -581,3 +581,20 @@ fn http_and_https_remotes_get_scheme_distinct_host_keys() {
     assert_eq!(http.host_key, "http://git.internal.example");
     assert_ne!(https.host_key, http.host_key);
 }
+#[test]
+fn klado_keyring_migration_preserves_existing_new_value_and_moves_legacy_value() {
+    use keyring_core::api::CredentialStoreApi;
+
+    let store = keyring_core::mock::Store::new().unwrap();
+    let previous = store.build("khaslana.git.credential:fixture", "user", None).unwrap();
+    let entry = store.build("klado.git.credential:fixture", "user", None).unwrap();
+    previous.set_password("old fixture").unwrap();
+
+    assert_eq!(super::read_migrated_password(&entry, &previous).unwrap().as_deref(), Some("old fixture"));
+    assert_eq!(entry.get_password().unwrap(), "old fixture");
+    assert!(matches!(previous.get_password(), Err(keyring_core::Error::NoEntry)));
+
+    entry.set_password("new fixture").unwrap();
+    previous.set_password("stale fixture").unwrap();
+    assert_eq!(super::read_migrated_password(&entry, &previous).unwrap().as_deref(), Some("new fixture"));
+}

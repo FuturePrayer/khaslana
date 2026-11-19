@@ -42,7 +42,7 @@ impl TrayController {
         let icon = Icon::from_resource(1, Some((32, 32)))
             .map_err(|error| khaslana::ui_i18n::format(domain_ui_resources::FAILED_TO_LOAD_THE_TRAY_ICON, &[("error", &format!("{}", error))]))?;
         let tray_icon = TrayIconBuilder::new()
-            .with_tooltip("Khaslana")
+            .with_tooltip(khaslana::APP_NAME)
             .with_icon(icon)
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)

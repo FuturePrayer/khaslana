@@ -16,6 +16,7 @@ version = os.environ["MANIFEST_VERSION"]
 channel = os.environ["MANIFEST_CHANNEL"]
 tag = os.environ["MANIFEST_TAG"]
 zip_name = os.environ["MANIFEST_ZIP"]
+github_repository = os.environ.get("GITHUB_REPOSITORY", "Neglecton/khaslana")
 sha = os.environ["MANIFEST_SHA"]
 size = os.environ["MANIFEST_SIZE"].strip()
 notes = os.environ.get("MANIFEST_NOTES", "").strip()
@@ -37,7 +38,7 @@ manifest = {
                 f"releases/v{version}/{zip_name}.zip"
             ),
             "fallback_archive_url": (
-                "https://github.com/Neglecton/khaslana/releases/download/"
+                f"https://github.com/{github_repository}/releases/download/"
                 f"{tag}/{zip_name}.zip"
             ),
             "sha256": sha,

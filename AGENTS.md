@@ -1,4 +1,4 @@
-# Khaslana 项目 Agent 手册
+# Klado 项目 Agent 手册
 
 本文件只记录长期协作规则、架构边界与关键防回归约束。实现细节查源码，阶段进度查专题文档；不要把功能清单、修复流水账或未来路线图追加到这里。
 
@@ -19,7 +19,7 @@
 
 ## 3. 项目与依赖
 
-Khaslana 是 Rust 桌面 Git 客户端，支持多仓库、Git 工作流、差异与历史、冲突处理、工作流模板及 AI 辅助。
+Klado 是 Rust 桌面 Git 客户端，支持多仓库、Git 工作流、差异与历史、冲突处理、工作流模板及 AI 辅助。
 
 - Rust edition、依赖版本和 feature 以 `Cargo.toml` / `Cargo.lock` 为准，不在本文复制整张依赖表。
 - UI 使用 `gpui-pre`（Cargo 别名 `gpui`）与 `gpui-kit`。当前精确锁定 `=0.3.5` / `=0.6.4`，不得随意放宽：该组合与 gpui-pre 0.3.6 存在已知编译不兼容。
@@ -57,6 +57,7 @@ Khaslana 是 Rust 桌面 Git 客户端，支持多仓库、Git 工作流、差�
 - 一次性 AI 生成复用 `start_ai_thinking_task`。互斥依据任务运行态；「后台运行」只隐藏弹窗。增量、成功、失败按任务 id 路由，工作流回填还须匹配编辑会话。
 - AI 评审切换目标时只分离展示，取消才终止任务；保留后台完成落盘、并发限制与代际守卫。空正文、流截断不得当作成功；预算、重试和超时策略以实现与测试为准。
 - 更新渠道保持兼容：正式清单仅指向正式版，测试版发布不得污染正式渠道；发布流程以 `.github/workflows/release.yml` 为准。
+- 应用内更新包保留旧版客户端要求的清单入口与包内 EXE 名，Windows 安装器保留旧 `AppId`；便携 ZIP、安装器和更新 ZIP 各走自己的入口。迁移数据时在安装成功后才启用新库，凭据写入新 Keyring 条目并读回后才移除旧条目。
 - 工作流纯 JS、仅使用客户端内置 Edge 的 JS／Skill 自动准备授权，不弹运行确认；自定义 MCP 保留本次运行确认，步骤工具声明与显式页面限制仍须执行。内置 Edge 每会话隔离输出，所有退出路径先关闭会话再回收结构快照和截图；不得误删下载、其它导出或其它会话文件。
 
 ## 6. UI 与输入规则
@@ -85,7 +86,7 @@ Khaslana 是 Rust 桌面 Git 客户端，支持多仓库、Git 工作流、差�
 - 铺满窗口的背景与遮罩共用 `window_radius()`；最大化时圆角归零（系统无可缩放空间，边框命中由 `IsZoomed` 短路）。`overflow_hidden` 不能代替圆角绘制。
 - 最大化按钮使用 `WindowControlArea::Max` 支持最大化/还原，不改成只最大化的 `zoom_window()`。
 - 不补自绘窗口投影、不为投影增加窗口内边距；内部面板层次按当前视觉规范处理。
-- Windows MSVC 的 Khaslana GUI 二进制通过 `build.rs` 预留 8 MiB 主线程栈，保留默认初始提交量；复杂 Kit 控件的正常渲染在默认 1 MiB 栈下已复现溢出，不得移除该链接设置。此设置仅应用于 GUI 二进制。
+- Windows MSVC 的 Klado GUI 二进制通过 `build.rs` 预留 8 MiB 主线程栈，保留默认初始提交量；复杂 Kit 控件的正常渲染在默认 1 MiB 栈下已复现溢出，不得移除该链接设置。此设置仅应用于 GUI 二进制。
 
 ## 8. 验证与交付
 
@@ -93,18 +94,18 @@ Khaslana 是 Rust 桌面 Git 客户端，支持多仓库、Git 工作流、差�
 
 ```powershell
 cargo check --all-targets
-cargo test --lib --bin khaslana --quiet
+cargo test --lib --bin klado --quiet
 cargo build --release
 git diff --check
 ```
 
 - 代码实现完成需 release 构建零错误零警告；发现既有无关问题时报告，不擅自扩大修改范围。新增二进制或 feature 补对应检查。
-- 本地构建与打包统一使用 `cargo build --release` 和默认 `target/release`，不得通过 `--target-dir`、`CARGO_TARGET_DIR` 或其他 profile 创建额外的 release 测试、验证或打包目录。若构建因程序进程占用产物而失败，核实进程的可执行文件路径后终止占用本项目产物的 Khaslana 进程，再重试默认 release 构建；用户已授权此处理，无需再次确认。
+- 本地构建与打包统一使用 `cargo build --release` 和默认 `target/release`，不得通过 `--target-dir`、`CARGO_TARGET_DIR` 或其他 profile 创建额外的 release 测试、验证或打包目录。若构建因程序进程占用产物而失败，核实进程的可执行文件路径后终止占用本项目产物的 Klado 进程，再重试默认 release 构建；用户已授权此处理，无需再次确认。
 - 纯文档修改检查内容、路径与 diff 即可，无需编译。不要把 `cargo fmt` 当默认收尾步骤；必要格式调整限定本次修改范围。
 - 测试放 `src/tests/` 对应模块，经 `#[path]` 挂载；Git 测试复用 `src/git/test_support.rs` 与临时仓库。优先覆盖业务行为与回归场景。
 - UI 修改按重构计划验收矩阵验证键盘、焦点、IME、深浅主题、窄窗和 DPI；未做实机验证就明确标注未验证。Windows 注入 `WM_KEYDOWN` 使用 `PostMessage`，避免同步重入丢键。
 - UI 交付须对照本次采用的设计与项目内参照，检查实际界面的布局、密度、组件外观及适用状态，记录截图或其他实际观察证据，并说明差异。编译通过、组件已接入或代码中配置了样式均不能替代视觉验收；无法运行或取得截图时，明确列出未验证项，不宣称已对齐设计。
-- 本地运行使用 `cargo run --bin khaslana`；本地打包采用上述默认 release 规则，安装器需要 Inno Setup。构建验证不意味着自动提交、打 tag 或发布。
+- 本地运行使用 `cargo run --bin klado`；本地打包采用上述默认 release 规则，安装器需要 Inno Setup。构建验证不意味着自动提交、打 tag 或发布。
 
 ## 9. 按需阅读与维护
 

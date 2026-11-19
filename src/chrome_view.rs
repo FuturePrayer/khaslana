@@ -904,7 +904,7 @@ impl RepositoryView {
                         .text_size(px(theme::TYPE_BRAND))
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_color(rgb(theme::CONTENT_PRIMARY))
-                        .child("Khaslana"),
+                        .child(khaslana::APP_NAME),
                 )
             })
     }

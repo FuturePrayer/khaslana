@@ -419,7 +419,7 @@ impl RepositoryView {
 
     /// 重启应用：启动新实例后立即退出当前进程。
     fn relaunch_app() {
-        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("khaslana.exe"));
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("klado.exe"));
         let exe_str = exe.to_string_lossy().to_string();
         let _ = std::process::Command::new(&exe_str).spawn();
         std::process::exit(0);
@@ -2899,13 +2899,13 @@ impl RepositoryView {
         cx: &mut Context<Self>,
     ) {
         // 检查写入权限
-        let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("khaslana.exe"));
+        let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("klado.exe"));
         let exe_dir = current_exe
             .parent()
             .unwrap_or_else(|| Path::as_ref(Path::new(".")));
 
         // 尝试在 exe 目录创建临时文件来验证写入权限
-        let test_file = exe_dir.join(".khaslana_update_test");
+        let test_file = exe_dir.join(".klado_update_test");
         let writable = fs::File::create(&test_file).is_ok();
         let _ = fs::remove_file(&test_file);
 

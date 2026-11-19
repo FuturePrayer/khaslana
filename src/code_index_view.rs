@@ -179,7 +179,7 @@ impl RepositoryView {
         let mcp_config = {
             let exe = std::env::current_exe()
                 .map(|p| p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"))
-                .unwrap_or_else(|_| "khaslana.exe".to_string());
+                .unwrap_or_else(|_| "klado.exe".to_string());
             format!(
                 r#"{{"mcpServers":{{"khaslana-code-index":{{"command":"{exe}","args":["mcp"]}}}}}}"#
             )

@@ -181,7 +181,7 @@ fn responses_and_anthropic_agent_http_tool_roundtrip_nonstream_and_stream() {
             });
             let headers = requests[0].0.to_ascii_lowercase();
             assert!(headers.contains(&format!("post {} http/1.1", api.endpoint_path())));
-            assert!(headers.contains("user-agent: khaslana/"));
+            assert!(headers.contains("user-agent: klado/"));
             if api == AiApiType::AnthropicMessages {
                 assert!(headers.contains("x-api-key: fixture-key")); assert!(headers.contains("anthropic-version: 2023-06-01")); assert!(!headers.contains("authorization:"));
                 assert_eq!(requests[1].1["messages"][1]["content"], anthropic_blocks());

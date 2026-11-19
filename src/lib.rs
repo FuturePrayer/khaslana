@@ -16,6 +16,8 @@ pub mod types;
 pub mod update;
 pub mod workflow;
 
+pub const APP_NAME: &str = "Klado";
+
 pub use credentials::{
     CredentialProvider, CredentialRecord, CredentialRequest, CredentialScope, CredentialStore,
     GitCredential, KeyringCredentialStore, MemoryCredentialStore, PromptCredentialProvider,

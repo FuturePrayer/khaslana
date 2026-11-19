@@ -70,6 +70,14 @@ pub fn current_version() -> Version {
         .unwrap_or(Version::new(0, 0, 0))
 }
 
+pub fn installer_failure_message(error: &std::io::Error) -> String {
+    crate::ui_i18n::format_in(
+        crate::language::UiLanguagePreference::System.resolve(),
+        domain_ui_resources::KLADO_INSTALL_FAILED,
+        &[("error", &error.to_string())],
+    )
+}
+
 /// 发布渠道身份不依赖界面语言，避免译文改变徽标状态或更新策略。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UpdateChannel {

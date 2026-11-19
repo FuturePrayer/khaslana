@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::storage::AppStorage;
 use crate::types::{GitError, Result};
 
-const KEYRING_SERVICE_PREFIX: &str = "khaslana.git.credential";
+const KEYRING_SERVICE_PREFIX: &str = "klado.git.credential";
+const PREVIOUS_KEYRING_SERVICE_PREFIX: &str = "khaslana.git.credential";
 const OLD_KEYRING_SERVICE_PREFIX: &str = "khaslana";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -543,8 +544,23 @@ impl KeyringCredentialStore {
     }
 
     fn entry_for_record(record_id: &str, username: &str) -> Result<keyring_core::Entry> {
-        keyring_core::Entry::new(&new_keyring_service(record_id), username)
+        Self::entry_for_service(&new_keyring_service(record_id), username)
+    }
+
+    fn previous_entry_for_record(record_id: &str, username: &str) -> Result<keyring_core::Entry> {
+        Self::entry_for_service(&format!("{PREVIOUS_KEYRING_SERVICE_PREFIX}:{record_id}"), username)
+    }
+
+    fn entry_for_service(service: &str, username: &str) -> Result<keyring_core::Entry> {
+        keyring_core::Entry::new(service, username)
             .map_err(|err| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CREATE_A_SYSTEM_CREDENTIAL_ENTRY, &[("err", &format!("{:?}", err))])))
+    }
+
+    fn read_record_secret(record: &CredentialRecord) -> Result<Option<String>> {
+        let entry = Self::entry_for_record(&record.id, &record.username)?;
+        let previous = Self::previous_entry_for_record(&record.id, &record.username)?;
+        read_migrated_password(&entry, &previous)
+            .map_err(|err| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_SYSTEM_CREDENTIALS, &[("err", &format!("{:?}", err))])))
     }
 
     fn old_user(request: &CredentialRequest) -> String {
@@ -624,14 +640,9 @@ impl CredentialStore for KeyringCredentialStore {
             return self.get_old_and_migrate(request);
         };
 
-        let entry = Self::entry_for_record(&record.id, &record.username)?;
-        let secret = match entry.get_password() {
-            Ok(secret) => secret,
-            Err(keyring_core::Error::NoEntry) => {
-                self.delete_record(&record.id)?;
-                return Ok(None);
-            }
-            Err(err) => return Err(GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_SYSTEM_CREDENTIALS, &[("err", &format!("{:?}", err))]))),
+        let Some(secret) = Self::read_record_secret(&record)? else {
+            self.delete_record(&record.id)?;
+            return Ok(None);
         };
         let Some(credential) = GitCredential::from_record(&record, secret) else {
             return Ok(None);
@@ -757,6 +768,9 @@ impl CredentialStore for KeyringCredentialStore {
         // 若顺序相反，Keyring 删除失败时索引已更新，secret 会变成 UI 不可见、
         // 也无法重试删除的永久孤儿条目。
         let entry = Self::entry_for_record(record_id, &record.username)?;
+        let previous = Self::previous_entry_for_record(record_id, &record.username)?;
+        delete_password_if_present(&previous)
+            .map_err(|err| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_DELETE_SYSTEM_CREDENTIALS, &[("err", &format!("{:?}", err))])))?;
         match entry.delete_credential() {
             Ok(()) | Err(keyring_core::Error::NoEntry) => {}
             Err(err) => {
@@ -786,17 +800,11 @@ impl CredentialStore for KeyringCredentialStore {
         else {
             return Ok(None);
         };
-        let entry = Self::entry_for_record(&record.id, &record.username)?;
-        match entry.get_password() {
-            Ok(secret) => {
-                if let Some(id) = record.managed_key_id.as_deref() {
-                    crate::ssh_keys::SshKeyManager::new(self.storage.clone()).private_key_path(id)?;
-                }
-                Ok(GitCredential::from_record(&record, secret))
-            },
-            Err(keyring_core::Error::NoEntry) => Ok(None),
-            Err(err) => Err(GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_READ_SYSTEM_CREDENTIALS, &[("err", &format!("{:?}", err))]))),
+        let Some(secret) = Self::read_record_secret(&record)? else { return Ok(None) };
+        if let Some(id) = record.managed_key_id.as_deref() {
+            crate::ssh_keys::SshKeyManager::new(self.storage.clone()).private_key_path(id)?;
         }
+        Ok(GitCredential::from_record(&record, secret))
     }
 
     fn update_secret(&self, record_id: &str, secret: &str) -> Result<()> {
@@ -1310,6 +1318,57 @@ fn new_keyring_service(record_id: &str) -> String {
     format!("{KEYRING_SERVICE_PREFIX}:{record_id}")
 }
 
+fn read_migrated_password(
+    entry: &keyring_core::Entry,
+    previous: &keyring_core::Entry,
+) -> keyring_core::Result<Option<String>> {
+    match entry.get_password() {
+        Ok(secret) => return Ok(Some(secret)),
+        Err(keyring_core::Error::NoEntry) => {}
+        Err(err) => return Err(err),
+    }
+    let secret = match previous.get_password() {
+        Ok(secret) => secret,
+        Err(keyring_core::Error::NoEntry) => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    // 验证新系统凭据可读后才清理旧条目。暂时写入失败时依旧使用旧密文记录。
+    if entry.set_password(&secret).is_ok()
+        && entry.get_password().map(zeroize::Zeroizing::new).is_ok_and(|saved| *saved == secret)
+    {
+        let _ = delete_password_if_present(previous);
+    }
+    Ok(Some(secret))
+}
+
+fn delete_password_if_present(entry: &keyring_core::Entry) -> keyring_core::Result<()> {
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+pub fn migrate_klado_credentials(database: &Path) -> Result<()> {
+    let store = KeyringCredentialStore::with_storage_path(database)?;
+    let index = store.load_index()?;
+    if index.records.is_empty() {
+        return Ok(());
+    }
+    store.ensure_store()?;
+    let mut result = Ok(());
+    for record in index.records {
+        if let Err(err) = KeyringCredentialStore::read_record_secret(&record)
+            .map(|secret| secret.map(zeroize::Zeroizing::new))
+        {
+            result = Err(err);
+        }
+        if let (Ok(entry), Ok(previous)) = (gitee_refresh_entry(&record.id), previous_gitee_refresh_entry(&record.id)) {
+            let _ = read_migrated_password(&entry, &previous).map(|secret| secret.map(zeroize::Zeroizing::new));
+        }
+    }
+    result
+}
+
 // ── Gitee OAuth 自动续期材料（refresh_token + 过期时间，按记录 id 独立存 Keyring）──
 
 /// Gitee OAuth 自动续期材料。secret 类信息按项目约定不进 SQLite，与凭据本体
@@ -1329,6 +1388,13 @@ fn gitee_refresh_keyring_service(record_id: &str) -> String {
 fn gitee_refresh_entry(record_id: &str) -> Result<keyring_core::Entry> {
     keyring_core::Entry::new(&gitee_refresh_keyring_service(record_id), "refresh")
         .map_err(|err| GitError::LocalizedCredential(crate::ui_i18n::LocalizedMessage::new(domain_ui_resources::FAILED_TO_CREATE_A_GITEE_REFRESH_ENTRY, &[("err", &format!("{:?}", err))])))
+}
+
+fn previous_gitee_refresh_entry(record_id: &str) -> Result<keyring_core::Entry> {
+    KeyringCredentialStore::entry_for_service(
+        &format!("{PREVIOUS_KEYRING_SERVICE_PREFIX}:gitee-refresh:{record_id}"),
+        "refresh",
+    )
 }
 
 /// 保存/覆盖某凭据记录的 Gitee 续期材料。
@@ -1351,22 +1417,25 @@ pub fn save_gitee_refresh_payload(
 /// 读取某凭据记录的 Gitee 续期材料；无条目或载荷损坏返回 None（损坏时顺带清理）。
 pub fn load_gitee_refresh_payload(record_id: &str) -> Option<GiteeRefreshPayload> {
     let entry = gitee_refresh_entry(record_id).ok()?;
-    match entry.get_password() {
-        Ok(json) => match serde_json::from_str::<GiteeRefreshPayload>(&json) {
+    let previous = previous_gitee_refresh_entry(record_id).ok()?;
+    match read_migrated_password(&entry, &previous) {
+        Ok(Some(json)) => match serde_json::from_str::<GiteeRefreshPayload>(&json) {
             Ok(payload) => Some(payload),
             Err(_) => {
                 // 载荷损坏（旧版本格式或手改）：清理后按无续期能力处理。
-                let _ = entry.delete_credential();
+                delete_gitee_refresh_payload(record_id);
                 None
             }
         },
-        Err(keyring_core::Error::NoEntry) => None,
-        Err(_) => None,
+        Ok(None) | Err(_) => None,
     }
 }
 
 /// 删除某凭据记录的 Gitee 续期材料（best-effort：失败只记 warn 不阻断调用方）。
 pub fn delete_gitee_refresh_payload(record_id: &str) {
+    if let Ok(previous) = previous_gitee_refresh_entry(record_id) {
+        let _ = delete_password_if_present(&previous);
+    }
     if let Ok(entry) = gitee_refresh_entry(record_id)
         && let Err(err) = entry.delete_credential()
         && !matches!(err, keyring_core::Error::NoEntry)

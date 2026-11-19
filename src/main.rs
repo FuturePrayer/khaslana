@@ -5005,13 +5005,15 @@ fn register_shortcut_listeners(cx: &mut App, weak: WeakEntity<RepositoryView>) {
 }
 
 fn main() {
-    // MCP 无头模式：`khaslana mcp [仓库路径]` 供外部 AI 工具（Claude Code /
+    let storage_migration = khaslana::storage::migrate_klado_data_at_startup();
+    // MCP 无头模式：`klado mcp [仓库路径]` 供外部 AI 工具（Claude Code /
     // Cursor / ZCode 等）挂载，查询本机已索引仓库的代码知识图谱。仓库路径
     // 可选：带=单仓库模式；不带=多仓库模式（工具按 repo 参数解析目标仓库）。
     // 必须先于 GUI 启动判断；此分支不初始化 stdout 版日志（tracing 默认写
     // stdout 会污染协议流），MCP 内部进度一律走 stderr。
     let mut args = std::env::args().skip(1);
-    if args.next().as_deref() == Some("mcp") {
+    let mode = args.next();
+    if mode.as_deref() == Some("mcp") {
         let repo = args.next();
         let code = khaslana::code_index::mcp::run(repo.as_deref().map(std::path::Path::new));
         std::process::exit(code);
@@ -5021,6 +5023,15 @@ fn main() {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init()
         .ok();
+    if let Err(err) = storage_migration {
+        tracing::warn!("Klado data migration failed: {err}");
+    }
+    if mode.as_deref() == Some("--complete-klado-migration")
+        && let Some(database) = khaslana::default_database_path().filter(|path| path.is_file())
+        && khaslana::credentials::migrate_klado_credentials(&database).is_err()
+    {
+        tracing::warn!("Klado credential migration will retry when credentials are used");
+    }
 
     // gpui-pre 由平台层提供入口函数，没有 `Application::new()`（gpui-ce 的写法）。
     gpui_kit::application()
@@ -5062,7 +5073,7 @@ fn main() {
                         px(chrome_view::MIN_WINDOW_HEIGHT),
                     )),
                     titlebar: Some(TitlebarOptions {
-                        title: Some("Khaslana".into()),
+                        title: Some(khaslana::APP_NAME.into()),
                         // 隐藏 Windows 原生标题栏，由主工具栏承载拖动和窗口控制。
                         appears_transparent: true,
                         ..Default::default()

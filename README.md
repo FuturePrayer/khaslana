@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="logo.png" alt="Khaslana logo" width="96" height="96">
+  <img src="logo.png" alt="Klado logo" width="96" height="96">
 </p>
 
-<h1 align="center">Khaslana</h1>
+<h1 align="center">Klado</h1>
 
 <p align="center">
   一个使用 Rust、gpui-pre 和 libgit2 构建的轻量桌面 Git 客户端。
@@ -18,7 +18,7 @@
 
 ## 简介
 
-Khaslana 是一个面向日常开发工作流的桌面 Git 客户端。它使用 `gpui-pre`（Cargo 别名 `gpui`）与 `gpui-kit` 构建原生界面，使用 `git2` / libgit2 执行 Git 操作，并通过系统 Keyring 保存凭据密文。
+Klado（原 Khaslana）是一个面向日常开发工作流的桌面 Git 客户端。它使用 `gpui-pre`（Cargo 别名 `gpui`）与 `gpui-kit` 构建原生界面，使用 `git2` / libgit2 执行 Git 操作，并通过系统 Keyring 保存凭据密文。
 
 项目目标不是替代所有 Git CLI 能力，而是把仓库打开、分支切换、暂存提交、远端同步、历史查看、凭据管理、代理设置、子模块更新和常用自动化工作流整合到一个轻量客户端里。
 
@@ -26,15 +26,17 @@ Khaslana 是一个面向日常开发工作流的桌面 Git 客户端。它使用
 
 ## 下载与安装
 
+从 Khaslana 升级时，使用原来的应用内更新操作。Klado 会自动接续仓库列表、设置、工作流和系统凭据。安装版升级后进入同级 Klado 目录，便携版继续使用当前目录。
+
 从发布页获取最新版本（两个渠道内容一致）：
 
 - CNB（国内推荐）：`https://cnb.cool/suhoan/khaslana-release`
-- GitHub Releases：`https://github.com/FuturePrayer/khaslana/releases`
+- GitHub Releases：`https://github.com/Neglecton/khaslana/releases`
 
 | 产物 | 适用 |
 | --- | --- |
-| `khaslana-setup-v*` | **推荐**。双击安装到用户目录（`%LOCALAPPDATA%\Programs\Khaslana`），免管理员权限，自带卸载项；卸载不会删除 `data\` 里的应用数据。 |
-| `khaslana-v*-windows-x86_64.zip` | 进阶用户。解压即用的便携版，应用数据保存在 exe 同级 `data\` 目录，整个目录可搬移。请不要把便携版放在微信/QQ 接收文件或浏览器临时目录里直接运行——这些目录可能被定期清理（应用检测到后会提示并引导移出）。 |
+| `klado-setup-v*` | **推荐**。双击安装到用户目录（`%LOCALAPPDATA%\Programs\Klado`），免管理员权限，自带卸载项；卸载不会删除 `data\` 里的应用数据。 |
+| `klado-v*-windows-x86_64.zip` | 进阶用户。解压即用的便携版，应用数据保存在 exe 同级 `data\` 目录，整个目录可搬移。请不要把便携版放在微信/QQ 接收文件或浏览器临时目录里直接运行——这些目录可能被定期清理（应用检测到后会提示并引导移出）。 |
 
 ## 功能特性
 
@@ -74,7 +76,7 @@ Khaslana 是一个面向日常开发工作流的桌面 Git 客户端。它使用
 
 ## Reflog 与分支恢复
 
-本地 Reflog 记录引用指向的变化，可用于定位误 reset、rebase 等操作后从当前分支历史中消失、但仍保存在本地对象库中的提交。Khaslana 支持按 HEAD、当前分支、指定本地分支或全部本地来源查看记录，结合时间与关键词筛选，并预览目标提交的文件和 diff，再创建新的本地分支保留该提交。
+本地 Reflog 记录引用指向的变化，可用于定位误 reset、rebase 等操作后从当前分支历史中消失、但仍保存在本地对象库中的提交。Klado 支持按 HEAD、当前分支、指定本地分支或全部本地来源查看记录，结合时间与关键词筛选，并预览目标提交的文件和 diff，再创建新的本地分支保留该提交。
 
 使用步骤：
 
@@ -128,7 +130,7 @@ Windows 下项目会通过 `.cargo/config.toml` 为 `x86_64-pc-windows-msvc` 启
 构建后的主程序位于：
 
 ```text
-target/release/khaslana.exe
+target/release/klado.exe
 ```
 
 如需极致优化的发布级构建（fat LTO + 单编译单元，编译显著变慢）：
@@ -137,22 +139,22 @@ target/release/khaslana.exe
 cargo build --profile release-perf
 ```
 
-产物位于 `target/release-perf/khaslana.exe`，官方发布流程（`.github/workflows/release.yml`）即使用该 profile。
+产物位于 `target/release-perf/klado.exe`，官方发布流程（`.github/workflows/release.yml`）即使用该 profile。
 
-本地一键打包安装器（自动完成 release-perf 构建、组装打包目录并调用 Inno Setup 编译 setup，需本机安装 [Inno Setup 7](https://jrsoftware.org/isdl.php)）：
+本地一键打包安装器（自动完成 release 构建、组装打包目录并调用 Inno Setup 编译 setup，需本机安装 [Inno Setup 7](https://jrsoftware.org/isdl.php)）：
 
 ```powershell
 cargo setup
 ```
 
-产物位于 `dist\khaslana-setup-v<版本>-windows-x86_64.exe`。
+产物位于 `dist\klado-setup-v<版本>-windows-x86_64.exe`。
 
 ## 数据持久化
 
-Khaslana 使用 `directories::ProjectDirs::from("", "", "Khaslana")` 获取系统配置目录，并将应用数据保存到 SQLite 数据库：
+Klado 使用 `directories::ProjectDirs::from("", "", "Klado")` 获取系统配置目录，并将应用数据保存到 SQLite 数据库：
 
 ```text
-khaslana.sqlite3
+klado.sqlite3
 ```
 
 SQLite 中保存：
@@ -169,7 +171,7 @@ SQLite 中保存：
 
 ### 凭据
 
-Khaslana 支持三类凭据策略：
+Klado 支持三类凭据策略：
 
 - 自动匹配：根据远端 URL 和凭据记录自动选择可用凭据。
 - 不使用凭据：对指定远端跳过已保存凭据。
@@ -248,4 +250,4 @@ cargo test proxy
 
 ## 许可证
 
-Khaslana 使用 [Apache License 2.0](LICENSE) 开源协议。
+Klado 使用 [Apache License 2.0](LICENSE) 开源协议。
