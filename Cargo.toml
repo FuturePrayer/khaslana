@@ -113,6 +113,9 @@ libssh2-sys = { version = "0.3", features = ["openssl-on-win32"] }
 raw-window-handle = "0.6"
 tray-icon = { version = "0.24.2", default-features = false }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Memory", "Win32_System_Registry"] }
+# ITaskbarList3（任务栏按钮进度叠加）仅 windows crate 提供，windows-sys 无此 COM 接口；
+# 与 gpui 依赖的 0.62 同版本，feature 已被传递依赖统一，不产生重复编译。
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_System_Com"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

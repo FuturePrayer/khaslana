@@ -78,6 +78,9 @@ impl RepositoryView {
                 {
                     cx.notify();
                 }
+                // 任务栏进度兜底节拍：覆盖不经事件批的直接状态变化（最小化时
+                // 渲染暂停，render 路径的 drain 不跑）。控制器去重，开销仅字段读。
+                self.sync_taskbar_progress();
                 // UiTick 不走事件末尾的统一 notify。
                 return;
             }
@@ -1836,6 +1839,9 @@ impl RepositoryView {
                 let mb_total = total as f64 / 1_048_576.0;
                 self.update_download_progress =
                     Some(format!("{:.1} MB / {:.1} MB", mb_down, mb_total));
+                // 原始字节数供任务栏确定态进度；MB 文案仍供弹窗显示。
+                self.update_download_done = downloaded;
+                self.update_download_total = total;
             }
             UiEvent::UpdateReadyToInstall {
                 staging_dir,
@@ -1843,6 +1849,8 @@ impl RepositoryView {
             } => {
                 self.update_downloading = false;
                 self.update_download_progress = None;
+                self.update_download_done = 0;
+                self.update_download_total = 0;
                 self.status = encode(messages::UPDATE_READY, &[("version", &manifest.version.to_string())]);
                 self.last_error = None;
                 self.active_dialog = Some(DialogState::ConfirmInstallUpdate {
@@ -1855,6 +1863,8 @@ impl RepositoryView {
             UiEvent::UpdateInstallFailed { error } => {
                 self.update_downloading = false;
                 self.update_download_progress = None;
+                self.update_download_done = 0;
+                self.update_download_total = 0;
                 self.update_error = Some(error.clone());
                 self.status = encode(messages::UPDATE_FAILED, &[]).into();
                 self.notify_toast(AppToastKind::Error, khaslana::ui_i18n::encode_with_messages(messages::UPDATE_FAILED_ERROR, &[], &[("error", &error)]), cx);
@@ -1894,6 +1904,8 @@ impl RepositoryView {
                 self.global_busy_tab = None;
                 self.ai_extensions.connection_test.interrupt(encode(messages::TASK_INTERRUPTED, &[]).into());
                 self.update_downloading = false;
+                self.update_download_done = 0;
+                self.update_download_total = 0;
                 self.remote_workflow_loading = false;
                 self.remote_workflow_downloading = None;
                 // 索引任务有带身份的 panic 兜底，其他任务异常不能清除其运行态。

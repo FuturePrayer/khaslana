@@ -44,6 +44,7 @@ mod ssh_credentials;
 mod stash_view;
 mod submodule_view;
 mod system;
+mod taskbar_progress;
 mod tasks;
 mod text_input;
 mod theme_view;
@@ -3701,6 +3702,9 @@ pub(crate) struct RepositoryView {
     tray: Option<tray::TrayController>,
     #[cfg(windows)]
     tray_error: Option<String>,
+    /// Windows 任务栏按钮进度叠加（ITaskbarList3）；创建失败静默降级为 None。
+    #[cfg(windows)]
+    taskbar: Option<taskbar_progress::TaskbarController>,
     pub(crate) branch_context_menu: Option<BranchContextMenu>,
     pub(crate) remote_context_menu: Option<RemoteContextMenu>,
     change_context_menu: Option<ChangeContextMenu>,
@@ -3903,6 +3907,9 @@ pub(crate) struct RepositoryView {
     pub(crate) update_downloading: bool,
     pub(crate) available_update: Option<Arc<UpdateManifest>>,
     pub(crate) update_download_progress: Option<String>,
+    /// 更新下载原始字节数（任务栏确定态进度用）；弹窗仍用 MB 文案。
+    pub(crate) update_download_done: u64,
+    pub(crate) update_download_total: u64,
     pub(crate) update_error: Option<String>,
     pub(crate) staging_dir_for_install: Option<PathBuf>,
 }
@@ -5128,6 +5135,7 @@ fn main() {
                     let view = cx.new(RepositoryView::new_with_session);
                     view.update(cx, |this, cx| {
                         this.attach_window_to_tray(window);
+                        this.attach_taskbar_progress(window);
                         this.apply_theme_for_appearance(window.appearance(), cx);
                         // 跟随系统模式在系统深浅色变化时即时刷新；固定模式也会保持所选色板。
                         cx.observe_window_appearance(window, |this, window, cx| {

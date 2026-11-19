@@ -185,6 +185,8 @@ impl RepositoryView {
             tray,
             #[cfg(windows)]
             tray_error,
+            #[cfg(windows)]
+            taskbar: None,
             branch_context_menu: None,
             remote_context_menu: None,
             change_context_menu: None,
@@ -322,6 +324,8 @@ impl RepositoryView {
             update_downloading: false,
             available_update: None,
             update_download_progress: None,
+            update_download_done: 0,
+            update_download_total: 0,
             update_error: None,
             staging_dir_for_install: None,
             proxy_http_url: TextFieldState::localized(cx, messages::HTTP_PROXY_URL)
@@ -1240,6 +1244,9 @@ impl RepositoryView {
         while let Ok(event) = self.rx.try_recv() {
             self.handle_ui_event(event, cx);
         }
+        // 每批事件后同步任务栏进度：事件泵在最小化时仍运行（gpui 暂停渲染），
+        // 不能只靠 render 路径；控制器内部去重，无变化不发 COM 调用。
+        self.sync_taskbar_progress();
     }
 
     pub(crate) fn merge_metadata_snapshot(&mut self, snapshot: RepositorySnapshot) {
@@ -2562,6 +2569,9 @@ impl RepositoryView {
                     if let Some(tray) = self.tray.as_ref() {
                         tray.show_window();
                     }
+                    // 隐藏期间任务栏按钮被 shell 重建，进度叠加丢失：清缓存重发。
+                    self.invalidate_taskbar_progress();
+                    self.sync_taskbar_progress();
                 }
                 Some(tray::TrayAction::Exit) => self.exit_application(cx),
                 None => {}
