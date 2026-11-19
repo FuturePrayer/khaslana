@@ -23,6 +23,7 @@ use crate::ui::icons::ToolbarIcon;
 use crate::ui::theme::{self as theme, rgb};
 use crate::{FieldId, MainMode, RepositoryView, SettingsCategory};
 use catalog::{SearchEntry, SearchScope, SearchTarget, filter_entries, function_entries};
+use std::path::PathBuf;
 
 pub(crate) struct CodeSearchPaletteState {
     command: Entity<CommandState>,
@@ -30,6 +31,8 @@ pub(crate) struct CodeSearchPaletteState {
     scope: SearchScope,
     repositories: Option<repositories::RepositorySearchCatalog>,
     catalog_changed: bool,
+    /// 最近仓库缓存：开关关闭时生成仓库级切换条目（打开与输入/范围变化时刷新）。
+    recent: Vec<(PathBuf, i64)>,
 }
 
 impl RepositoryView {
@@ -54,6 +57,7 @@ impl RepositoryView {
             scope: SearchScope::default(),
             repositories: None,
             catalog_changed: false,
+            recent: self.storage.load_recent_repos().unwrap_or_default(),
         });
         // 挂载后由 maintain_overlay_focus 聚焦字段，保留触发器的返回焦点。
         cx.notify();
@@ -70,6 +74,9 @@ impl RepositoryView {
         let Some(palette) = self.code_search_palette.as_mut() else {
             return;
         };
+        // 最近仓库列表供关闭态的切换条目使用；随输入/开关刷新，
+        // 与仓库切换器同一新鲜度语义（LIMIT 20 的短查询）。
+        palette.recent = self.storage.load_recent_repos().unwrap_or_default();
         if !palette.scope.scans_saved_repositories(&self.code_palette_search.value) {
             // 丢弃目录会取消扫描；迟到结果仍由请求代际守卫拒绝。
             palette.repositories = None;
@@ -96,13 +103,12 @@ impl RepositoryView {
             .map(|palette| palette.scope)
             .unwrap_or_default();
         for tab in &self.tabs {
-            if !scope.includes_repository(tab.id, self.active_tab_id()) {
-                continue;
-            }
             let Some(path) = tab.repo_path.as_ref() else {
                 continue;
             };
             let repo_name = tab.display_name();
+            // 仓库条目对所有已打开 tab 生成（便于快速切换）；
+            // 分支/标签等内容深入仍按范围门控：关闭态只深入活动仓库。
             entries.push(SearchEntry::new(
                 repo_name.clone(),
                 path.to_string_lossy().to_string(),
@@ -110,6 +116,9 @@ impl RepositoryView {
                 khaslana::ui_i18n::text(messages::PROJECT_REPOSITORY_REPO),
                 SearchTarget::Repository(tab.id),
             ));
+            if !scope.includes_repository(tab.id, self.active_tab_id()) {
+                continue;
+            }
             // 活动仓库始终读当前真值；其他仓库只使用它们自己的已加载快照。
             let snapshot = if self.active_tab_id() == Some(tab.id) {
                 self.snapshot.as_ref()
@@ -130,6 +139,17 @@ impl RepositoryView {
                     SearchTarget::Workflow(tab_id, template.path.clone()),
                 ));
             }
+        }
+        // 关闭态：最近未打开仓库只生成仓库级切换条目，不扫描分支、不深入；
+        // 开启态由扫描目录提供含深入的条目，这里不重复生成。
+        if scope == SearchScope::CurrentRepository
+            && let Some(palette) = self.code_search_palette.as_ref()
+        {
+            let paths = repositories::unopened_repository_paths(
+                self.tabs.iter().filter_map(|tab| tab.repo_path.clone()),
+                palette.recent.iter().map(|(path, _)| path.clone()),
+            );
+            entries.extend(repositories::saved_repository_switch_entries(&paths));
         }
         if let Some(repositories) = self
             .code_search_palette

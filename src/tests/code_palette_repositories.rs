@@ -141,3 +141,53 @@ fn navigating_away_or_reloading_repository_discards_delayed_branch_navigation() 
         assert!(pending.is_none());
     }
 }
+
+#[test]
+fn switch_entries_carry_repository_identity_without_drill_down() {
+    let paths = [PathBuf::from("D:/repos/alpha"), PathBuf::from("D:/repos/beta")];
+    let entries = saved_repository_switch_entries(&paths);
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].title, "alpha");
+    assert_eq!(entries[0].subtitle, "D:/repos/alpha");
+    assert_eq!(
+        entries[0].target,
+        SearchTarget::SavedRepository(paths[0].clone())
+    );
+    assert!(entries[0].disabled_reason.is_none());
+    // 仅仓库级条目：不含分支等深入目标。
+    assert!(entries
+        .iter()
+        .all(|entry| matches!(entry.target, SearchTarget::SavedRepository(_))));
+    // 取不到目录名时回退完整路径。
+    let root = saved_repository_switch_entries(&[PathBuf::from("/")]);
+    assert_eq!(root[0].title, "/");
+}
+
+#[test]
+fn switch_entries_match_by_name_and_path_through_shared_filter() {
+    let entries = saved_repository_switch_entries(&[
+        PathBuf::from("D:/repos/klado"),
+        PathBuf::from("D:/work/other"),
+    ]);
+    let hits = filter_entries(entries.clone(), "klado");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(
+        hits[0].target,
+        SearchTarget::SavedRepository(PathBuf::from("D:/repos/klado"))
+    );
+    // 路径词参与匹配（多词 AND）。
+    let hits = filter_entries(entries, "work other");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].title, "other");
+}
+
+#[test]
+fn current_repository_scope_switch_list_excludes_open_tabs() {
+    let paths = unopened_repository_paths(
+        [PathBuf::from("d:/repos/OPEN")],
+        [PathBuf::from("D:/repos/open"), PathBuf::from("D:/repos/closed")],
+    );
+    let entries = saved_repository_switch_entries(&paths);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].title, "closed");
+}

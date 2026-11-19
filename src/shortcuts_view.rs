@@ -13,13 +13,27 @@ use crate::{
     RepositoryView, ShortcutAction, ShortcutRecordingTarget, ui::theme as ui_theme, workflow_view,
 };
 
+/// 可录制为连按快捷键的修饰键（gpui 轻点合成的键名，注意是 control 而非 ctrl）。
+/// Win（platform）被系统开始菜单占用、CapsLock 非轻点修饰键，均不支持；
+/// 普通按键连按会拦截输入框中连续相同字符，也不支持。
+pub(crate) const DOUBLE_PRESS_MODIFIER_KEYS: [&str; 3] = ["shift", "control", "alt"];
+
 /// 把 GPUI keystroke 字符串格式化为用户可读的显示文本。
-/// 例如 "ctrl-shift-f" → "Ctrl+Shift+F"，"f5" → "F5"，"ctrl-," → "Ctrl+,"
+/// 例如 "ctrl-shift-f" → "Ctrl+Shift+F"，"f5" → "F5"，"ctrl-," → "Ctrl+,"；
+/// 连按序列按空白拆段逐段格式化，如 "shift shift" → "Shift Shift"。
 pub(crate) fn format_keystroke(keystroke: &str) -> String {
+    keystroke
+        .split_whitespace()
+        .map(format_single_keystroke)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_single_keystroke(keystroke: &str) -> String {
     keystroke
         .split('-')
         .map(|part| match part {
-            "ctrl" => "Ctrl".to_string(),
+            "ctrl" | "control" => "Ctrl".to_string(),
             "alt" => "Alt".to_string(),
             "shift" => "Shift".to_string(),
             "cmd" | "super" | "win" => "Super".to_string(),
@@ -74,6 +88,33 @@ pub(crate) fn keystroke_to_string(event: &KeyDownEvent) -> String {
     let key = ks.key.as_ref();
     parts.push(key);
     parts.join("-")
+}
+
+/// 是否为 gpui 合成的「轻点修饰键」keystroke（无修饰键且主键本身是修饰键名）。
+/// 录制时这类按键不能单独保存为快捷键：孤立轻点没有业务语义，
+/// 连按录制由临时序列绑定（RecordDoublePress）完成。
+pub(crate) fn is_modifier_only_keystroke(ks: &gpui::Keystroke) -> bool {
+    !ks.modifiers.modified()
+        && matches!(
+            ks.key.as_str(),
+            "shift" | "control" | "alt" | "platform" | "function"
+        )
+}
+
+/// 校验快捷键字符串：单段须能被 GPUI 解析；两段仅允许相同修饰键的连按序列
+/// （shift/control/alt），拒绝普通按键序列与混合修饰键，避免拦截打字。
+/// 加载剪枝与注册守卫共用，防止手改 DB 的非法序列进入 keymap。
+pub(crate) fn is_valid_shortcut_string(keystroke: &str) -> bool {
+    let parts: Vec<&str> = keystroke.split_whitespace().collect();
+    match parts.as_slice() {
+        [single] => gpui::Keystroke::parse(single).is_ok(),
+        [first, second] => {
+            first == second
+                && DOUBLE_PRESS_MODIFIER_KEYS.contains(first)
+                && gpui::Keystroke::parse(first).is_ok()
+        }
+        _ => false,
+    }
 }
 
 fn shortcut_row_is_recording(
@@ -430,6 +471,77 @@ impl RepositoryView {
         }
 
         vec![group, workflow_group]
+    }
+
+    /// 快捷键录制的统一收尾：冲突检查 → 写入对应绑定表 → 持久化 → 重注册键位。
+    /// 根捕获层（单组合键）与 RecordDoublePress 监听（连按序列）共用。
+    /// 冲突退出同样重注册：录制态跳过了应用键位，不恢复会使全部快捷键失效。
+    pub(crate) fn finish_shortcut_recording(
+        &mut self,
+        target: ShortcutRecordingTarget,
+        keystroke: String,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(conflict) = crate::find_keystroke_conflict(
+            &self.shortcut_bindings,
+            &self.workflow_shortcut_bindings,
+            &target,
+            &keystroke,
+        ) {
+            self.recording_shortcut = None;
+            crate::register_all_key_bindings(
+                &mut cx.deref_mut(),
+                &self.shortcut_bindings,
+                &self.workflow_shortcut_bindings,
+                false,
+            );
+            self.notify_warning(
+                khaslana::ui_i18n::encode(
+                    crate::app_ui_resources::SHORTCUT_TAKEN,
+                    &[
+                        ("keystroke", &format_keystroke(&keystroke)),
+                        ("action", &conflict.describe()),
+                    ],
+                ),
+                cx,
+            );
+            cx.notify();
+            return;
+        }
+        match target {
+            ShortcutRecordingTarget::App(action) => {
+                self.shortcut_bindings
+                    .bindings
+                    .insert(action.action_id().to_string(), keystroke);
+                self.recording_shortcut = None;
+                self.save_shortcut_bindings();
+                crate::register_all_key_bindings(
+                    &mut cx.deref_mut(),
+                    &self.shortcut_bindings,
+                    &self.workflow_shortcut_bindings,
+                    false,
+                );
+                cx.notify();
+            }
+            ShortcutRecordingTarget::Workflow { file } => {
+                // 保留已有的后台执行标志，仅更新键位。
+                let background = self
+                    .workflow_shortcut_bindings
+                    .bindings
+                    .get(&file)
+                    .map(|binding| binding.background)
+                    .unwrap_or(false);
+                self.workflow_shortcut_bindings.bindings.insert(
+                    file,
+                    khaslana::WorkflowShortcutBinding {
+                        keystroke,
+                        background,
+                    },
+                );
+                self.recording_shortcut = None;
+                self.persist_workflow_shortcut_bindings(cx);
+            }
+        }
     }
 }
 

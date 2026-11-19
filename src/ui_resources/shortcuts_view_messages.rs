@@ -5,7 +5,7 @@ pub const SHORTCUT_DEFAULT_KEYSTROKE_IS_ALREADY_USED_BY_DESCRIBE_CANNOT_RESTORE:
 pub const FINISH_RECORDING_THE_SHORTCUT_FIRST: UiMessage = UiMessage::new("views.shortcuts_view.finish_recording_the_shortcut_first", "请先结束快捷键录制", "Finish recording the shortcut first");
 pub const APPLICATION_SHORTCUTS: UiMessage = UiMessage::new("views.shortcuts_view.application_shortcuts", "应用快捷键", "Application shortcuts");
 pub const DESCRIPTION: UiMessage = UiMessage::new("views.shortcuts_view.description", "说明", "Description");
-pub const CLICK_REBIND_THEN_PRESS_A_KEY_COMBINATION_ESC_CANCELS_RECORDING: UiMessage = UiMessage::new("views.shortcuts_view.click_rebind_then_press_a_key_combination_esc_cancels_recording", "点击「重新绑定」后按下组合键录入；按 Esc 取消录制。点「恢复默认」复位单条快捷键。", "Click “Rebind”, then press a key combination. Esc cancels recording. “Restore default” resets a single shortcut.");
+pub const CLICK_REBIND_THEN_PRESS_A_KEY_COMBINATION_ESC_CANCELS_RECORDING: UiMessage = UiMessage::new("views.shortcuts_view.click_rebind_then_press_a_key_combination_esc_cancels_recording", "点击「重新绑定」后按下组合键录入；1 秒内连按两次同一修饰键（Shift/Ctrl/Alt）可录制连按快捷键；按 Esc 取消录制。点「恢复默认」复位单条快捷键。", "Click “Rebind”, then press a key combination. Press the same modifier key (Shift/Ctrl/Alt) twice within 1 second to record a double-press shortcut. Esc cancels recording. “Restore default” resets a single shortcut.");
 pub const PRESS_A_KEY_COMBINATION: UiMessage = UiMessage::new("views.shortcuts_view.press_a_key_combination", "按下组合键…", "Press a key combination…");
 pub const CANCEL: UiMessage = UiMessage::new("views.shortcuts_view.cancel", "取消", "Cancel");
 pub const REBIND: UiMessage = UiMessage::new("views.shortcuts_view.rebind", "重新绑定", "Rebind");

@@ -187,3 +187,108 @@ fn reset_default_is_disabled_during_recording_with_reason() {
     );
     assert_eq!(shortcut_reset_disabled_reason(None), None);
 }
+
+#[test]
+fn format_keystroke_double_press_sequences() {
+    assert_eq!(format_keystroke("shift shift"), "Shift Shift");
+    assert_eq!(format_keystroke("control control"), "Ctrl Ctrl");
+    assert_eq!(format_keystroke("alt alt"), "Alt Alt");
+    // 序列拆分不影响既有单键显示。
+    assert_eq!(format_keystroke("ctrl-shift-f"), "Ctrl+Shift+F");
+    assert_eq!(format_keystroke("f5"), "F5");
+}
+
+#[test]
+fn valid_shortcut_strings_cover_single_keys_and_modifier_double_press() {
+    for key in DOUBLE_PRESS_MODIFIER_KEYS {
+        assert!(is_valid_shortcut_string(&format!("{key} {key}")));
+    }
+    assert!(is_valid_shortcut_string("ctrl-p"));
+    assert!(is_valid_shortcut_string("f5"));
+    assert!(is_valid_shortcut_string("ctrl-,"));
+    // 普通按键连按会拦截打字，混合修饰键、三段与空串一律拒绝。
+    assert!(!is_valid_shortcut_string("p p"));
+    assert!(!is_valid_shortcut_string("f5 f5"));
+    assert!(!is_valid_shortcut_string("shift control"));
+    assert!(!is_valid_shortcut_string("shift shift shift"));
+    assert!(!is_valid_shortcut_string(""));
+    assert!(!is_valid_shortcut_string("   "));
+    assert!(!is_valid_shortcut_string("not-a-key"));
+}
+
+#[test]
+fn modifier_only_keystroke_guard_matches_synthesized_taps() {
+    for key in ["shift", "control", "alt", "platform", "function"] {
+        let ks = gpui::Keystroke::parse(key).unwrap();
+        assert!(is_modifier_only_keystroke(&ks), "{key}");
+    }
+    // 带修饰键的组合与普通按键不是轻点修饰键。
+    assert!(!is_modifier_only_keystroke(
+        &gpui::Keystroke::parse("ctrl-shift").unwrap()
+    ));
+    assert!(!is_modifier_only_keystroke(
+        &gpui::Keystroke::parse("a").unwrap()
+    ));
+}
+
+#[test]
+fn prune_keeps_modifier_double_press_and_drops_invalid_sequences() {
+    let app = crate::default_shortcut_bindings();
+    let bindings = workflow_bindings(&[
+        ("double.json5", "shift shift", true),
+        ("letters.json5", "p p", false),      // 普通按键连按：拒绝
+        ("mixed.json5", "shift control", false), // 混合修饰键：拒绝
+        ("triple.json5", "alt alt alt", false),  // 三段：拒绝
+    ]);
+    let (pruned, changed) = crate::prune_workflow_shortcut_bindings(&bindings, &app);
+    assert!(changed);
+    let binding = pruned.bindings.get("double.json5").expect("double press kept");
+    assert_eq!(binding.keystroke, "shift shift");
+    assert!(binding.background);
+    assert!(!pruned.bindings.contains_key("letters.json5"));
+    assert!(!pruned.bindings.contains_key("mixed.json5"));
+    assert!(!pruned.bindings.contains_key("triple.json5"));
+}
+
+#[test]
+fn double_press_conflicts_are_detected_in_both_directions() {
+    let mut app = crate::default_shortcut_bindings();
+    app.bindings.insert(
+        ShortcutAction::OpenCodeSearch.action_id().to_string(),
+        "shift shift".to_string(),
+    );
+    // 工作流录制撞静态连按键。
+    let conflict = crate::find_keystroke_conflict(
+        &app,
+        &workflow_bindings(&[]),
+        &crate::ShortcutRecordingTarget::Workflow {
+            file: "sync.json5".to_string(),
+        },
+        "shift shift",
+    );
+    assert_eq!(
+        conflict,
+        Some(crate::ShortcutConflict::App(ShortcutAction::OpenCodeSearch))
+    );
+    // 静态动作恢复默认前撞工作流连按键。
+    let conflict = crate::find_keystroke_conflict(
+        &app,
+        &workflow_bindings(&[("sync.json5", "alt alt", false)]),
+        &crate::ShortcutRecordingTarget::App(ShortcutAction::Refresh),
+        "alt alt",
+    );
+    assert_eq!(
+        conflict,
+        Some(crate::ShortcutConflict::Workflow("sync.json5".to_string()))
+    );
+    // 连按串与单键串互不误报。
+    assert_eq!(
+        crate::find_keystroke_conflict(
+            &app,
+            &workflow_bindings(&[]),
+            &crate::ShortcutRecordingTarget::App(ShortcutAction::Refresh),
+            "shift",
+        ),
+        None
+    );
+}
