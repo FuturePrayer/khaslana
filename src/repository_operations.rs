@@ -4,7 +4,7 @@ use crate::*;
 use khaslana::ui_i18n::{UiMessage, LocalizedMessage};
 use crate::operation_ui_resources as operation_messages;
 #[path = "operation_feedback_resources.rs"]
-mod feedback_messages;
+pub(crate) mod feedback_messages;
 use khaslana::ui_i18n::{text, encode};
 
 impl RepositoryView {
@@ -59,21 +59,12 @@ impl RepositoryView {
             return;
         }
 
-        let tab_id = self.ensure_tab_for_path(path.clone());
-        let service = self.service_for_tab(tab_id);
+        // 克隆前不创建 tab：成功才打开仓库；失败在弹窗内重试，关闭弹窗
+        // 停留在原仓库。进度只进克隆弹窗，不写 tab status。见 repository_clone。
         let options = khaslana::CloneOptions {
             recursive_submodules: self.clone_recursive_submodules,
         };
-        self.spawn_operation_for_tab(Some(tab_id), encode(feedback_messages::CLONING, &[]), move || {
-            service
-                .clone_repo_with_options(&url, &RepoPath::new(path), options)
-                .map(|snapshot| UiEvent::OperationFinished {
-                    tab_id: Some(tab_id),
-                    message: encode(operation_messages::CLONED, &[]),
-                    snapshot: Some(snapshot),
-                    diff: None,
-                })
-        });
+        self.start_clone_task(url, path, options);
     }
 
     pub(crate) fn refresh(&mut self) {

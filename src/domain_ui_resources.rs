@@ -19,6 +19,8 @@ pub const GIT_CONFIG_UNSUPPORTED_KEY: UiMessage = UiMessage::new("domain.git_con
 
 pub const CLONING: UiMessage = UiMessage::new("domain.cloning", "正在克隆 {url}", "Cloning {url}");
 pub const CLONED: UiMessage = UiMessage::new("domain.cloned", "已克隆 {url}", "Cloned {url}");
+pub const CHECKING_OUT_OBJECTS: UiMessage = UiMessage::new("domain.checking_out_objects", "正在检出文件 {done}/{total}", "Checking out files {done}/{total}");
+pub const CLONE_CANCELLED: UiMessage = UiMessage::new("domain.clone_cancelled", "克隆已取消", "Clone cancelled");
 pub const REMOTE_NAME_ALREADY_EXISTS: UiMessage = UiMessage::new("domain.remote_name_already_exists", "远端名称已存在：{value0}", "Remote name already exists: {value0}");
 pub const FETCHING: UiMessage = UiMessage::new("domain.fetching", "正在获取 {value0}", "Fetching {value0}");
 pub const FETCHED: UiMessage = UiMessage::new("domain.fetched", "已获取 {value0}", "Fetched {value0}");
@@ -716,6 +718,8 @@ pub const ALL: &[UiMessage] = &[
     GIT_CONFIG_UNSUPPORTED_KEY,
     CLONING,
     CLONED,
+    CHECKING_OUT_OBJECTS,
+    CLONE_CANCELLED,
     REMOTE_NAME_ALREADY_EXISTS,
     FETCHING,
     FETCHED,

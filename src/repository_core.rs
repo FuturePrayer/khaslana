@@ -213,6 +213,8 @@ impl RepositoryView {
             clone_url: TextFieldState::localized(cx, messages::REMOTE_REPOSITORY_URL),
             clone_path: TextFieldState::localized(cx, messages::PARENT_FOLDER_FOR_CLONING),
             clone_recursive_submodules: default_clone_recursive_submodules(),
+            clone_task: None,
+            next_clone_task_id: 1,
             branch_name: TextFieldState::localized(cx, messages::NEW_BRANCH_NAME),
             create_branch_checkout: true,
             create_branch_base: None,
@@ -1087,7 +1089,7 @@ impl RepositoryView {
                 self.storage.clone(),
                 self.remote_credential_bindings.clone(),
                 self.tx.clone(),
-                tab_id,
+                Some(tab_id),
                 self.proxy_settings.clone(),
             )),
             Arc::new(TabProgress {
@@ -1859,8 +1861,8 @@ impl RepositoryView {
 
     pub(crate) fn open_clone_dialog(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
         self.close_popups();
-        self.clone_url.clear();
-        self.clone_path.clear();
+        // 保留上次填写的 URL/父目录：失败关闭后重开可直接修改重试，
+        // 不必重新输入；子模块开关仍回到默认值。
         self.clone_recursive_submodules = default_clone_recursive_submodules();
         self.active_dialog = Some(DialogState::CloneRepo);
         self.last_error = None;
@@ -2414,6 +2416,22 @@ impl RepositoryView {
         if self.active_dialog == Some(DialogState::ConfirmWindowClose) {
             self.cancel_window_close();
             return;
+        }
+        // 克隆弹窗关闭语义按任务状态分流：进行中关闭 = 取消克隆；
+        // 失败后关闭 = 放弃重试，清理残留并留在原仓库。
+        if self.active_dialog == Some(DialogState::CloneRepo)
+            && let Some(task) = self.clone_task.as_ref()
+        {
+            match task.phase {
+                repository_clone::ClonePhase::Running => {
+                    self.cancel_clone();
+                    return;
+                }
+                repository_clone::ClonePhase::Failed => {
+                    self.dismiss_failed_clone();
+                    // 继续走常规关闭（置空 active_dialog、恢复焦点）。
+                }
+            }
         }
         if self.active_dialog == Some(DialogState::GenerateSshKey) {
             self.close_ssh_key_form();

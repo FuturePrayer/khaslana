@@ -414,6 +414,12 @@ pub enum RebaseOutcome {
 pub enum OperationEvent {
     Started(String),
     Progress(String),
+    /// 结构化传输进度：数字与译文分离，UI 侧据此渲染进度条，
+    /// 不从翻译文本反解析数值。
+    TransferProgress {
+        received_objects: usize,
+        total_objects: usize,
+    },
     Finished(String),
 }
 

@@ -76,7 +76,7 @@ fn credential_provider_with_store(
             storage,
             bindings,
             tx,
-            RepoTabId(7),
+            Some(RepoTabId(7)),
             NetworkProxySettings::default(),
         ),
         rx,

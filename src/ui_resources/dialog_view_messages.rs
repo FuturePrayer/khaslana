@@ -32,6 +32,7 @@ pub const ENTER_A_REMOTE_REPOSITORY_URL_AND_PARENT_FOLDER_TO_SEE: UiMessage = Ui
 pub const SELECT_FOLDER: UiMessage = UiMessage::new("views.dialog_view.select_folder", "选择目录", "Select folder");
 pub const CANCEL: UiMessage = UiMessage::new("views.dialog_view.cancel", "取消", "Cancel");
 pub const CLONE: UiMessage = UiMessage::new("views.dialog_view.clone", "克隆", "Clone");
+pub const CLONE_RETRY: UiMessage = UiMessage::new("views.dialog_view.clone_retry", "重试", "Retry");
 pub const CLOSE_KHASLANA: UiMessage = UiMessage::new("views.dialog_view.close_khaslana", "关闭 Klado", "Close Klado");
 pub const EXIT_THE_APPLICATION_OR_KEEP_KHASLANA_RUNNING_IN_THE_SYSTEM: UiMessage = UiMessage::new("views.dialog_view.exit_the_application_or_keep_khaslana_running_in_the_system", "要直接退出应用，还是让 Klado 继续在系统托盘中运行？", "Exit the application, or keep Klado running in the system tray?");
 pub const WHEN_MINIMIZED_TO_THE_TRAY_CLICK_THE_TRAY_ICON_TO: UiMessage = UiMessage::new("views.dialog_view.when_minimized_to_the_tray_click_the_tray_icon_to", "缩小到托盘后，可点击托盘图标恢复主窗口，或从托盘菜单退出。", "When minimized to the tray, click the tray icon to restore the main window, or exit from the tray menu.");
@@ -233,6 +234,7 @@ const ALL_MESSAGES: &[UiMessage] = &[
     SELECT_FOLDER,
     CANCEL,
     CLONE,
+    CLONE_RETRY,
     CLOSE_KHASLANA,
     EXIT_THE_APPLICATION_OR_KEEP_KHASLANA_RUNNING_IN_THE_SYSTEM,
     WHEN_MINIMIZED_TO_THE_TRAY_CLICK_THE_TRAY_ICON_TO,

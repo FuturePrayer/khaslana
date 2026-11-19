@@ -174,8 +174,10 @@ pub(crate) fn workflow_studio_layout(
     WorkflowStudioLayout::from_state(has_definition, has_inputs)
 }
 
-pub(crate) fn workflow_console_state(busy: bool, log_count: usize) -> WorkflowConsoleState {
-    if busy || log_count > 0 {
+/// Console 只服务工作流：仅工作流运行中或有日志时展开。
+/// 克隆/fetch/push 等普通操作的状态不经过这里（底部状态栏承载）。
+pub(crate) fn workflow_console_state(workflow_running: bool, log_count: usize) -> WorkflowConsoleState {
+    if workflow_running || log_count > 0 {
         WorkflowConsoleState::Expanded
     } else {
         WorkflowConsoleState::Collapsed
@@ -2286,7 +2288,10 @@ impl RepositoryView {
     }
 
     fn render_workflow_log(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let console = workflow_console_state(self.busy, self.workflow_state.log.len());
+        // 只按工作流运行态门控：tab busy 可能来自克隆/fetch/push 等普通
+        // 操作，它们的状态不应出现在工作流 Console。
+        let workflow_running = self.workflow_state.active_run.is_some();
+        let console = workflow_console_state(workflow_running, self.workflow_state.log.len());
         let rows = self
             .workflow_state
             .log
@@ -2313,7 +2318,7 @@ impl RepositoryView {
                     .into_any_element()
             })
             .collect::<Vec<_>>();
-        let empty_message = if self.busy {
+        let empty_message = if workflow_running {
             khaslana::ui_i18n::resolve(&self.status)
         } else {
             khaslana::ui_i18n::text(messages::RUN_A_WORKFLOW_TO_VIEW_STATUS_AND_LOGS_HERE).to_string()
@@ -2347,7 +2352,7 @@ impl RepositoryView {
                     .child(
                         div()
                             .text_size(px(11.0))
-                            .text_color(rgb(if self.busy {
+                            .text_color(rgb(if workflow_running {
                                 ui_theme::PRIMARY
                             } else if self.last_error.is_some() {
                                 ui_theme::DESTRUCTIVE
@@ -2355,7 +2360,7 @@ impl RepositoryView {
                                 ui_theme::CONTENT_SECONDARY
                             }))
                             .truncate()
-                            .child(if self.busy {
+                            .child(if workflow_running {
                                 khaslana::ui_i18n::resolve(&self.status)
                             } else if self.workflow_state.log.is_empty() {
                                 khaslana::ui_i18n::text(messages::IDLE).to_string()

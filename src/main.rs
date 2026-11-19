@@ -28,6 +28,7 @@ mod rebase_view;
 mod recovery_view;
 mod remote_branch_operation;
 mod repository_actions;
+mod repository_clone;
 mod repository_core;
 mod repository_credentials;
 mod repository_ssh_ui;
@@ -121,8 +122,8 @@ use ui::{
     components::{
         AppToastKind, FeedbackMessage, ToastAction, app_shell_surface, bottom_progress_bar,
         danger_callout, dialog_actions, dialog_overlay, dialog_panel as ui_dialog_panel,
-        dialog_panel_size, feedback_bubble, feedback_stack, glass_menu, segmented_button,
-        tooltip_text,
+        dialog_panel_size, feedback_bubble, feedback_stack, glass_menu, inline_error_bubble,
+        linear_progress_bar, segmented_button, tooltip_text,
     },
     icons::{OauthBrand, ToolbarIcon, toolbar_icon},
     theme as ui_theme,
@@ -2787,6 +2788,26 @@ pub(crate) enum UiEvent {
     CloneTargetFolderSelected {
         path: Option<PathBuf>,
     },
+    /// 克隆任务进度（全局任务，不绑定 tab）：task_id 与 `clone_task` 匹配
+    /// 才应用，迟到事件静默丢弃。done/total 为对象数，total=0 表示该阶段
+    /// 没有确定态进度（如检出/子模块），只显示文案。
+    CloneProgress {
+        task_id: u64,
+        message: String,
+        done: usize,
+        total: usize,
+    },
+    /// 克隆成功：此时才创建并激活仓库 tab（克隆期间 UI 停留在原仓库）。
+    CloneFinished {
+        task_id: u64,
+        snapshot: RepositorySnapshot,
+    },
+    /// 克隆失败/取消：cancelled=true 表示用户取消，静默收尾不弹错误。
+    CloneFailed {
+        task_id: u64,
+        error: String,
+        cancelled: bool,
+    },
     ExternalMergeExecutableSelected {
         path: Option<PathBuf>,
     },
@@ -2958,6 +2979,15 @@ impl ProgressEmitter for TabProgress {
                 tab_id: Some(self.tab_id),
                 message,
             },
+            // fetch/push 等 tab 操作沿用状态栏文案；结构化数字在此格式化，
+            // 克隆任务则经 CloneProgressEmitter 保留数字渲染进度条。
+            OperationEvent::TransferProgress { received_objects, total_objects } => UiEvent::OperationProgress {
+                tab_id: Some(self.tab_id),
+                message: khaslana::ui_i18n::format(
+                    khaslana::types::domain_ui_resources::RECEIVED_OBJECTS,
+                    &[("value0", &received_objects.to_string()), ("value1", &total_objects.to_string())],
+                ),
+            },
             OperationEvent::Finished(message) => UiEvent::OperationProgress {
                 tab_id: Some(self.tab_id),
                 message,
@@ -2975,7 +3005,8 @@ struct TabCredentialProvider {
     tx: Sender<UiEvent>,
     rejected_record_ids: Arc<Mutex<Vec<String>>>,
     last_stored_attempt: Arc<Mutex<Option<StoredCredentialAttempt>>>,
-    tab_id: RepoTabId,
+    /// 凭据请求归属的 tab；克隆等全局任务传 None（凭据面板已支持无 tab 请求）。
+    tab_id: Option<RepoTabId>,
     /// Gitee 令牌自动续期用的代理设置（刷新经 broker，与 git 操作同一代理策略）。
     proxy_settings: NetworkProxySettings,
 }
@@ -3023,7 +3054,7 @@ impl TabCredentialProvider {
         storage: Arc<khaslana::AppStorage>,
         remote_bindings: Arc<Mutex<RemoteCredentialBindings>>,
         tx: Sender<UiEvent>,
-        tab_id: RepoTabId,
+        tab_id: Option<RepoTabId>,
         proxy_settings: NetworkProxySettings,
     ) -> Self {
         Self {
@@ -3249,7 +3280,7 @@ impl CredentialProvider for TabCredentialProvider {
         send_ui_event(
             &self.tx,
             UiEvent::CredentialRequested {
-                tab_id: Some(self.tab_id),
+                tab_id: self.tab_id,
                 request: request.clone(),
                 response_tx: response_tx.clone(),
             },
@@ -3717,6 +3748,12 @@ pub(crate) struct RepositoryView {
     clone_url: TextFieldState,
     clone_path: TextFieldState,
     clone_recursive_submodules: bool,
+    /// 克隆任务运行态（None = 无任务）：发起即占位，成功/失败/取消终态才
+    /// 释放。克隆期间不创建仓库 tab，成功后才打开；进度/终态事件携带任务
+    /// id 按它寻址，迟到事件静默丢弃。见 `repository_clone`。
+    pub(crate) clone_task: Option<repository_clone::CloneTask>,
+    /// 下一个克隆任务 id（进程内自增，只用于身份区分）。
+    next_clone_task_id: u64,
     branch_name: TextFieldState,
     create_branch_checkout: bool,
     /// 「新建分支」对话框选中的基础分支；None 表示当前 HEAD（默认）。

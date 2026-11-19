@@ -94,6 +94,15 @@ impl RepositoryView {
                     this.status = message;
                 });
             }
+            UiEvent::CloneProgress { task_id, message, done, total } => {
+                self.handle_clone_progress(task_id, message, done, total);
+            }
+            UiEvent::CloneFinished { task_id, snapshot } => {
+                self.handle_clone_finished(task_id, snapshot, cx);
+            }
+            UiEvent::CloneFailed { task_id, error, cancelled } => {
+                self.handle_clone_failed(task_id, error, cancelled, cx);
+            }
             UiEvent::RepositoryFastLoaded {
                 tab_id,
                 message,
@@ -1874,6 +1883,14 @@ impl RepositoryView {
                 // 这里保守释放互斥槽，否则永久挡掉后续一次性 AI 生成。
                 self.ai_thinking_task = None;
                 self.close_ai_thinking_overlay();
+                // 克隆任务槽同样保守释放，否则永久挡掉后续克隆；不在此清理
+                // 目标目录——panic 的可能不是克隆任务，误删会与仍在运行的
+                // 克隆竞争。残留目录由后续重试/手动处理。
+                self.clone_task = None;
+                if self.active_dialog == Some(DialogState::CloneRepo) {
+                    self.active_dialog = None;
+                    self.request_overlay_focus_restore();
+                }
                 self.global_busy_tab = None;
                 self.ai_extensions.connection_test.interrupt(encode(messages::TASK_INTERRUPTED, &[]).into());
                 self.update_downloading = false;

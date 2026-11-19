@@ -1435,6 +1435,29 @@ pub(crate) fn bottom_progress_bar(phase: u64) -> impl IntoElement {
         )
 }
 
+/// 确定态线性进度条（克隆弹窗等共用）：total=0 渲染空轨道，
+/// 表示该阶段没有确定态进度，由调用方配文案说明。
+pub(crate) fn linear_progress_bar(done: usize, total: usize) -> gpui::AnyElement {
+    let fraction = if total == 0 {
+        0.0
+    } else {
+        done.min(total) as f32 / total as f32
+    };
+    div()
+        .h(px(4.0))
+        .w_full()
+        .rounded(px(theme::RADIUS_XS))
+        .overflow_hidden()
+        .bg(rgb(theme::PROGRESS_TRACK))
+        .child(
+            div()
+                .w(gpui::relative(fraction))
+                .h_full()
+                .bg(rgb(theme::PROGRESS_FILL)),
+        )
+        .into_any_element()
+}
+
 /// 操作加载条
 pub(crate) fn operation_loading_bar(message: impl Into<gpui::SharedString>) -> impl IntoElement {
     div()

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Component, Path};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::Instant;
 
@@ -197,6 +197,9 @@ pub struct GitService {
     remote_context: Arc<Mutex<Option<RemoteOperationContext>>>,
     next_remote_operation_id: Arc<AtomicU64>,
     proxy_settings: Arc<Mutex<NetworkProxySettings>>,
+    /// 协作式取消标记：传输进度回调检查它决定是否中止 libgit2 操作。
+    /// 默认恒 false；仅克隆等需要用户取消的操作经 `with_cancel_flag` 注入。
+    cancelled: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -237,12 +240,22 @@ impl GitService {
             remote_context: Arc::new(Mutex::new(None)),
             next_remote_operation_id: Arc::new(AtomicU64::new(1)),
             proxy_settings: Arc::new(Mutex::new(NetworkProxySettings::default())),
+            cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn with_host_trust_provider(mut self, provider: Arc<dyn crate::ssh_host_trust::HostTrustProvider>) -> Self {
         self.host_trust_provider = provider;
         self
+    }
+
+    pub fn with_cancel_flag(mut self, cancelled: Arc<AtomicBool>) -> Self {
+        self.cancelled = cancelled;
+        self
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
     }
 
     pub fn with_proxy_settings(self, proxy_settings: NetworkProxySettings) -> Self {
@@ -280,9 +293,19 @@ impl GitService {
         self.apply_fetch_proxy(&mut fetch_options, Some(url))?;
 
         let mut checkout = CheckoutBuilder::new();
-        checkout.progress(|path, current, total| {
+        let checkout_progress = self.progress.clone();
+        // 检出按文件回调，大仓库可达数十万次；节流上报避免淹没 UI 事件队列。
+        let mut last_checkout_emit = Instant::now();
+        checkout.progress(move |path, current, total| {
             if let Some(path) = path {
                 tracing::debug!("checkout {current}/{total}: {}", path.display());
+            }
+            if current == total || last_checkout_emit.elapsed() >= std::time::Duration::from_millis(100) {
+                last_checkout_emit = Instant::now();
+                checkout_progress.emit(OperationEvent::Progress(crate::ui_i18n::format(
+                    domain_ui_resources::CHECKING_OUT_OBJECTS,
+                    &[("done", &current.to_string()), ("total", &total.to_string())],
+                )));
             }
         });
 
@@ -291,6 +314,14 @@ impl GitService {
             .with_checkout(checkout)
             .clone(url, &into.0)?;
 
+        // 取消可能在检出阶段才到达（检出回调无法中止 libgit2）；
+        // 进入子模块递归前再检查一次，避免取消后继续拉取子模块。
+        if self.is_cancelled() {
+            return Err(GitError::Localized(crate::ui_i18n::LocalizedMessage::new(
+                domain_ui_resources::CLONE_CANCELLED,
+                &[],
+            )));
+        }
         if options.recursive_submodules {
             self.update_submodules_recursive(&repo)?;
         }
@@ -2679,12 +2710,18 @@ impl GitService {
         let progress = self.progress.clone();
         let config = repo.and_then(|repo| repo.config().ok());
         let remote_context = self.remote_context.clone();
+        let cancelled = self.cancelled.clone();
 
         let mut callbacks = RemoteCallbacks::new();
         crate::ssh_host_trust::install_certificate_check(&mut callbacks, remote_url, self.host_trust_provider.clone());
         callbacks.transfer_progress(move |stats| {
-            progress.emit(OperationEvent::Progress(crate::ui_i18n::format(domain_ui_resources::RECEIVED_OBJECTS, &[("value0", &format!("{}", stats.received_objects())), ("value1", &format!("{}", stats.total_objects()))])));
-            true
+            progress.emit(OperationEvent::TransferProgress {
+                received_objects: stats.received_objects(),
+                total_objects: stats.total_objects(),
+            });
+            // 返回 false 让 libgit2 中止传输；取消只在进度回调检查点生效，
+            // 卡在建立连接阶段时需等连接超时或开始传输后才能中止。
+            !cancelled.load(Ordering::Relaxed)
         });
 
         let provider_for_credentials = provider;
